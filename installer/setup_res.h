@@ -1,0 +1,4 @@
+#pragma once
+#define IDR_OPENGL32      101
+#define IDR_OPENXR_LOADER 102
+#define IDR_COD_VR_INI    103

@@ -1,0 +1,66 @@
+# Builds the mod and the installer on Windows and publishes them as a GitHub Release
+# whenever a version tag (v1.0.0, v1.1.0, ...) is pushed. Can also be run by hand
+# (Actions tab) to just build and download the files.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the OpenXR loader
+        shell: pwsh
+        run: |
+          $v = '1.1.65'
+          Invoke-WebRequest "https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/release-$v/openxr_loader_windows-$v.zip" -OutFile oxr.zip
+          Expand-Archive oxr.zip -DestinationPath deps/openxr
+
+      - name: Build the mod and the installer
+        shell: cmd
+        run: |
+          call proxy\build.bat || exit /b 1
+          call installer\build_setup.bat || exit /b 1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item installer/out/CoD-VR-Setup.exe dist/
+          Compress-Archive -Path proxy/out/opengl32.dll, proxy/out/openxr_loader.dll, proxy/cod_vr.ini -DestinationPath dist/cod-vr-manual-install.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cod-vr
+          path: dist/*
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            **Call of Duty (2003) VR** for `CoDSP.exe` 1.5 (single player).
+
+            **Install:** download `CoD-VR-Setup.exe` and run it. It finds the game folder, installs the mod and can
+            hide the player's hands (made from your own game files). Run it again to update or uninstall.
+
+            **Manual install:** extract `cod-vr-manual-install.zip` into the game folder (where `CoDSP.exe` is).
+
+            Needs a 32-bit OpenXR runtime (Virtual Desktop or Quest Link). See the README for controls and settings.
+
+            ---
+
+            **Instalação:** baixe o `CoD-VR-Setup.exe` e execute. Ele acha a pasta do jogo, instala o mod e pode
+            esconder as mãos do personagem (geradas a partir dos arquivos do seu jogo). Execute de novo para
+            atualizar ou desinstalar.
+
+            **Manual:** extraia o `cod-vr-manual-install.zip` na pasta do jogo (onde fica o `CoDSP.exe`).

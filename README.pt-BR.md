@@ -31,7 +31,18 @@ dos endereços, hooks e decisões está em [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.
 
 ## Instalação
 
-1. Compile (abaixo) ou use uma release, se houver.
+**Mais fácil:** baixe o `CoD-VR-Setup.exe` da
+[última release](https://github.com/lambda-gab/cod1-vr/releases/latest) e execute. Ele acha a pasta do jogo
+(ou deixa você escolher), confere se o `CoDSP.exe` é a 1.5, instala o mod, faz backup de outro `opengl32.dll`
+que já esteja lá e pergunta se você quer esconder as mãos do personagem (os modelos são gerados a partir dos
+arquivos do seu jogo; nada do jogo é distribuído). Execute de novo para atualizar ou desinstalar. Nas
+atualizações o seu `cod_vr.ini` é mantido (os novos padrões vão para `cod_vr.ini.default`).
+
+Para scripts: `CoD-VR-Setup.exe /silent /dir="<pasta do jogo>" [/hands]` ou `/silent /dir="..." /uninstall`.
+
+**Manual:**
+
+1. Compile (abaixo) ou extraia o `cod-vr-manual-install.zip` de uma release.
 2. Copie para a pasta do jogo (onde está o `CoDSP.exe`): `opengl32.dll`, `openxr_loader.dll` e `cod_vr.ini`.
 3. Opcional, para esconder as mãos e deixar só a arma: gere e copie o pacote de dados:
 
@@ -72,6 +83,13 @@ Precisa de Visual Studio com as ferramentas C++ (o build usa o compilador x86) e
    [OpenXR-SDK-Source releases](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases)
    e extraia em `deps/openxr/` (ficando `deps/openxr/include` e `deps/openxr/Win32`).
 2. Rode `proxy\build.bat`. A saída vai para `proxy\out\` (`opengl32.dll` e `openxr_loader.dll`).
+3. Opcional: `installer\build_setup.bat` gera o `installer\out\CoD-VR-Setup.exe`, com esses arquivos embutidos.
+
+Ao enviar uma tag como `v1.0.0`, o workflow do GitHub Actions (`.github/workflows/release.yml`) compila tudo e
+publica uma release com o instalador e um zip para instalação manual.
+
+O instalador usa a [miniz](https://github.com/richgel999/miniz) (MIT, em `third_party/miniz`) para ler os
+`.pk3` do jogo.
 
 `proxy/stubs.c` e `proxy/opengl32.def` são gerados por `proxy/gen_stubs.py` a partir da lista de exports do
 `opengl32.dll` de 32 bits do sistema (`proxy/ogl_exports.txt`).
