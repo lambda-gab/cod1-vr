@@ -82,6 +82,12 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.1.1
+
+- Correção: os ajustes do clarão do disparo da Thompson, da M1A1 Carbine e da Springfield agora vêm nas
+  configurações padrão (a v1.1.0 saiu sem eles). A atualização mantém o seu `cod_vr.ini`: copie as linhas do
+  `[MuzzleFlash]` do `cod_vr.ini.default` para ele.
+
 ### v1.1.0
 
 - Linha de trajetória da granada: mostra por onde ela vai e onde cai, parando nas paredes e passando pelas janelas.

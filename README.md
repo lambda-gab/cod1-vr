@@ -81,6 +81,12 @@ Everything is in `cod_vr.ini`, in the game folder, with a comment on each settin
 
 ## Releases
 
+### v1.1.1
+
+- Fix: the muzzle flash adjustments for the Thompson, M1A1 Carbine and Springfield are now included in the
+  default settings (v1.1.0 shipped without them). Updating keeps your `cod_vr.ini`: copy the `[MuzzleFlash]`
+  lines from `cod_vr.ini.default` into it.
+
 ### v1.1.0
 
 - Grenade trajectory line: shows where the grenade flies and lands, stopping at walls and going through windows.
