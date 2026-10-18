@@ -82,6 +82,12 @@ Para desinstalar, apague os três arquivos e o `pakz_vr_nohands.pk3`.
 | Clique analógico direito | Deitar |
 | Menu | Menu do jogo |
 
+## Próximos passos
+
+- **United Offensive** (`CoDUOSP.exe`): planejado. A expansão usa um build mais novo do mesmo motor, e tudo o
+  que o mod intercepta também existe nela (inclusive o caminho de estéreo), então o port consiste sobretudo em
+  mapear os endereços dela. Por enquanto o mod fica inativo no United Offensive e o jogo roda normalmente.
+
 ## Compilar
 
 Precisa de Visual Studio com as ferramentas C++ (o build usa o compilador x86) e do loader OpenXR da Khronos:

@@ -83,6 +83,12 @@ To uninstall, delete the three files and `pakz_vr_nohands.pk3`.
 | Right stick click | Go prone |
 | Menu | Game menu |
 
+## Roadmap
+
+- **United Offensive** (`CoDUOSP.exe`): planned. The expansion runs on a newer build of the same engine, and
+  everything the mod hooks is there too (including the stereo path), so the port is mostly mapping its
+  addresses. For now the mod stays inactive in United Offensive and the game runs as usual.
+
 ## Building
 
 You need Visual Studio with the C++ tools (the build uses the x86 compiler) and the Khronos OpenXR loader:
