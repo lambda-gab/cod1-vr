@@ -36,7 +36,9 @@ O mod roda em PC VR. Quem tem Quest pode jogar sem fio pelo Virtual Desktop ou p
 
 ## Instalação
 
-**Mais fácil:** baixe o `CoD-VR-Setup.exe` da
+### Mais fácil: o instalador (recomendado)
+
+Baixe o `CoD-VR-Setup.exe` da
 [última release](https://github.com/lambda-gab/cod1-vr/releases/latest) e execute. Ele acha a pasta do jogo
 (ou deixa você escolher), confere se o `CoDSP.exe` é a 1.5, instala o mod, faz backup de outro `opengl32.dll`
 que já esteja lá e pergunta se você quer esconder as mãos do personagem (os modelos são gerados a partir dos
@@ -45,7 +47,7 @@ atualizações o seu `cod_vr.ini` é mantido (os novos padrões vão para `cod_v
 
 Para scripts: `CoD-VR-Setup.exe /silent /dir="<pasta do jogo>" [/hands]` ou `/silent /dir="..." /uninstall`.
 
-**Manual:**
+### Manual
 
 1. Compile (abaixo) ou extraia o `cod-vr-manual-install.zip` de uma release.
 2. Copie para a pasta do jogo (onde está o `CoDSP.exe`): `opengl32.dll`, `openxr_loader.dll` e `cod_vr.ini`.
