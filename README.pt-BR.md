@@ -1,3 +1,5 @@
+![Call of Duty VR](docs/images/banner.jpg)
+
 # Call of Duty (2003) VR
 
 [English](README.md) | **Português**

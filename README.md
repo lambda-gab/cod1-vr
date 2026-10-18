@@ -1,3 +1,5 @@
+![Call of Duty VR](docs/images/banner.jpg)
+
 # Call of Duty (2003) VR
 
 **English** | [Português](README.pt-BR.md)
@@ -12,7 +14,7 @@ using [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest) as a reference
 addresses, hooks and design decisions are in [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.md) (in Portuguese).
 
 > **Disclaimer:** unofficial fan project, not affiliated with or endorsed by Activision. Call of Duty is a
-> trademark of Activision Publishing, Inc. A legitimate copy of the game is required; no game code or assets
+> trademark of Activision Publishing, Inc. A legitimate copy of the game is required; no game code or game files
 > are included or distributed (the optional hand-hiding pack is generated on your PC from your own copy).
 
 ## Features
