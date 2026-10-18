@@ -294,3 +294,54 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
 - `RE_BeginFrame` (`0x4d4680`) não foi reconhecido como função pelo Ghidra; a fronteira saiu da tabela do GetRefAPI.
 - A matriz de projeção dentro de `R_RenderView` ainda não foi localizada.
 - No cgamex86.dll, foram identificados só `vmMain`/`dllEntry` e os cvars `cg_gun_*` e `cg_bob*`.
+
+## Trajetória da granada
+
+- Arma selecionada: `cl.cgameUserCmdValue` (`0x142f2d8`, gravado pela syscall `0x57` do cgame) e copiado pelo
+  `CL_FinishMove` para `usercmd + 6`.
+- `cgamex86.dll + 0xd0584`: `weaponDef_t*` da arma do playerState previsto. Os três gravadores fazem
+  `weaponDefs[ps->weapon]` (array em `+0xceb8c`, contagem em `+0xceb88`, `ps->weapon` em `+0xa0`).
+- Tabela de parsing das armas no cgame (`{nome, offset, tipo}`, 12 bytes): `weaponType +0x70` (enum
+  `bullet=0`, `grenade=1`, `projectile=2`), `fuseTime +0x210` (tipo 7, ms), `projectileSpeed +0x314` e
+  `projectileSpeedUp +0x318` (tipo 4, int). Tipos: 0 string, 4 int, 5 bool, 6 float, 7 tempo em ms.
+- A curva é calculada no espaço de tracking (o mundo só gira em torno do eixo vertical): parte da cabeça na direção
+  da mira escrita em `cl.viewangles`, com `projectileSpeed`, mais `projectileSpeedUp` para cima e gravidade 800.
+  É desenhada a partir de 0,1 s de voo até `FloorBelowHead`, na camada do laser (agora uma polilinha com anel).
+  O timestamp do cgame (`0x40443fb6`) é conferido antes de qualquer leitura, que fica em `__try`.
+  (Versão inicial; a colisão veio depois, ver abaixo.)
+
+## Avisos de tecla, textos do treinamento e botão Menu
+
+- Os avisos "Press [%s] ..." (scripts das fases via `getKeyBinding`, e os do próprio cgame) pegam o nome da tecla em
+  `cgamex86.dll + 0x39810` (`KeyBindingText(cmd)`: comando na pilha, `char**` de saída em EAX e ECX, retorna quantas
+  teclas). O motor chega lá por `0x40d570` → `VM_Call(cgvm, 14)`; sem cgame, ele devolve `KEY_UNBOUND`. O mod faz um
+  detour (prólogo `55 8B 6C 24 08`), refeito a cada recarga do cgame (é feito de novo sempre que o prólogo original
+  reaparece), e devolve o nome do botão do controle conforme o `[Buttons]` e uma tabela de comandos extras (andar,
+  inclinar, posturas, troca de arma).
+- As duas frases do treinamento que falam de mouse (`FIVESIGNS`, `CLIMBLADDER` em
+  `localizedstrings/english/training.str`) são reescritas num `pakz_vr_text.pk3`, gerado a partir da cópia do jogo do
+  usuário (só as frases novas são do mod). Pacotes `pakz_*` vêm antes dos `localized_*` no search path.
+- O CoD 1 não tem o comando `togglemenu`: o menu só abre com a tecla Escape, tratada no motor. Binds `key:NOME`
+  enfileiram eventos de tecla (`SE_KEY`), e o botão Menu usa `key:ESCAPE`. Ao trocar entre jogo e menu, os botões que
+  continuam pressionados são ignorados até serem soltos, para o mesmo toque não agir dos dois lados.
+- A suavização da mira tem um valor próprio enquanto a luneta está ativa (`[Scope] Smoothing`, padrão 0,15 s).
+- O tempo entre quadros dos filtros e do giro suave vem do `QueryPerformanceCounter`. O `GetTickCount` anda em passos de
+  ~15,6 ms e dava `dt = 0` em alguns quadros a 72-90 Hz, o que fazia a mira alternar entre a pose suavizada e a crua
+  (flicker na luneta). Com `dt = 0` o filtro mantém o valor, e a suavização da luneta continua por 0,3 s após o zoom.
+
+## Trajetória com colisão e clarão da Thompson (v1.1.0)
+
+- `CM_BoxTrace` (`0x41d380`), achado pelas syscalls `0x27`/`0x29` do cgame (`trap_CM_BoxTrace`): `trace_t*` em EAX,
+  brushmask em EDX, ECX = 0 (caixa; 1 = cápsula); na pilha `start, end, mins, maxs, model` (0 = mundo), o chamador
+  limpa 20 bytes. O `trace_t` começa com `fraction`.
+- A trajetória agora é simulada no mundo do jogo: parte do olho do jogo (`vieworg`) na direção da vista, em passos de
+  0,05 s até o `fuseTime`, e cada passo é testado contra o mapa (`[Grenade] TraceMask`, padrão `CONTENTS_SOLID`). A
+  linha para no primeiro impacto (parede acima da janela, chão dentro dela) e o anel marca esse ponto. Os pontos são
+  levados para o espaço de tracking pelo inverso da colocação dos olhos. Linha branca, `Opacity` 0,6 (pré-multiplicada).
+- Nome da arma: `weaponDef + 0` é o nome interno (`char*`, ex. `thompson`, `m1carbine`); a tabela de campos do
+  arquivo de arma (`0x30058260`) começa em `displayName +0x8`.
+- O clarão da Thompson não são entidades com `RF_DEPTHHACK`: são sprites do sistema de efeitos (`reType 4` e `13`,
+  `renderfx 0`) postos no mundo na linha da mira, 27-60 unidades à frente do olho. Durante o disparo (gatilho
+  pressionado ou solto há menos de 200 ms), sprites assim a menos de 7 unidades dessa linha são levados para a mão como
+  o clarão do viewmodel, com o espalhamento ao longo do cano comprimido (`WorldFlashLength`, 0,25).
+- `[MuzzleFlash]`: correção por arma (`nome=frente direita cima`), relida a cada segundo.

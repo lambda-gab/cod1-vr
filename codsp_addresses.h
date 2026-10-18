@@ -77,6 +77,11 @@
 #define USERCMD_OFS_forwardmove     0x14        // signed char
 #define USERCMD_OFS_rightmove       0x15        // signed char
 #define ADDR_Cbuf_AddText           0x004209d0  // text in EAX (register convention)
+#define ADDR_CM_BoxTrace            0x0041d380  // trace_t* in EAX, brushmask in EDX, capsule flag in ECX;
+                                                // stack: start, end, mins, maxs, model (0 = world).
+                                                // trace_t starts with fraction (set to 1 first). Reached from
+                                                // cgame traps 0x27 / 0x29 (CL_CgameSystemCalls 0x402164 / 0x4021be).
+#define CONTENTS_SOLID              1
 #define ADDR_cls_keyCatchers        0x01439264  // bit 1 = UI (menus), bit 3 = cgame
 // engine event queue read by Com_EventLoop (0x42f1d0): 256 x { time, type, value, value2, ptrLength, ptr }
 #define ADDR_eventQue               0x0089e478
@@ -126,6 +131,21 @@
 #define RF_LIGHTING_ORIGIN          0x80
 
 // ---- cgamex86.dll (base 0x30000000) ----
+#define CGAME_TIMESTAMP             0x40443fb6  // PE TimeDateStamp of the cgamex86.dll analysed
+#define CG_OFS_currentWeaponDef     0x000d0584  // weaponDef_t* set only while the crosshair is drawn (unused)
+#define CG_OFS_weaponDefs           0x000ceb8c  // module offset: weaponDef_t **weaponDefs (index = weapon number)
+#define CG_OFS_numWeaponDefs        0x000ceb88  // module offset: highest valid weapon number
+#define CG_OFS_KeyBindingText       0x00039810  // module offset: int (const char *cmd /* stack */), key names out
+                                                // through char** in EAX and ECX; returns how many keys (0..2).
+                                                // Used by vmMain(14) (script getKeyBinding) and the cgame's own hints.
+#define WEAPDEF_OFS_internalName    0x00        // char*, weapon file name (field table at 0x30058260 starts at +8)
+#define WEAPDEF_OFS_displayName     0x08        // char*
+#define WEAPDEF_OFS_weaponType      0x70        // 0 bullet, 1 grenade, 2 projectile
+#define WEAPDEF_OFS_fuseTime        0x210       // int, msec
+#define WEAPDEF_OFS_projectileSpeed 0x314       // int, units/s along the view
+#define WEAPDEF_OFS_projectileSpeedUp 0x318     // int, units/s added upwards
+#define WEAPTYPE_GRENADE            1
+#define ADDR_cl_cgameUserCmdValue   0x0142f2d8  // selected weapon index (cgame trap 0x57), copied to usercmd + 6
 #define CG_ADDR_vmMain              0x30018cd0
 #define CG_ADDR_dllEntry            0x30022540
 

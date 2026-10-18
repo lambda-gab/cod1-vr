@@ -1,79 +1,58 @@
 ![Call of Duty VR](docs/images/banner.jpg)
 
-# Call of Duty (2003) VR
+# CALL OF DUTY (2003) VR
 
 **English** | [Português](README.pt-BR.md)
 
-A PC VR mod for **Call of Duty 1 single player** (`CoDSP.exe` 1.5) using OpenXR. It is a proxy
-`opengl32.dll` that turns the engine's dormant stereo path (a modified id Tech 3) back on and sends the
-image to the headset, with head and hand tracking, the gun held by the controller, the HUD on a floating
-screen and menus with a laser pointer.
+A PC VR mod for the **Call of Duty 1 single player campaign** (`CoDSP.exe` 1.5). Play the original 2003 game in your
+headset: you look around and move with your own body, the gun is in your hand, you aim with the controller and you see
+the HUD and menus on a floating screen.
 
-It was built by reverse engineering `CoDSP.exe` (with [REA](https://github.com/morluto/rea) + Ghidra),
-using [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest) as a reference. The full notes on
-addresses, hooks and design decisions are in [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.md) (in Portuguese).
+It is made by a Call of Duty fan. CoD 1 was the first FPS I ever played and it has a special place in my heart, so I
+wanted to experience it again in VR.
 
 > **Disclaimer:** unofficial fan project, not affiliated with or endorsed by Activision. Call of Duty is a
 > trademark of Activision Publishing, Inc. A legitimate copy of the game is required; no game code or game files
-> are included or distributed (the optional hand-hiding pack is generated on your PC from your own copy).
+> are included or distributed (the optional packs are generated on your PC from your own copy).
 
-## Features
-
-- Stereo image in the headset, with each eye's asymmetric FOV, the runtime's IPD and 6DoF.
-- Roomscale: the player in the game follows your real position (lean out of windows, peek around corners).
-- Aiming and the gun follow the controller (the view weapon moves to your hand), two-handed grip.
-- Analog movement, snap or smooth turning, buttons mapped to game commands.
-- HUD and menus on a floating screen; full-screen effects (damage, fades) cover the whole view.
-- Scope: when zoomed in, the game's magnified view shows behind the scope overlay.
-- Menus: point with the gun hand; trigger clicks, B goes back, A confirms.
-- With no headset connected, the mod shows both eyes side by side on the monitor.
+> [!WARNING]
+> **This project is in development.** Bugs and visual glitches can happen. Please report them on
+> [Discord](https://discord.com/channels/1561484693881225219/1561485586169331882).
 
 ## Requirements
 
-- `CoDSP.exe` **1.5** (the mod checks the executable's timestamp and does nothing on other versions or on
-  `CoDMP.exe`).
-- A **32-bit** OpenXR runtime: Virtual Desktop (VDXR) or Oculus/Meta. The game is a 32-bit process.
-- A PC VR headset with controllers (tested with a Quest through Virtual Desktop).
-
-The mod runs on PC VR. Quest owners can play wirelessly through Virtual Desktop or Air Link.
+- Call of Duty (2003) for PC, single player, **version 1.5** (`CoDSP.exe`).
+- A PC VR headset with controllers (tested with a Quest through Virtual Desktop; Air Link and other PC VR headsets
+  should work too).
+- A **32-bit** OpenXR runtime: Virtual Desktop (VDXR) or Oculus/Meta. The game is a 32-bit program.
 
 ## Installation
 
 ### Easiest: the installer (recommended)
 
-Download `CoD-VR-Setup.exe` from the
-[latest release](https://github.com/lambda-gab/cod1-vr/releases/latest) and run it. It finds the game folder
-(or lets you pick it), checks that `CoDSP.exe` is 1.5, installs the mod, keeps a backup of any other
-`opengl32.dll` already there, and asks whether to hide the player's hands (the hand models are made from your
-own game files; nothing from the game is shipped). Run it again to update or uninstall. Your `cod_vr.ini` is
-kept on updates (the new defaults go to `cod_vr.ini.default`).
+1. Download `CoD-VR-Setup.exe` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
+2. Run it. It finds the game folder (or lets you pick it) and checks that the game is version 1.5.
+3. Choose whether to hide the player's hands, so only the gun is in your hand (recommended).
+4. Connect the headset and start `CoDSP.exe`.
 
-For scripts: `CoD-VR-Setup.exe /silent /dir="<game folder>" [/hands]` or `/silent /dir="..." /uninstall`.
+Run the installer again to update or uninstall. Your `cod_vr.ini` settings are kept on updates.
 
 ### Manual
 
-1. Build it (below) or extract `cod-vr-manual-install.zip` from a release.
+1. Extract `cod-vr-manual-install.zip` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
 2. Copy `opengl32.dll`, `openxr_loader.dll` and `cod_vr.ini` to the game folder (where `CoDSP.exe` is).
-3. Optional, to hide the hands and keep only the gun: build the data pack and copy it:
+3. Connect the headset and start `CoDSP.exe`.
 
-   ```
-   python mods/build_pk3.py "<game folder>"
-   ```
+To uninstall, delete those three files. Hiding the hands and the VR tutorial texts need the installer (or the steps in
+the [technical notes](docs/TECHNICAL.md)).
 
-   Then copy `mods/out/pakz_vr_nohands.pk3` to `<game folder>\main`. CoD 1.5 only loads packs whose name
-   starts with `pak`.
-4. Connect the headset and start `CoDSP.exe`.
+## Controls
 
-If the game folder is under `Program Files`, copying needs administrator rights. The log is `cod_vr.log`;
-with Windows file virtualization it ends up in `%LOCALAPPDATA%\VirtualStore\...`.
-
-To uninstall, delete the three files and `pakz_vr_nohands.pk3`.
-
-## Controls (defaults, editable in `[Buttons]`)
+Defaults, editable in `[Buttons]` of `cod_vr.ini`:
 
 | Control | Action |
 |---|---|
-| Right trigger | Fire |
+| Right trigger | Fire (hold with a grenade to see its trajectory, release to throw) |
 | Right grip | Use / pick up |
 | Left trigger | Aim down the sights (with a scope: zoom) |
 | Left grip | Hold the gun with both hands |
@@ -85,52 +64,47 @@ To uninstall, delete the three files and `pakz_vr_nohands.pk3`.
 | Right stick click | Go prone |
 | Menu | Game menu |
 
-## Roadmap
+In menus, point with the gun hand: trigger clicks, B goes back, A confirms.
 
-- **United Offensive** (`CoDUOSP.exe`): planned. The expansion runs on a newer build of the same engine, and
-  everything the mod hooks is there too (including the stereo path), so the port is mostly mapping its
-  addresses. For now the mod stays inactive in United Offensive and the game runs as usual.
+## Settings
 
-## Building
+Everything is in `cod_vr.ini`, in the game folder, with a comment on each setting. If the game is under
+`Program Files`, open the editor (Notepad) as administrator to save it. The most used ones:
 
-You need Visual Studio with the C++ tools (the build uses the x86 compiler) and the Khronos OpenXR loader:
+- `[Controllers]` `WeaponOffset*`, `WeaponPitch`, `WeaponYaw`: gun position and angle in the hand.
+- `[Controllers]` `TwoHandGripHeight`, `AimSmoothing`: two-handed grip and aim smoothing.
+- `[Controllers]` `MuzzleOffsetRight/Up` and `[MuzzleFlash]`: muzzle flash position, also per weapon
+  (`thompson=forward right up`). These are read again while you play: save and fire again.
+- `[VR]` `RoomScale`, `PositionalTracking`, `WorldScale`.
+- `[HUD]` and `[Scope]`: size and distance of the floating screens, scope smoothing.
+- `[Grenade]`: trajectory on/off and its opacity.
 
-1. Download `openxr_loader_windows-<version>.zip` from
-   [OpenXR-SDK-Source releases](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases)
-   and extract it to `deps/openxr/` (so that `deps/openxr/include` and `deps/openxr/Win32` exist).
-2. Run `proxy\build.bat`. The output goes to `proxy\out\` (`opengl32.dll` and `openxr_loader.dll`).
-3. Optional: `installer\build_setup.bat` builds `installer\out\CoD-VR-Setup.exe`, which embeds those files.
+## Releases
 
-Pushing a tag such as `v1.0.0` makes the GitHub Actions workflow (`.github/workflows/release.yml`) build
-everything and publish a release with the setup and a zip for manual installs.
+### v1.1.0
 
-The installer uses [miniz](https://github.com/richgel999/miniz) (MIT, in `third_party/miniz`) to read the
-game's `.pk3` files.
+- Grenade trajectory line: shows where the grenade flies and lands, stopping at walls and going through windows.
+- On-screen hints show the controller buttons, and the tutorial texts that mention the mouse were rewritten for VR.
+- The Menu button opens the game menu.
+- Steadier scope aim (its own smoothing while zoomed in, no flicker).
+- Muzzle flash on the gun barrel (Thompson, M1A1 Carbine, Springfield), adjustable per weapon.
 
-`proxy/stubs.c` and `proxy/opengl32.def` are generated by `proxy/gen_stubs.py` from the export list of the
-system's 32-bit `opengl32.dll` (`proxy/ogl_exports.txt`).
+### v1.0.0
 
-Tests outside the game: `proxy/test/build_test.bat` (`gltest`: proxy loading and passthrough) and
-`proxy/test/build_xrtest.bat` (`xrtest`: OpenXR session, colored eyes, HUD and controller input).
+- First release: the game is playable in VR (stereo with head tracking and roomscale, gun in the hand, controller
+  aiming, HUD and menus on a floating screen, scope view, installer).
 
-## Configuration
+## Next steps
 
-Everything is in `cod_vr.ini`, with comments. The most used settings:
+- Fix visual glitches (artifacts).
+- **United Offensive** (`CoDUOSP.exe`) support.
 
-- `[Controllers] WeaponOffset*`, `WeaponPitch`, `WeaponYaw`: gun position and angle in the hand.
-- `MuzzleOffsetRight/Up`: muzzle flash position.
-- `TwoHandGripHeight`, `AimSmoothing`: two-handed grip and aim smoothing.
-- `[VR] RoomScale`, `PositionalTracking`, `WorldScale`.
-- `[HUD]` and `[Scope]`: size and distance of the floating screens.
+## Notes
 
-## Reverse engineering tools
+- **Tutorial, the signs at the start:** point the gun hand at each sign and move the hand up and down until the game
+  marks the objective as done.
 
-`tools/` has the scripts used during the investigation:
+## Technical information
 
-- `reacli.mjs`: a minimal MCP client that keeps one REA/Ghidra session open and runs a list of queries.
-  Needs REA (`npm install -g rea-agents`), `GHIDRA_INSTALL_DIR` and `JAVA_HOME`.
-- `dis.py`: disassembles code ranges with capstone.
-- `scan.py`, `off2va.py`, `pe.py`, `callscan.py`: strings, offsets, imports/exports.
-- `pk3scan.py`, `pk3find.py`: inspect the game's `.pk3` files (set `COD_DIR` to the game folder).
-
-None of Ghidra's output (decompiled game code) is in the repository.
+How the mod works, building from source, the reverse engineering notes and tools:
+[docs/TECHNICAL.md](docs/TECHNICAL.md).

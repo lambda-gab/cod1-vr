@@ -1,10 +1,11 @@
 # Builds the optional VR data packs from the game's own files (read only):
 #   pakz_vr_nohands.pk3 - first-person hands drawn with a fully transparent alpha-tested skin
+#   pakz_vr_text.pk3    - the two training texts that mention the mouse, rewritten for VR
 #   pakz_vr_scope.pk3   - scoped rifles without the full-screen scope overlay (not installed:
 #                         the VR scope view uses the overlay as its frame)
 # CoDSP.exe 1.5 only mounts pak*.pk3 and localized_*.pk3 from main; pakz_* sorts after pakb.pk3,
 # so its files override the originals. Delete a pack to undo it.
-import glob, os, struct, sys, zipfile
+import glob, os, re, struct, sys, zipfile
 
 # usage: python build_pk3.py "<game folder>"   (the folder with CoDSP.exe)
 GAME_MAIN = os.path.join(sys.argv[1] if len(sys.argv) > 1 else '.', 'main')
@@ -66,6 +67,36 @@ def nohands_pack():
             out[name] = new
     return out, skipped
 
+# Tutorial texts that talk about the mouse. Only these sentences are ours; the rest of each
+# .str file comes from the player's own localized pak.
+VR_TEXTS = {
+    'localizedstrings/english/training.str': {
+        'FIVESIGNS': 'Point your gun hand at the five large signs.',
+        'CLIMBLADDER': 'To climb a ladder, push the move stick into the ladder and point your gun hand up.',
+    },
+}
+
+def text_pack():
+    out = {}
+    for name, texts in VR_TEXTS.items():
+        data = None
+        for pk in sorted(glob.glob(os.path.join(GAME_MAIN, 'localized_english_pak*.pk3'))):
+            z = zipfile.ZipFile(pk)
+            if name in z.namelist():
+                data = z.read(name)   # later paks override earlier ones
+        if data is None:
+            continue
+        s = data.decode('latin1')
+        changed = 0
+        for ref, text in texts.items():
+            # REFERENCE <ref>  /  LANG_ENGLISH "<text>"
+            pat = re.compile(r'(REFERENCE\s+' + re.escape(ref) + r'\s*\r?\n\s*LANG_ENGLISH\s+")[^"]*(")')
+            s, k = pat.subn(lambda m: m.group(1) + text + m.group(2), s, count=1)
+            changed += k
+        if changed:
+            out[name] = s.encode('latin1')
+    return out
+
 def write(path, files):
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for n in sorted(files):
@@ -81,3 +112,6 @@ if __name__ == '__main__':
     hands, skipped = nohands_pack()
     write(os.path.join(OUT, 'pakz_vr_nohands.pk3'), hands)
     print('nohands pack:', len(hands) - 1, 'hand models; skipped:', skipped)
+    texts = text_pack()
+    write(os.path.join(OUT, 'pakz_vr_text.pk3'), texts)
+    print('text pack:', sorted(texts))

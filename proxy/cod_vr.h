@@ -159,4 +159,7 @@ void XR_GetInput(vr_input_t *in);   // after a successful XR_BeginFrame
 // Menu pointer: a beam from 'from' to 'to' (tracking space, Quake 3 conventions, metres), drawn
 // on top of everything this frame. Cleared by XR_BeginFrame.
 void XR_SetLaser(const float from[3], const float to[3]);
+// Any polyline (up to 64 points, same space and conventions), with an optional ring of 'ring'
+// metres lying flat around the last point. Used for the grenade trajectory.
+void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring);
 

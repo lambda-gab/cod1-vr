@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "../codsp_addresses.h"
 
@@ -82,9 +83,15 @@ static struct {
     float weaponAngle[2];   // degrees: gun pitch (up) and yaw (left) relative to the controller
     float aimSmoothing;     // seconds: time constant of the gun direction filter, 0 = off
     int   autoAds;          // 1 = aim down the sights (+speed) while the gun is at the eye
+    int   grenadeArc;       // 0 = off, 1 = while the trigger is held with a grenade, 2 = whenever a grenade is in hand
+    float gravity;          // game units / s^2 (g_gravity)
+    float grenadeOpacity;   // 0..1, trajectory line
+    float scopeSmoothing;   // seconds: gun direction filter while the scope is up (0 = AimSmoothing)
+    int   traceMask;        // contents the trajectory collides with
+    float worldFlashLength; // scale of the spread of world flash sprites along the barrel
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
-          1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0 };
+          1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
 
 // Buttons -> game commands. "+cmd" is held while pressed ("-cmd" on release).
 enum { BT_PTRIGGER, BT_PGRIP, BT_STRIGGER, BT_SGRIP, BT_A, BT_B, BT_X, BT_Y, BT_LCLICK, BT_RCLICK,
@@ -100,7 +107,7 @@ static const struct { const char *key, *def; } g_buttons[BT_COUNT] = {
     { "Y", "+melee" },
     { "LeftStickClick", "+scores" },        // objectives
     { "RightStickClick", "toggleprone" },
-    { "Menu", "togglemenu" },
+    { "Menu", "key:ESCAPE" },              // the game opens its menu on the Escape key
     { "TurnStickUp", "raisestance" },
     { "TurnStickDown", "lowerstance" },
 };
@@ -158,7 +165,7 @@ static int       g_aimFromHand;        // aim source of the last write (switchin
 static vr_input_t g_in;                // controllers, read at the left eye's BeginFrame
 static int       g_btnDown[BT_COUNT];
 static int       g_turnLatched, g_stanceLatched;
-static DWORD     g_lastInputTick;
+static LARGE_INTEGER g_lastInputTick;
 static signed char g_moveForward, g_moveRight;   // added to the next usercmd
 static int       g_crosshairOff;
 static vr_pose_t g_gun;                // gun pose (dominant hand, or both hands), tracking space
@@ -178,6 +185,9 @@ static signed char g_roomForward, g_roomRight;
 static int       g_statTypes[16];
 static float     g_lodRatio = 1.0f;    // game fov / culling fov, applied to the model LOD scale
 static int       g_autoAdsOn;
+static float     g_aimDir[3];          // the shot direction written to cl.viewangles (tracking space)
+static int       g_scopeWasActive;     // the last frame showed the scope view
+static float     g_lastSmoothing;      // filter time constant used last frame
 static int       g_scopeActive;        // this frame the zoomed view is drawn into the HUD buffer
 static int       g_lastHudWorld = 1;   // last frame showed the world (HUD size) or a menu (menu size)
 // menus
@@ -188,7 +198,7 @@ static DWORD     g_cursorSync;
 // view weapon entities held back until the world scene, when the game's view is known
 #define MAX_HELD 32
 static BYTE      g_held[MAX_HELD][REFENT_SIZE];
-static int       g_heldParam[MAX_HELD], g_heldCount;
+static int       g_heldParam[MAX_HELD], g_heldWorldFlash[MAX_HELD], g_heldCount;
 static float     g_clPitchCmd;         // cl.viewangles pitch the current frame was predicted with
 static float     g_pitchOffset;        // game pitch - cl.viewangles pitch (delta_angles), filtered
 static int       g_pitchOffsetInit;
@@ -200,6 +210,9 @@ static void (__cdecl *Detour(DWORD target, const BYTE *prologue, int len, void *
 static void FlushHeldEntities(const cod_refdef_t *fd);
 static void ProcessControllers(void);
 static void UpdateAutoAds(void);
+static void UpdateGrenadeArc(void);
+static void QueueEvent(int type, int value, int value2);
+static void HookKeyBindingText(void);
 static void BindHud(void);
 static void BindEye(int eye);
 static void BindTarget(GLuint fbo);
@@ -333,11 +346,32 @@ static void Cbuf(const char *text)
     }
 }
 
+// "key:NAME" binds send a key to the game instead of a command (some actions, like opening the
+// menu with Escape, are only handled as keys).
+static int KeyByName(const char *name)
+{
+    static const struct { const char *name; int key; } keys[] = {
+        { "ESCAPE", K_ESCAPE }, { "ENTER", K_ENTER }, { "TAB", 9 }, { "SPACE", 32 }, { "BACKSPACE", 127 },
+        { "UPARROW", K_UPARROW }, { "DOWNARROW", K_DOWNARROW }, { "LEFTARROW", 156 }, { "RIGHTARROW", 157 },
+        { "MOUSE1", K_MOUSE1 }, { "MOUSE2", K_MOUSE1 + 1 }, { "MOUSE3", K_MOUSE1 + 2 },
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++)
+        if (!_stricmp(keys[i].name, name)) return keys[i].key;
+    if (name[0] && !name[1]) return (unsigned char)tolower((unsigned char)name[0]);   // a letter or digit
+    return 0;
+}
+
 static void RunBind(int b, int down)
 {
     const char *cmd = cfg.bind[b];
     char line[80];
     if (!cmd[0]) return;
+    if (!_strnicmp(cmd, "key:", 4)) {
+        int key = KeyByName(cmd + 4);
+        if (key) QueueEvent(SE_KEY, key, down);
+        return;
+    }
     if (cmd[0] == '+') _snprintf(line, sizeof(line), "%c%s\n", down ? '+' : '-', cmd + 1);
     else if (down) _snprintf(line, sizeof(line), "%s\n", cmd);
     else return;
@@ -439,6 +473,16 @@ static void MenuKey(int slot, int key, int down)
 
 // Menus: the gun hand points at the menu screen (moves the UI cursor), either trigger clicks,
 // B / Menu go back, A confirms, the turn stick scrolls.
+// Switching between play and a menu happens while the button that caused it is still held
+// (Menu opens the menu, B or Menu closes it): ignore everything held at the switch until all of
+// it is released, otherwise the same press would act again on the other side.
+static int g_ignoreHeld;
+
+static int AnyInputHeld(void)
+{
+    return g_in.buttons || g_in.trigger[0] > 0.3f || g_in.trigger[1] > 0.3f || g_in.grip[0] > 0.3f || g_in.grip[1] > 0.3f;
+}
+
 static void MenuControls(int dom)
 {
     static const int keys[6] = { K_MOUSE1, K_ESCAPE, K_ENTER, K_UPARROW, K_DOWNARROW, K_ESCAPE };
@@ -449,6 +493,7 @@ static void MenuControls(int dom)
     if (!g_menuMode) {
         g_menuMode = 1;
         g_cursorSync = 0;
+        g_ignoreHeld = AnyInputHeld();
     }
 
     if (cfg.menuPointer && g_in.handValid[dom]) {
@@ -494,6 +539,7 @@ static void MenuControls(int dom)
         }
     }
 
+    if (g_ignoreHeld) return;
     MenuKey(0, keys[0], g_in.trigger[0] > 0.6f || g_in.trigger[1] > 0.6f ||
                         (g_menuKeyDown[0] && (g_in.trigger[0] > 0.4f || g_in.trigger[1] > 0.4f)));
     MenuKey(1, keys[1], (g_in.buttons & VRB_B) != 0);
@@ -510,6 +556,7 @@ static void LeaveMenuMode(void)
     if (!g_menuMode) return;
     for (i = 0; i < 6; i++) MenuKey(i, keys[i], 0);
     g_menuMode = 0;
+    g_ignoreHeld = AnyInputHeld();
 }
 
 // Weapon angle relative to the controller (one hand only) and an optional low-pass filter on
@@ -528,8 +575,21 @@ static void AdjustGunPose(float dt)
         cy = cosf(RAD(cfg.weaponAngle[1])); sy = sinf(RAD(cfg.weaponAngle[1]));
         for (i = 0; i < 3; i++) { t[i] = f[i] * cy + l[i] * sy; l[i] = l[i] * cy - f[i] * sy; f[i] = t[i]; }
     }
-    if (cfg.aimSmoothing > 0 && dt > 0) {
-        float a = 1.0f - expf(-dt / cfg.aimSmoothing);
+    {
+        // A steadier filter while looking through the scope: hand tremor is magnified there.
+        // It stays on for a moment after the zoom ends, so a flickering zoom does not switch it.
+        static float scopeHold;
+        float tau;
+        if (g_scopeWasActive) scopeHold = 0.3f;
+        else if (scopeHold > 0) scopeHold -= dt;
+        tau = scopeHold > 0 && cfg.scopeSmoothing > 0 ? cfg.scopeSmoothing : cfg.aimSmoothing;
+        if (tau != g_lastSmoothing && g_lastSmoothing == 0) g_gunSmoothInit = 0;   // start from the current pose
+        g_lastSmoothing = tau;
+        if (tau <= 0) goto unfiltered;
+    }
+    {
+        // dt can be 0 (two updates in one clock tick): then the filter just holds its value.
+        float a = dt > 0 ? 1.0f - expf(-dt / g_lastSmoothing) : 0.0f;
         if (!g_gunSmoothInit) { memcpy(g_gunFwdSmooth, f, sizeof(f)); memcpy(g_gunUpSmooth, u, sizeof(u)); g_gunSmoothInit = 1; }
         for (i = 0; i < 3; i++) {
             g_gunFwdSmooth[i] += (f[i] - g_gunFwdSmooth[i]) * a;
@@ -538,6 +598,7 @@ static void AdjustGunPose(float dt)
         memcpy(f, g_gunFwdSmooth, sizeof(f));
         memcpy(u, g_gunUpSmooth, sizeof(u));
     }
+unfiltered:
     Normalize(f);
     Cross(u, f, l);          // left = up x forward
     if (Normalize(l) < 1e-3f) return;
@@ -569,6 +630,243 @@ static void UpdateAutoAds(void)
         Cbuf(on ? "+speed\n" : "-speed\n");
 }
 
+// ---------------------------------------------------------------------------
+// Key hints: "Press [%s] to ..." shows the controller button instead of the keyboard key
+// ---------------------------------------------------------------------------
+static const char *ButtonName(int b)
+{
+    int right = cfg.rightHanded;
+    switch (b) {
+    case BT_PTRIGGER:  return right ? "RIGHT TRIGGER" : "LEFT TRIGGER";
+    case BT_PGRIP:     return right ? "RIGHT GRIP" : "LEFT GRIP";
+    case BT_STRIGGER:  return right ? "LEFT TRIGGER" : "RIGHT TRIGGER";
+    case BT_SGRIP:     return right ? "LEFT GRIP" : "RIGHT GRIP";
+    case BT_A:         return "A";
+    case BT_B:         return "B";
+    case BT_X:         return "X";
+    case BT_Y:         return "Y";
+    case BT_LCLICK:    return "LEFT STICK CLICK";
+    case BT_RCLICK:    return "RIGHT STICK CLICK";
+    case BT_MENU:      return "MENU";
+    case BT_STICKUP:   return right ? "RIGHT STICK UP" : "LEFT STICK UP";
+    case BT_STICKDOWN: return right ? "RIGHT STICK DOWN" : "LEFT STICK DOWN";
+    }
+    return NULL;
+}
+
+// The name to show for a game command, or NULL to let the game show its key. Buttons follow
+// [Buttons] in cod_vr.ini; the rest are things the mod does with the sticks or the body.
+static const char *VrKeyName(const char *cmd)
+{
+    static const struct { const char *cmd; int button; const char *text; } extra[] = {
+        { "+forward", -1, "MOVE STICK" }, { "+back", -1, "MOVE STICK" },
+        { "+moveleft", -1, "MOVE STICK" }, { "+moveright", -1, "MOVE STICK" },
+        { "+leanleft", -1, "LEAN YOUR BODY" }, { "+leanright", -1, "LEAN YOUR BODY" },
+        { "gocrouch", BT_STICKDOWN, NULL }, { "togglecrouch", BT_STICKDOWN, NULL }, { "+movedown", BT_STICKDOWN, NULL },
+        { "goprone", BT_RCLICK, NULL }, { "+prone", BT_RCLICK, NULL },
+        { "+moveup", BT_STICKUP, NULL },
+        { "weaponslot primary", BT_X, NULL }, { "weaponslot primaryb", BT_X, NULL },
+        { "weaponslot pistol", BT_X, NULL }, { "weaponslot grenade", BT_X, NULL }, { "weapprev", BT_X, NULL },
+    };
+    int b, i;
+
+    if (!cmd || !cfg.vr || !cfg.controllers) return NULL;
+    for (b = 0; b < BT_COUNT; b++)
+        if (cfg.bind[b][0] && !_stricmp(cfg.bind[b], cmd)) return ButtonName(b);
+    for (i = 0; i < (int)(sizeof(extra) / sizeof(extra[0])); i++)
+        if (!_stricmp(extra[i].cmd, cmd)) return extra[i].text ? extra[i].text : ButtonName(extra[i].button);
+    return NULL;
+}
+
+typedef void (__cdecl *PFN_Tramp)(void);
+static PFN_Tramp tramp_KeyBindingText;
+static HMODULE   g_keyHookModule;
+static int       g_keyHookKnown;
+static const char g_emptyName[1] = "";
+
+// cgame KeyBindingText(cmd): char** out in EAX (first key) and ECX (second key).
+__declspec(naked) static void hk_KeyBindingText(void)
+{
+    __asm {
+        push ecx
+        push eax
+        mov edx, [esp + 12]       // cmd (above the two saves and the return address)
+        push edx
+        call VrKeyName
+        add esp, 4
+        test eax, eax
+        jz passthrough
+        mov edx, eax
+        pop eax
+        pop ecx
+        mov [eax], edx            // first key = the controller button
+        mov dword ptr [ecx], offset g_emptyName
+        mov eax, 1
+        ret
+    passthrough:
+        pop eax
+        pop ecx
+        jmp dword ptr [tramp_KeyBindingText]
+    }
+}
+
+// The cgame is loaded again for every level: patch each new copy.
+static void HookKeyBindingText(void)
+{
+    // push ebp; mov ebp, dword ptr [esp + 8]
+    static const BYTE prologue[] = { 0x55, 0x8B, 0x6C, 0x24, 0x08 };
+    HMODULE m = GetModuleHandleA("cgamex86.dll");
+    IMAGE_NT_HEADERS *nt;
+    BYTE *target;
+
+    if (!m || !cfg.vr || !cfg.controllers) return;
+    if (m != g_keyHookModule) {   // check the version once per module handle
+        nt = (IMAGE_NT_HEADERS *)((BYTE *)m + ((IMAGE_DOS_HEADER *)m)->e_lfanew);
+        g_keyHookModule = m;
+        g_keyHookKnown = nt->FileHeader.TimeDateStamp == CGAME_TIMESTAMP;
+    }
+    if (!g_keyHookKnown) return;
+    target = (BYTE *)m + CG_OFS_KeyBindingText;
+    // A reloaded cgame usually comes back at the same address with the original bytes.
+    if (memcmp(target, prologue, sizeof(prologue)) != 0) return;   // patched already (or unknown)
+    tramp_KeyBindingText = Detour((DWORD)target, prologue, sizeof(prologue), (void *)hk_KeyBindingText);
+    if (tramp_KeyBindingText) Log("hooked cgame key binding names");
+}
+
+// weaponDef_t of the weapon in the player's hand: the selected weapon index the client sends
+// in each usercmd, looked up in cgamex86.dll's weaponDefs array (NULL if unknown). The cgame's
+// own "current weapon def" pointer is only filled while it draws the crosshair, which the mod
+// turns off.
+static const BYTE *CurrentWeaponDef(void)
+{
+    static HMODULE checked;
+    static int known;
+    HMODULE m = GetModuleHandleA("cgamex86.dll");
+    const BYTE *def = NULL;
+    if (!m) return NULL;
+    if (m != checked) {   // the cgame is reloaded with each level
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)m + ((IMAGE_DOS_HEADER *)m)->e_lfanew);
+        known = nt->FileHeader.TimeDateStamp == CGAME_TIMESTAMP;
+        if (!known) Log("cgamex86.dll timestamp %08x unknown: no grenade trajectory", nt->FileHeader.TimeDateStamp);
+        checked = m;
+    }
+    if (!known) return NULL;
+    __try {
+        int index = MEM(BYTE, ADDR_cl_cgameUserCmdValue);
+        int count = *(const int *)((const BYTE *)m + CG_OFS_numWeaponDefs);
+        const BYTE * const *defs = *(const BYTE * const * const *)((const BYTE *)m + CG_OFS_weaponDefs);
+        if (defs && index > 0 && index <= count) def = defs[index];
+        if (def) (void)*(volatile const int *)(def + WEAPDEF_OFS_weaponType);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        def = NULL;
+    }
+    return def;
+}
+
+// World trace (CM_BoxTrace against the map): fraction of start->end before hitting something.
+static float WorldTrace(const float *start, const float *end)
+{
+    BYTE tr[256];   // trace_t; only its first field (fraction) is read
+    static const float zero[3] = { 0, 0, 0 };
+    const float *z = zero;
+    int mask = cfg.traceMask;
+    memset(tr, 0, sizeof(tr));
+    __try {
+        __asm {
+            push 0              // model: the world
+            push z              // maxs
+            push z              // mins
+            push end
+            push start
+            lea eax, tr
+            mov edx, mask
+            xor ecx, ecx        // a box, not a capsule
+            mov esi, ADDR_CM_BoxTrace
+            call esi
+            add esp, 20
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 1.0f;
+    }
+    return *(float *)tr;
+}
+
+// A point in the game world to tracking space, the inverse of the eyes' placement.
+static void WorldToTracking(const float w[3], float body, float out[3])
+{
+    float d[3], r[3];
+    int i;
+    for (i = 0; i < 3; i++) d[i] = (w[i] - g_lastViewOrg[i]) / cfg.worldScale;
+    RotateZ(d, -body, r);
+    if (!cfg.positional) {
+        for (i = 0; i < 3; i++) out[i] = r[i] + g_head.pos[i];
+    } else if (cfg.roomScale && g_anchorInit) {
+        out[0] = r[0] + g_anchor[0]; out[1] = r[1] + g_anchor[1]; out[2] = r[2];
+    } else {
+        memcpy(out, r, sizeof(r));
+    }
+}
+
+// Grenade trajectory, computed like the game throws it: from the player's eye (the game view)
+// along the game's aim, at projectileSpeed plus projectileSpeedUp upwards, under gravity. Each
+// 0.05 s step is traced against the map; the line stops where it first hits (a wall above the
+// window, or the floor inside it) and a ring marks that spot. Drawn from 0.1 s after the throw
+// so it does not start inside the face. Bounces are not simulated.
+static void UpdateGrenadeArc(void)
+{
+    float color[4] = { 1.0f, 1.0f, 1.0f, 0.6f };
+    const BYTE *def;
+    float pts[64][3], fuse, t;
+    int speed = 0, up = 0, fuseMs = 0, type = -1, n = 0;
+
+    static DWORD lastDiag;
+    int diag = 0;
+
+    if (!cfg.grenadeArc || (cfg.grenadeArc == 1 && !g_btnDown[BT_PTRIGGER])) return;
+    if (cfg.logNear && GetTickCount() - lastDiag > 1000) { lastDiag = GetTickCount(); diag = 1; }
+    def = CurrentWeaponDef();
+    if (diag) Log("grenade diag: cgame module %p, weapon index %d, weaponDef %p",
+                  (void *)GetModuleHandleA("cgamex86.dll"), MEM(BYTE, ADDR_cl_cgameUserCmdValue), (void *)def);
+    if (def == NULL) return;
+    __try {
+        type = *(const int *)(def + WEAPDEF_OFS_weaponType);
+        speed = *(const int *)(def + WEAPDEF_OFS_projectileSpeed);
+        up = *(const int *)(def + WEAPDEF_OFS_projectileSpeedUp);
+        fuseMs = *(const int *)(def + WEAPDEF_OFS_fuseTime);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    if (diag) Log("grenade diag: weaponType %d, projectileSpeed %d, speedUp %d, fuse %d ms, aimDir %.2f %.2f %.2f",
+                  type, speed, up, fuseMs, g_aimDir[0], g_aimDir[1], g_aimDir[2]);
+    if (type != WEAPTYPE_GRENADE || speed <= 0) return;
+
+    fuse = fuseMs > 0 && fuseMs < 20000 ? fuseMs * 0.001f : 4.0f;
+    color[3] = cfg.grenadeOpacity < 0.05f ? 0.05f : cfg.grenadeOpacity > 1 ? 1 : cfg.grenadeOpacity;
+    {
+        const float *org = g_lastViewOrg, *fwd = g_lastViewAxis[0];
+        float body = YawOf(fwd) - g_headYawCmd, wv[3], p0[3], p1[3], frac;
+        int k, hit = 0;
+        for (k = 0; k < 3; k++) wv[k] = fwd[k] * speed;
+        wv[2] += up;
+        memcpy(p0, org, sizeof(p0));
+        for (t = 0.05f; t <= fuse + 1e-4f && n < 64 && !hit; t += 0.05f) {
+            for (k = 0; k < 3; k++) p1[k] = org[k] + wv[k] * t;
+            p1[2] -= 0.5f * cfg.gravity * t * t;
+            frac = WorldTrace(p0, p1);
+            if (frac < 1.0f) {
+                if (frac < 0) frac = 0;
+                for (k = 0; k < 3; k++) p1[k] = p0[k] + (p1[k] - p0[k]) * frac;
+                hit = 1;
+            }
+            if (t >= 0.1f || hit) WorldToTracking(p1, body, pts[n++]);
+            memcpy(p0, p1, sizeof(p0));
+        }
+    }
+    if (diag) Log("grenade diag: %d arc points, last %.2f %.2f %.2f (head %.2f %.2f %.2f)", n,
+                  n ? pts[n - 1][0] : 0, n ? pts[n - 1][1] : 0, n ? pts[n - 1][2] : 0, g_head.pos[0], g_head.pos[1], g_head.pos[2]);
+    if (n >= 2) XR_SetLine((const float (*)[3])pts, n, color, 0.3f);
+}
+
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
 static void ProcessControllers(void)
 {
@@ -577,15 +875,20 @@ static void ProcessControllers(void)
     float headYaw = YawOf(g_head.axis[0]), headPitch = PitchOf(g_head.axis[0]);
     float aimYaw = headYaw, aimPitch = headPitch, dt;
     int fromHand = 0;
-    DWORD now = GetTickCount();
+    LARGE_INTEGER now, freq;
 
-    dt = g_lastInputTick ? (now - g_lastInputTick) * 0.001f : 0.0f;
+    // Frame time from the high-resolution clock: GetTickCount moves in ~15.6 ms steps, so at
+    // 72-90 Hz some frames would get 0 and others twice the real time.
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    dt = g_lastInputTick.QuadPart ? (float)((double)(now.QuadPart - g_lastInputTick.QuadPart) / (double)freq.QuadPart) : 0.0f;
     if (dt > 0.1f) dt = 0.1f;
     g_lastInputTick = now;
 
     if (cfg.controllers) XR_GetInput(&g_in);
     else memset(&g_in, 0, sizeof(g_in));
 
+    if (g_ignoreHeld && !AnyInputHeld()) g_ignoreHeld = 0;
     if (g_in.active && (MEM(int, ADDR_cls_keyCatchers) & 2)) {   // a menu is open
         ReleaseAllButtons();
         g_moveForward = g_moveRight = 0;
@@ -608,17 +911,19 @@ static void ProcessControllers(void)
         } else if (g_nearLogFrames > 0) {
             g_nearLogFrames--;
         }
-        SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER));
-        SetButton(BT_PGRIP, Pressed(g_in.grip[dom], BT_PGRIP));
-        SetButton(BT_STRIGGER, Pressed(g_in.trigger[off], BT_STRIGGER));
-        SetButton(BT_SGRIP, Pressed(g_in.grip[off], BT_SGRIP));
-        SetButton(BT_A, (g_in.buttons & VRB_A) != 0);
-        SetButton(BT_B, (g_in.buttons & VRB_B) != 0);
-        SetButton(BT_X, (g_in.buttons & VRB_X) != 0);
-        SetButton(BT_Y, (g_in.buttons & VRB_Y) != 0);
-        SetButton(BT_LCLICK, (g_in.buttons & VRB_LSTICK) != 0);
-        SetButton(BT_RCLICK, (g_in.buttons & VRB_RSTICK) != 0);
-        SetButton(BT_MENU, (g_in.buttons & VRB_MENU) != 0);
+        if (!g_ignoreHeld) {
+            SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER));
+            SetButton(BT_PGRIP, Pressed(g_in.grip[dom], BT_PGRIP));
+            SetButton(BT_STRIGGER, Pressed(g_in.trigger[off], BT_STRIGGER));
+            SetButton(BT_SGRIP, Pressed(g_in.grip[off], BT_SGRIP));
+            SetButton(BT_A, (g_in.buttons & VRB_A) != 0);
+            SetButton(BT_B, (g_in.buttons & VRB_B) != 0);
+            SetButton(BT_X, (g_in.buttons & VRB_X) != 0);
+            SetButton(BT_Y, (g_in.buttons & VRB_Y) != 0);
+            SetButton(BT_LCLICK, (g_in.buttons & VRB_LSTICK) != 0);
+            SetButton(BT_RCLICK, (g_in.buttons & VRB_RSTICK) != 0);
+            SetButton(BT_MENU, (g_in.buttons & VRB_MENU) != 0);
+        }
         UpdateGunPose(dom, off);
         if (g_in.handValid[dom]) AdjustGunPose(dt);
 
@@ -645,6 +950,7 @@ static void ProcessControllers(void)
             len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
             if (len > 0.01f) {
                 for (i = 0; i < 3; i++) t[i] /= len;
+                memcpy(g_aimDir, t, sizeof(g_aimDir));
                 aimYaw = YawOf(t);
                 aimPitch = PitchOf(t);
                 fromHand = 1;
@@ -665,6 +971,7 @@ static void ProcessControllers(void)
 
         if (fromHand && !g_crosshairOff) { Cbuf("cg_drawCrosshair 0\n"); g_crosshairOff = 1; }
         UpdateAutoAds();
+        if (fromHand) UpdateGrenadeArc();
     }
     UpdateViewAngles(aimYaw, aimPitch, fromHand);
 }
@@ -718,10 +1025,30 @@ static void LogNearEntity(const BYTE *ent, int param, int held)
     g_nearLogLines++;
 }
 
+// Some weapons (the Thompson) have their muzzle flash as world effect sprites (reType 4 / 13,
+// no RF_DEPTHHACK) that the game puts on the aim line 25-60 units ahead of the eye, far in
+// front of the gun in the hand. While firing, such sprites close to that line are taken to the
+// hand like the view weapon's own flashes.
+static int IsWorldMuzzleFlash(const BYTE *ent)
+{
+    static DWORD lastFiring;
+    const float *o = (const float *)(ent + REFENT_OFS_origin);
+    float d[3], l[3];
+    int i, k, type = *(const int *)ent;
+    if (g_btnDown[BT_PTRIGGER]) lastFiring = GetTickCount();
+    else if (GetTickCount() - lastFiring > 200) return 0;
+    if ((type != 4 && type != 13) || *(const int *)(ent + REFENT_OFS_renderfx) != 0) return 0;
+    for (i = 0; i < 3; i++) d[i] = o[i] - g_lastViewOrg[i];
+    for (k = 0; k < 3; k++) l[k] = d[0] * g_lastViewAxis[k][0] + d[1] * g_lastViewAxis[k][1] + d[2] * g_lastViewAxis[k][2];
+    return l[0] > 8.0f && l[0] < 75.0f && l[1] * l[1] + l[2] * l[2] < 7.0f * 7.0f;
+}
+
 static void __cdecl hk_AddRefEntity(void *ent, int param)
 {
+    int worldFlash = 0;
     int hold = g_vrFrame && g_eye == 0 && cfg.weaponInHand && g_gunValid && g_heldCount < MAX_HELD &&
-               (*(int *)((BYTE *)ent + REFENT_OFS_renderfx) & RF_DEPTHHACK);
+               ((*(int *)((BYTE *)ent + REFENT_OFS_renderfx) & RF_DEPTHHACK) ||
+                (worldFlash = IsWorldMuzzleFlash(ent)) != 0);
     if (cfg.logNear && g_nearLogFrames > 0 && g_nearLogLines < 400 && g_eye == 0) LogNearEntity(ent, param, hold);
     if (g_vrFrame && g_eye == 0 && cfg.weaponInHand && !g_gunValid &&
         (*(int *)((BYTE *)ent + REFENT_OFS_renderfx) & RF_DEPTHHACK))
@@ -729,14 +1056,106 @@ static void __cdecl hk_AddRefEntity(void *ent, int param)
     if (cfg.logNear) g_statTypes[*(int *)ent & 15]++;
     if (hold) {
         memcpy(g_held[g_heldCount], ent, REFENT_SIZE);
+        g_heldWorldFlash[g_heldCount] = worldFlash;
         g_heldParam[g_heldCount++] = param;
         return;
     }
     orig_AddRefEntity(ent, param);
 }
 
+// Per-weapon muzzle flash correction: [MuzzleFlash] lines "name=forward right up" (game units),
+// where name is part of the weapon's internal name (the log says which name is in the hand).
+// The section is read again every second, so it can be tuned while playing.
+static float g_flashAdj[3];
+
+// A printable name of 2..63 characters at p, or 0.
+static int IsName(const char *p)
+{
+    int i;
+    for (i = 0; i < 63 && p[i] >= 32 && p[i] < 127; i++) ;
+    return i >= 2 && p[i] == 0;
+}
+
+// The weapon's name: a string pointer in the first fields (internal name first), or the
+// string stored in the def itself.
+static const char *WeaponName(const BYTE *def)
+{
+    static const int ofs[] = { WEAPDEF_OFS_internalName, 4, WEAPDEF_OFS_displayName, 12 };
+    const char *s = NULL;
+    int k;
+    for (k = 0; k < 4 && !s; k++) {
+        __try {
+            const char *q = *(const char * const *)(def + ofs[k]);
+            if ((DWORD)q > 0x10000 && IsName(q)) s = q;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            s = NULL;
+        }
+    }
+    if (!s) {
+        __try {
+            if (IsName((const char *)def)) s = (const char *)def;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            s = NULL;
+        }
+    }
+    return s;
+}
+
+static void UpdateFlashAdjust(void)
+{
+    static const BYTE *lastDef;
+    static DWORD lastRead;
+    static char sect[4096];
+    const BYTE *def = CurrentWeaponDef();
+    const char *wn, *e;
+    char name[64], ini[MAX_PATH];
+    float a[3] = { 0, 0, 0 };
+
+    if (def == lastDef && GetTickCount() - lastRead < 1000) return;
+    lastRead = GetTickCount();
+    wn = def ? WeaponName(def) : NULL;
+    if (wn) {
+        strncpy(name, wn, sizeof(name) - 1); name[sizeof(name) - 1] = 0;
+        _strlwr(name);
+        _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+        if (!GetPrivateProfileSectionA("MuzzleFlash", sect, sizeof(sect), ini)) sect[0] = sect[1] = 0;
+        for (e = sect; *e; e += strlen(e) + 1) {
+            char key[64];
+            const char *eq = strchr(e, '=');
+            int len;
+            if (!eq || *e == ';') continue;
+            len = (int)(eq - e);
+            while (len > 0 && e[len - 1] == ' ') len--;
+            if (len <= 0 || len >= (int)sizeof(key)) continue;
+            memcpy(key, e, len); key[len] = 0;
+            _strlwr(key);
+            if (strstr(name, key)) { sscanf(eq + 1, "%f %f %f", &a[0], &a[1], &a[2]); break; }
+        }
+    }
+    if (def != lastDef) {
+        if (wn) {
+            Log("weapon %s: muzzle flash correction %.1f %.1f %.1f", wn, a[0], a[1], a[2]);
+        } else if (def) {
+            const DWORD *w = (const DWORD *)def;
+            __try {
+                Log("weapon %d at %p has no readable name: %08x %08x %08x %08x %08x %08x",
+                    MEM(BYTE, ADDR_cl_cgameUserCmdValue), def, w[0], w[1], w[2], w[3], w[4], w[5]);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                Log("weapon %d at %p unreadable", MEM(BYTE, ADDR_cl_cgameUserCmdValue), def);
+            }
+        } else {
+            Log("weapon %d: no weapon def", MEM(BYTE, ADDR_cl_cgameUserCmdValue));
+        }
+    }
+    memcpy(g_flashAdj, a, sizeof(a));
+    lastDef = def;
+}
+
 // Re-expresses a point given in the game's view frame (gameOrg, gameAxis) in the hand frame.
-// kind: 0 = direction, 1 = point of the view weapon model, 2 = point of a muzzle effect.
+// kind: 0 = direction, 1 = point of the view weapon model, 2 = point of a muzzle effect,
+// 3 = point of a world muzzle flash sprite (spread 27..60 units along the aim line: compressed).
+#define WORLD_FLASH_START 26.0f   // where the Thompson's world flash sprites begin, ahead of the eye
+
 static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3], float handAxis[3][3], int kind)
 {
     float local[3], d[3];
@@ -750,11 +1169,19 @@ static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3],
         local[1] += cfg.weaponOffset[1];   // right -> -left
         local[2] -= cfg.weaponOffset[2];
     }
+    if (kind == 3) {
+        // local[0] already has WeaponOffsetForward taken off
+        local[0] = WORLD_FLASH_START - cfg.weaponOffset[0] +
+                   (local[0] + cfg.weaponOffset[0] - WORLD_FLASH_START) * cfg.worldFlashLength;
+        kind = 2;
+    }
     if (kind == 2) {
         // The flat game draws muzzle flashes near the screen centre line, not at the hip gun's
-        // muzzle: keep their distance along the barrel and put them on the barrel axis.
-        local[1] = -cfg.muzzleOffset[0];
-        local[2] = cfg.muzzleOffset[1];
+        // muzzle: keep their distance along the barrel and put them on the barrel axis, plus
+        // the current weapon's correction from [MuzzleFlash].
+        local[0] += g_flashAdj[0];
+        local[1] = -(cfg.muzzleOffset[0] + g_flashAdj[1]);
+        local[2] = cfg.muzzleOffset[1] + g_flashAdj[2];
     }
     for (i = 0; i < 3; i++)
         p[i] = (isPoint ? handOrg[i] : 0.0f) + local[0] * handAxis[0][i] + local[1] * handAxis[1][i] + local[2] * handAxis[2][i];
@@ -770,6 +1197,7 @@ static void FlushHeldEntities(const cod_refdef_t *fd)
     float rel[3], handOrg[3], handAxis[3][3];
 
     if (!g_heldCount) return;
+    UpdateFlashAdjust();
     BodyOffset(h->pos, rel);
     for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
     RotateZ(rel, body, handOrg);
@@ -779,7 +1207,7 @@ static void FlushHeldEntities(const cod_refdef_t *fd)
     for (n = 0; n < g_heldCount; n++) {
         BYTE *e = g_held[n];
         float *axis = (float *)(e + REFENT_OFS_axis);
-        int kind = *(int *)e == REFENT_TYPE_MODEL ? 1 : 2;   // models vs sprites/beams (flash)
+        int kind = *(int *)e == REFENT_TYPE_MODEL ? 1 : g_heldWorldFlash[n] ? 3 : 2;   // models vs sprites/beams (flash)
         ViewToHand((float *)(e + REFENT_OFS_origin), fd, handOrg, handAxis, kind);
         ViewToHand((float *)(e + REFENT_OFS_oldorigin), fd, handOrg, handAxis, kind);
         if (*(int *)(e + REFENT_OFS_renderfx) & RF_LIGHTING_ORIGIN)
@@ -798,6 +1226,7 @@ static void __cdecl hk_BeginFrame(int stereoFrame)
         g_heldCount = 0;
         g_pitchSampled = 0;
         if (fb_ok) StartVR();
+        HookKeyBindingText();
         g_vrFrame = cfg.vr && XR_Ready() && XR_BeginFrame(g_eyes, &g_head);
         if (g_vrFrame) ProcessControllers();
         else { g_moveForward = g_moveRight = 0; }
@@ -1592,6 +2021,7 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
     g_stereoFrameDrawn = 0;
     g_worldDrawn = 0;
     g_hudCleared = 0;
+    g_scopeWasActive = g_scopeActive;
     g_scopeActive = 0;
     while (gl.GetError()) {}
     return orig_SwapBuffers(dc);
@@ -1644,11 +2074,21 @@ static void LoadConfig(void)
     cfg.logNear         = GetPrivateProfileIntA("Debug", "LogNearEntities", cfg.logNear, ini);
     cfg.muzzleOffset[0] = IniFloat("Controllers", "MuzzleOffsetRight", cfg.muzzleOffset[0], ini);
     cfg.muzzleOffset[1] = IniFloat("Controllers", "MuzzleOffsetUp", cfg.muzzleOffset[1], ini);
+    cfg.worldFlashLength = IniFloat("MuzzleFlash", "WorldFlashLength", 0.25f, ini);
     cfg.roomScale       = GetPrivateProfileIntA("VR", "RoomScale", cfg.roomScale, ini);
     cfg.weaponAngle[0]  = IniFloat("Controllers", "WeaponPitch", cfg.weaponAngle[0], ini);
     cfg.weaponAngle[1]  = IniFloat("Controllers", "WeaponYaw", cfg.weaponAngle[1], ini);
     cfg.aimSmoothing    = IniFloat("Controllers", "AimSmoothing", cfg.aimSmoothing, ini);
     cfg.autoAds         = GetPrivateProfileIntA("Controllers", "AutoADS", cfg.autoAds, ini);
+    cfg.grenadeArc      = GetPrivateProfileIntA("Grenade", "Trajectory", cfg.grenadeArc, ini);
+    cfg.gravity         = IniFloat("Grenade", "Gravity", cfg.gravity, ini);
+    cfg.grenadeOpacity  = IniFloat("Grenade", "Opacity", cfg.grenadeOpacity, ini);
+    {
+        char mask[32];
+        GetPrivateProfileStringA("Grenade", "TraceMask", "1", mask, sizeof(mask), ini);
+        cfg.traceMask = (int)strtoul(mask, NULL, 0);
+    }
+    cfg.scopeSmoothing  = IniFloat("Scope", "Smoothing", cfg.scopeSmoothing, ini);
     cfg.menuPointer     = (float)GetPrivateProfileIntA("Controllers", "MenuPointer", (int)cfg.menuPointer, ini);
     {
         int b;

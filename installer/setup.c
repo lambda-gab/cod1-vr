@@ -19,6 +19,7 @@
 #define CODSP_TIMESTAMP   0x40443fda              // CoDSP.exe 1.5
 #define BACKUP_SUFFIX     L".cod_vr_backup"
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
+#define TEXT_PACK         L"main\\pakz_vr_text.pk3"
 #define INVISIBLE_SKIN    "cloth_masked@vr_invisible.tga"   // alpha-tested skin type, alpha 0
 
 static const wchar_t *TITLE = L"Call of Duty VR";
@@ -285,6 +286,110 @@ static int BuildHandsPack(const wchar_t *game, int *models)
 }
 
 // ---------------------------------------------------------------------------
+// "VR texts" pack: the training texts that talk about the mouse, rewritten. Only these
+// sentences come from the mod; the rest of each file comes from the player's localized pak.
+// (The "Press [%s]" hints are handled by the mod itself, which names the controller buttons.)
+// ---------------------------------------------------------------------------
+static const struct { const char *file, *ref, *text; } g_vrTexts[] = {
+    { "localizedstrings/english/training.str", "FIVESIGNS", "Point your gun hand at the five large signs." },
+    { "localizedstrings/english/training.str", "CLIMBLADDER",
+      "To climb a ladder, push the move stick into the ladder and point your gun hand up." },
+};
+
+static int IsSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+// Replaces the text of   REFERENCE <ref>  LANG_ENGLISH "<text>"   in a .str file. Returns a new
+// buffer (and its size) or NULL if the entry is not there.
+static char *ReplaceString(const char *d, size_t n, const char *ref, const char *text, size_t *outSize)
+{
+    size_t i, refLen = strlen(ref);
+    for (i = 0; i + 9 < n; i++) {
+        size_t k = i + 9, open, close;
+        char *out;
+        if (memcmp(d + i, "REFERENCE", 9)) continue;
+        while (k < n && IsSpace(d[k])) k++;
+        if (k + refLen > n || memcmp(d + k, ref, refLen) || (k + refLen < n && !IsSpace(d[k + refLen]))) continue;
+        k += refLen;
+        while (k < n && IsSpace(d[k])) k++;
+        if (k + 12 > n || memcmp(d + k, "LANG_ENGLISH", 12)) continue;
+        k += 12;
+        while (k < n && IsSpace(d[k])) k++;
+        if (k >= n || d[k] != '"') continue;
+        open = k + 1;
+        for (close = open; close < n && d[close] != '"' && d[close] != '\n'; close++) {}
+        if (close >= n || d[close] != '"') continue;
+        *outSize = open + strlen(text) + (n - close);
+        out = malloc(*outSize);
+        if (!out) return NULL;
+        memcpy(out, d, open);
+        memcpy(out + open, text, strlen(text));
+        memcpy(out + open + strlen(text), d + close, n - close);
+        return out;
+    }
+    return NULL;
+}
+
+static int BuildTextPack(const wchar_t *game)
+{
+    wchar_t pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int count = 0, cap = 0, i, t, written = 0, ok = 1;
+    char utf8[MAX_PATH * 3];
+    const char *file = g_vrTexts[0].file;   // all texts live in one file today
+    void *data = NULL;
+    size_t size = 0;
+    mz_zip_archive zw;
+
+    _snwprintf(pattern, MAX_PATH, L"%s\\main\\localized_english_pak*.pk3", game);
+    h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;   // not an English game: nothing to change
+    do {
+        if (count == cap) { cap = cap ? cap * 2 : 16; paks = realloc(paks, cap * sizeof(*paks)); }
+        _snwprintf(paks[count++], MAX_PATH, L"%s", fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(paks, count, sizeof(*paks), CmpW);
+
+    for (i = 0; i < count; i++) {   // the last pak that has the file wins
+        mz_zip_archive z;
+        int e;
+        wchar_t path[MAX_PATH];
+        memset(&z, 0, sizeof(z));
+        _snwprintf(path, MAX_PATH, L"%s\\main\\%s", game, paks[i]);
+        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
+        if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
+        e = mz_zip_reader_locate_file(&z, file, NULL, 0);
+        if (e >= 0) {
+            void *d = mz_zip_reader_extract_to_heap(&z, e, &size, 0);
+            if (d) { free(data); data = d; }
+        }
+        mz_zip_reader_end(&z);
+    }
+    free(paks);
+    if (!data) return 0;
+
+    for (t = 0; t < (int)(sizeof(g_vrTexts) / sizeof(g_vrTexts[0])); t++) {
+        size_t newSize;
+        char *changed = ReplaceString(data, size, g_vrTexts[t].ref, g_vrTexts[t].text, &newSize);
+        if (changed) { free(data); data = changed; size = newSize; written++; }
+    }
+    if (!written) { free(data); return 0; }
+
+    Join(out, game, TEXT_PACK);
+    _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
+    WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, utf8, 0)) { free(data); return 0; }
+    ok = mz_zip_writer_add_mem(&zw, file, data, size, MZ_DEFAULT_COMPRESSION);
+    ok = ok && mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    free(data);
+    if (!ok) { DeleteFileW(tmp); return 0; }
+    return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
+}
+
+// ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
 static int Install(const wchar_t *game, int *keptIni)
@@ -319,6 +424,7 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, L"cod_vr.ini");          DeleteFileW(p);
     Join(p, game, L"cod_vr.ini.default");  DeleteFileW(p);
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
+    Join(p, game, TEXT_PACK);              DeleteFileW(p);
 }
 
 // Command line (no dialogs): /silent /dir="<game folder>" [/hands] [/uninstall]
@@ -341,6 +447,7 @@ static int Silent(const wchar_t *cmd)
     if (!HasGame(game)) return 2;
     if (wcsstr(cmd, L"/uninstall")) { Uninstall(game); return 0; }
     if (!Install(game, &keptIni)) return 1;
+    BuildTextPack(game);
     Join(pack, game, HANDS_PACK);
     if (wcsstr(cmd, L"/hands")) return BuildHandsPack(game, &models) ? 0 : 1;
     DeleteFileW(pack);
@@ -395,6 +502,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         return 1;
     }
 
+    BuildTextPack(game);   // English game only; the mod works without it
     Join(pack, game, HANDS_PACK);
     r = Ask(MB_YESNO | MB_ICONQUESTION,
             T(L"Hide the player's hands and show only the gun?\n\n(The models are made from your own game files.)",

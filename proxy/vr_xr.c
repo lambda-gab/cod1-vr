@@ -49,7 +49,10 @@ static struct {
     uint32_t   imageCount[6];
     XrSwapchainImageOpenGLKHR images[6][MAX_IMAGES];
     int        laserOn;
-    float      laser[2][3];     // XR coordinates
+    float      laser[64][3];    // polyline in XR coordinates
+    int        laserCount;
+    float      laserColor[4];
+    float      laserRing;       // metres: horizontal ring around the last point (0 = a dot)
     int        hudW, hudH;      // HUD swapchain size requested by XR_Init
     int        scopeSize;
     GLuint     dstFbo;
@@ -480,11 +483,25 @@ static int CopySwapchainImage(int eye, GLuint srcFbo, int sx, int sy, int w, int
 // Quake 3 axes (x forward, y left, z up) -> XR (x right, y up, -z forward)
 static void FromQ3(const float v[3], float out[3]) { out[0] = -v[1]; out[1] = v[2]; out[2] = -v[0]; }
 
+void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring)
+{
+    int i;
+    if (n < 2) return;
+    if (n > 64) n = 64;
+    for (i = 0; i < n; i++) FromQ3(pts[i], xr.laser[i]);
+    xr.laserCount = n;
+    memcpy(xr.laserColor, rgba, sizeof(xr.laserColor));
+    xr.laserRing = ring;
+    xr.laserOn = 1;
+}
+
 void XR_SetLaser(const float from[3], const float to[3])
 {
-    FromQ3(from, xr.laser[0]);
-    FromQ3(to, xr.laser[1]);
-    xr.laserOn = 1;
+    static const float cyan[4] = { 0.2f, 0.9f, 1.0f, 1.0f };
+    float pts[2][3];
+    memcpy(pts[0], from, sizeof(pts[0]));
+    memcpy(pts[1], to, sizeof(pts[1]));
+    XR_SetLine((const float (*)[3])pts, 2, cyan, 0);
 }
 
 // Draws the beam into eye's laser swapchain with that eye's view and projection (fixed function,
@@ -544,16 +561,29 @@ static int DrawLaser(int eye)
     gl.MatrixMode(0x1701); gl.PushMatrix(); gl.LoadMatrixf(proj);   // GL_PROJECTION
     gl.MatrixMode(0x1700); gl.PushMatrix(); gl.LoadMatrixf(view);   // GL_MODELVIEW
     gl.LineWidth(3.0f);
-    gl.Begin(0x0001);   // GL_LINES
-    gl.Color4f(0.2f, 0.9f, 1.0f, 1.0f);
-    gl.Vertex3f(xr.laser[0][0], xr.laser[0][1], xr.laser[0][2]);
-    gl.Vertex3f(xr.laser[1][0], xr.laser[1][1], xr.laser[1][2]);
+    gl.Begin(0x0003);   // GL_LINE_STRIP
+    gl.Color4f(xr.laserColor[0] * xr.laserColor[3], xr.laserColor[1] * xr.laserColor[3],
+               xr.laserColor[2] * xr.laserColor[3], xr.laserColor[3]);   // premultiplied
+    for (i = 0; i < xr.laserCount; i++) gl.Vertex3f(xr.laser[i][0], xr.laser[i][1], xr.laser[i][2]);
     gl.End();
-    gl.PointSize(10.0f);
-    gl.Begin(0x0000);   // GL_POINTS: the spot where it hits the menu
-    gl.Color4f(1.0f, 1.0f, 1.0f, 1.0f);
-    gl.Vertex3f(xr.laser[1][0], xr.laser[1][1], xr.laser[1][2]);
-    gl.End();
+    {
+        const float *e = xr.laser[xr.laserCount - 1];
+        if (xr.laserRing > 0) {
+            // landing marker: a ring lying on the ground (XR y is up)
+            gl.Begin(0x0002);   // GL_LINE_LOOP, same color
+            for (i = 0; i < 24; i++) {
+                float a = i * (6.2831853f / 24);
+                gl.Vertex3f(e[0] + cosf(a) * xr.laserRing, e[1], e[2] + sinf(a) * xr.laserRing);
+            }
+            gl.End();
+        } else {
+            gl.PointSize(10.0f);
+            gl.Begin(0x0000);   // GL_POINTS: the spot where it hits the menu
+            gl.Color4f(1.0f, 1.0f, 1.0f, 1.0f);
+            gl.Vertex3f(e[0], e[1], e[2]);
+            gl.End();
+        }
+    }
     gl.MatrixMode(0x1701); gl.PopMatrix();
     gl.MatrixMode(0x1700); gl.PopMatrix();
     gl.PopAttrib();
