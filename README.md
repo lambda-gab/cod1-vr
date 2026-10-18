@@ -11,7 +11,9 @@ It was built by reverse engineering `CoDSP.exe` (with [REA](https://github.com/m
 using [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest) as a reference. The full notes on
 addresses, hooks and design decisions are in [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.md) (in Portuguese).
 
-> This repository contains no game files. You need your own copy of Call of Duty.
+> **Disclaimer:** unofficial fan project, not affiliated with or endorsed by Activision. Call of Duty is a
+> trademark of Activision Publishing, Inc. A legitimate copy of the game is required; no game code or assets
+> are included or distributed (the optional hand-hiding pack is generated on your PC from your own copy).
 
 ## Features
 

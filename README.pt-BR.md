@@ -10,7 +10,10 @@ Feito a partir de engenharia reversa do `CoDSP.exe` (com [REA](https://github.co
 tendo como referência o [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest). A documentação completa
 dos endereços, hooks e decisões está em [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.md) (em português).
 
-> Este repositório não contém nenhum arquivo do jogo. É preciso ter a sua própria cópia de Call of Duty.
+> **Aviso:** projeto não oficial de fã, sem vínculo com a Activision nem endossado por ela. Call of Duty é uma
+> marca registrada da Activision Publishing, Inc. É necessária uma cópia legítima do jogo; nenhum código ou
+> arquivo do jogo é incluído ou distribuído (o pacote opcional que esconde as mãos é gerado no seu PC a partir
+> da sua própria cópia).
 
 ## O que funciona
 
