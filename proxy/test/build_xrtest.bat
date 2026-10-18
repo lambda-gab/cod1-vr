@@ -1,4 +1,5 @@
 @echo off
+setlocal
 rem Finds the newest Visual Studio with the C++ tools and sets up the x86 compiler.
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"

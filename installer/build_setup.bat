@@ -1,4 +1,5 @@
 @echo off
+setlocal
 rem Builds CoD-VR-Setup.exe. Run ..\proxy\build.bat first (the setup embeds its output).
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"

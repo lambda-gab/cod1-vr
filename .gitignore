@@ -13,3 +13,6 @@ deps/
 
 # never commit game data
 *.pk3
+
+# local release files
+dist/
