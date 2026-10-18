@@ -1,0 +1,15 @@
+# build output
+out/
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.log
+
+# OpenXR loader / headers (download, see README)
+deps/
+
+# never commit game data
+*.pk3
