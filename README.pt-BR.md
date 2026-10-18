@@ -32,6 +32,8 @@ dos endereços, hooks e decisões está em [`docs/CoD_VR_RE.md`](docs/CoD_VR_RE.
 - Um runtime OpenXR **de 32 bits**: Virtual Desktop (VDXR) ou Oculus/Meta. O jogo é um processo 32 bits.
 - Headset de PC VR com controles (testado com Quest via Virtual Desktop).
 
+O mod roda em PC VR. Quem tem Quest pode jogar sem fio pelo Virtual Desktop ou pelo Air Link.
+
 ## Instalação
 
 **Mais fácil:** baixe o `CoD-VR-Setup.exe` da
