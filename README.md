@@ -19,6 +19,16 @@ wanted to experience it again in VR.
 > **This project is in development.** Bugs and visual glitches can happen. Please report them on
 > [Discord](https://discord.gg/SRsK2x5Tn).
 
+## Support the developer
+
+> [!TIP]
+> **Would you like to help the dev? $2 keeps the Claude Pro plan running.**
+>
+> Every ported game is and always will be free for everyone. Your support pays for the AI plan and lets me spend a
+> few hours of my day bringing joy to gamers.
+>
+> [**Support on Patreon**](https://www.patreon.com/cw/LambdaGab)
+
 ## Requirements
 
 - Call of Duty (2003) for PC, single player, **version 1.5** (`CoDSP.exe`).
