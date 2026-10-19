@@ -347,7 +347,7 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
 - `[MuzzleFlash]`: correção por arma (`nome=frente direita cima`), relida a cada segundo.
 
 
-## Modo Realista, precisão e espelhamento (v1.2.0)
+## Armas no corpo, precisão e espelhamento (v1.2.0)
 
 - Inventário do jogador no `gamex86.dll` (timestamp `0x40443fb0`, base `0x20000000`): `g_entities` em `+0x12fa80`
   (`0x2c8` bytes, 0 = jogador), `gclient` em `ent + 0x104`, `ps.weapon` em `+0xa0`, slots de arma em `+0x2fc`
@@ -372,4 +372,4 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
 - Espelhamento na mão esquerda: o eixo lateral das entidades da arma é invertido na vista, e o `glDepthRange` (o
   renderizador desenha a arma com `(0, 0.1)`) passa a ser interceptado para trocar o `glFrontFace` para `GL_CW`
   enquanto a arma espelhada é desenhada.
-- Gatilhos no Realista: os dois atiram; com luneta (`adsOverlayShader`, `+0x224`) o da outra mão dá o zoom.
+- Gatilhos: os dois atiram; com luneta (`adsOverlayShader`, `+0x224`) o da outra mão dá o zoom.

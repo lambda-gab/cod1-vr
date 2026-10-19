@@ -49,19 +49,28 @@ instalador (ou dos passos nas [informações técnicas](docs/TECHNICAL.pt-BR.md)
 
 ## Controles
 
-Há dois modos de controle, escolhidos em `Mode` na seção `[Controllers]` do `cod_vr.ini`: **Realista** (`Realistic`, o
-padrão) e **Arcade**.
+As armas são pegas do corpo, com qualquer uma das mãos, e ficam na mão enquanto o grip está apertado:
 
-### Arcade (`Mode=Arcade`)
+| Ponha a mão aqui e aperte o grip | Você pega |
+|---|---|
+| No ombro direito (mão atrás da cabeça) | Arma 1 (principal) |
+| No ombro esquerdo | Arma 2 (secundária) |
+| No quadril, do lado daquela mão | Pistola |
+| Atrás do corpo, da linha da cintura até a lombar | Granada |
 
-A arma fica sempre na mão direita (`RightHanded=0` para a esquerda). Os botões são editáveis em `[Buttons]`:
+- Solte o grip onde a arma fica guardada (armas longas no ombro, pistola no quadril, granadas nas costas) para
+  guardá-la.
+- Solte em qualquer outro lugar e a arma **cai no chão**. Pegue com a mão vazia para recuperar: ela vai para
+  essa mão.
+- A arma na mão esquerda aparece espelhada.
+
+Botões (editáveis em `[Buttons]` no `cod_vr.ini`):
 
 | Controle | Ação |
 |---|---|
-| Gatilho direito | Atirar (com granada, segure para ver a trajetória e solte para lançar) |
-| Grip direito | Usar / pegar |
-| Gatilho esquerdo | Mirar (ADS; com luneta, abre o zoom) |
-| Grip esquerdo | Segurar a arma com as duas mãos |
+| Qualquer gatilho | Atirar (com granada: segure para ver a trajetória e solte para lançar). Com fuzil de luneta, o gatilho da mão que não segura a arma dá o zoom |
+| Grip da mão vazia | Usar / pegar (portas, armas no chão) |
+| Grip da outra mão, perto da arma | Segurar a arma com as duas mãos |
 | Analógico esquerdo | Andar (relativo à cabeça) |
 | Analógico direito | Girar (snap 45°); cima/baixo muda a postura |
 | A / B | Pular / recarregar |
@@ -70,29 +79,7 @@ A arma fica sempre na mão direita (`RightHanded=0` para a esquerda). Os botões
 | Clique analógico direito | Deitar |
 | Menu | Menu do jogo |
 
-Nos menus, aponte com a mão da arma: gatilho clica, B volta, A confirma.
-
-### Realista (padrão)
-
-As duas mãos começam vazias e você pega as armas do corpo, com qualquer uma das mãos:
-
-| Onde você põe a mão e aperta o grip | O que você pega |
-|---|---|
-| No ombro direito (mão atrás da cabeça) | Arma 1 (principal) |
-| No ombro esquerdo | Arma 2 (secundária) |
-| No quadril, do lado daquela mão | Pistola |
-| Atrás do corpo, da linha da cintura até a lombar | Granada |
-
-- Mantenha o grip apertado para segurar a arma. Solte onde ela fica guardada (armas longas no ombro, pistola no
-  quadril, granadas nas costas) para guardá-la.
-- Solte em qualquer outro lugar e a arma **cai no chão**. Pegue com a mão vazia para recuperar: ela vai para
-  essa mão.
-- O grip da mão vazia é o "usar" (portas, pegar itens). O grip da outra mão perto da arma a segura com as duas
-  mãos.
-- Os dois gatilhos atiram. Com fuzil de luneta, o gatilho da outra mão dá o zoom.
-- A arma na mão esquerda aparece espelhada. Os outros botões e analógicos são iguais aos do Arcade.
-- A arma de cada ombro pode ser trocada em `[Realistic]` (`RightShoulder`, `LeftShoulder`), assim como as alturas
-  dos coldres.
+Nos menus, aponte com a mão direita: gatilho clica, B volta, A confirma.
 
 ## Configurações
 
@@ -106,25 +93,23 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 - `[VR]` `RoomScale`, `PositionalTracking`, `WorldScale`.
 - `[HUD]` e `[Scope]`: tamanho e distância das telas flutuantes, suavização da luneta.
 - `[Grenade]`: liga/desliga a trajetória e a opacidade dela.
-- `[Controllers]` `Mode`: `Arcade` ou `Realistic`; `HipFireAccuracy`: tiros tão precisos quanto mirando (ligado por
-  padrão, já que no VR você mira pela mira da própria arma).
-- `[Realistic]`: soltar a arma no chão, alturas dos coldres, arma de cada ombro, tempo de sacar.
+- `[Controllers]` `HipFireAccuracy`: tiros tão precisos quanto mirando (ligado por padrão, já que no VR você mira
+  pela mira da própria arma); `RightHanded`: qual analógico gira.
+- `[Holsters]`: arma de cada ombro (canhotos podem querer trocar), alturas dos coldres, soltar a arma no chão, tempo
+  de sacar.
 
 ## Releases
 
 ### v1.2.0
 
-- Novo modo de controle **Realista**, agora o padrão (`Mode=Arcade` volta aos controles anteriores): mãos vazias, armas sacadas dos ombros (arma 1 no direito,
-  arma 2 no esquerdo), a pistola do quadril e as granadas das costas, com qualquer uma das mãos. Soltar a arma longe
-  do coldre faz ela cair no chão, e dá para pegá-la de novo.
-- Saque rápido no modo Realista: sem a animação de levantar a arma, e a arma anterior não aparece mais na troca.
+- As armas são pegas do corpo: dos ombros (arma 1 no direito, arma 2 no esquerdo), do quadril (pistola) e das costas
+  (granadas), com qualquer uma das mãos. Soltar a arma longe do coldre faz ela cair no chão, e dá para pegá-la de
+  novo.
+- Saque rápido: sem a animação de levantar a arma, e a arma anterior não aparece mais na troca.
 - A arma na mão esquerda aparece espelhada.
 - Mira melhor: os tiros vão para onde a mira aponta, sem a dispersão do tiro "do quadril" do jogo
   (`HipFireAccuracy`).
 - Correção: o mundo não gira mais quando a mira passa da cabeça para a mão.
-- A atualização mantém o seu `cod_vr.ini`, e as opções novas assumem o valor padrão, então quem atualiza também
-  começa no modo Realista; coloque `Mode=Arcade` em `[Controllers]` para os controles anteriores. O
-  `cod_vr.ini.default` traz todas as opções novas com comentários.
 
 ### v1.1.1
 

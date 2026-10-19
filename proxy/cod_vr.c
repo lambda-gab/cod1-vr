@@ -2492,29 +2492,29 @@ static void LoadConfig(void)
     cfg.muzzleOffset[0] = IniFloat("Controllers", "MuzzleOffsetRight", cfg.muzzleOffset[0], ini);
     cfg.muzzleOffset[1] = IniFloat("Controllers", "MuzzleOffsetUp", cfg.muzzleOffset[1], ini);
     cfg.worldFlashLength = IniFloat("MuzzleFlash", "WorldFlashLength", 0.25f, ini);
-    {
-        char mode[32];
-        GetPrivateProfileStringA("Controllers", "Mode", "Realistic", mode, sizeof(mode), ini);
-        cfg.realistic = !_stricmp(mode, "Realistic") || !_stricmp(mode, "Realista");
-    }
+    // weapons are taken from the body and held while the grip is pressed (the code for the gun
+    // always in the dominant hand stays behind cfg.realistic = 0, not offered for now)
+    cfg.realistic = 1;
     cfg.hipAccuracy   = GetPrivateProfileIntA("Controllers", "HipFireAccuracy", 1, ini);
     cfg.mirrorLeft    = GetPrivateProfileIntA("Controllers", "MirrorLeftHand", 1, ini);
-    cfg.dropOnRelease = GetPrivateProfileIntA("Realistic", "DropOnRelease", 1, ini);
-    cfg.drawTime      = GetPrivateProfileIntA("Realistic", "DrawTime", 50, ini);
+    // [Holsters] (v1.2.0 called the section [Realistic]: still read as the default)
+    cfg.dropOnRelease = GetPrivateProfileIntA("Holsters", "DropOnRelease", GetPrivateProfileIntA("Realistic", "DropOnRelease", 1, ini), ini);
+    cfg.drawTime      = GetPrivateProfileIntA("Holsters", "DrawTime", GetPrivateProfileIntA("Realistic", "DrawTime", 50, ini), ini);
     {
         static const char *keys[2] = { "LeftShoulder", "RightShoulder" }, *defs[2] = { "primaryb", "primary" };
         static const char *names[6] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade" };
-        char v[32];
+        char v[32], old[32];
         int h, k;
         for (h = 0; h < 2; h++) {
-            GetPrivateProfileStringA("Realistic", keys[h], defs[h], v, sizeof(v), ini);
+            GetPrivateProfileStringA("Realistic", keys[h], defs[h], old, sizeof(old), ini);
+            GetPrivateProfileStringA("Holsters", keys[h], old, v, sizeof(v), ini);
             cfg.shoulderSlot[h] = h ? 1 : 2;
             for (k = 1; k < 6; k++) if (!_stricmp(v, names[k])) cfg.shoulderSlot[h] = k;
         }
     }
-    cfg.backHeight    = IniFloat("Realistic", "BackHeight", -0.30f, ini);
-    cfg.hipHeight     = IniFloat("Realistic", "HipHeight", -0.75f, ini);
-    cfg.lowerBackHeight = IniFloat("Realistic", "LowerBackHeight", -0.70f, ini);
+    cfg.backHeight    = IniFloat("Holsters", "BackHeight", IniFloat("Realistic", "BackHeight", -0.30f, ini), ini);
+    cfg.hipHeight     = IniFloat("Holsters", "HipHeight", IniFloat("Realistic", "HipHeight", -0.75f, ini), ini);
+    cfg.lowerBackHeight = IniFloat("Holsters", "LowerBackHeight", IniFloat("Realistic", "LowerBackHeight", -0.70f, ini), ini);
     cfg.roomScale       = GetPrivateProfileIntA("VR", "RoomScale", cfg.roomScale, ini);
     cfg.weaponAngle[0]  = IniFloat("Controllers", "WeaponPitch", cfg.weaponAngle[0], ini);
     cfg.weaponAngle[1]  = IniFloat("Controllers", "WeaponYaw", cfg.weaponAngle[1], ini);
@@ -2603,8 +2603,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         "hud=%d (distance %.2f, width %.2f, menu %.2f, headLocked %d)",
         cfg.enabled, cfg.vr, cfg.separation, cfg.worldScale, cfg.positional, cfg.headAim,
         cfg.hud, cfg.hudLayer.distance, cfg.hudLayer.width, cfg.hudLayer.menuWidth, cfg.hudLayer.headLocked);
-    Log("mode %s (drop on release %d, back %.2f, hip %.2f, lower back %.2f)", cfg.realistic ? "Realistic" : "Arcade",
-        cfg.dropOnRelease, cfg.backHeight, cfg.hipHeight, cfg.lowerBackHeight);
+    Log("holsters: drop on release %d, back %.2f, hip %.2f, lower back %.2f, draw %d ms",
+        cfg.dropOnRelease, cfg.backHeight, cfg.hipHeight, cfg.lowerBackHeight, cfg.drawTime);
     Log("controllers=%d rightHanded=%d snapTurn=%.0f converge=%.1f weaponInHand=%d offset=(%.1f %.1f %.1f)",
         cfg.controllers, cfg.rightHanded, cfg.snapTurn, cfg.converge, cfg.weaponInHand,
         cfg.weaponOffset[0], cfg.weaponOffset[1], cfg.weaponOffset[2]);
