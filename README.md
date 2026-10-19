@@ -36,6 +36,10 @@ wanted to experience it again in VR.
   should work too).
 - A **32-bit** OpenXR runtime: Virtual Desktop (VDXR) or Oculus/Meta. The game is a 32-bit program.
 
+> [!NOTE]
+> **Tested with the Quest 3, where it works perfectly.** If you have a problem with another headset, please
+> [open an issue](https://github.com/lambda-gab/cod1-vr/issues) so I can look into it.
+
 ## Installation
 
 ### Easiest: the installer (recommended)
