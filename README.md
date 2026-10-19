@@ -17,7 +17,7 @@ wanted to experience it again in VR.
 
 > [!WARNING]
 > **This project is in development.** Bugs and visual glitches can happen. Please report them on
-> [Discord](https://discord.com/channels/1561484693881225219/1561485586169331882).
+> [Discord](https://discord.gg/SRsK2x5Tn).
 
 ## Requirements
 

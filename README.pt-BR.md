@@ -17,7 +17,7 @@ quis vivê-lo de novo em VR.
 
 > [!WARNING]
 > **Este projeto está em desenvolvimento.** Bugs e falhas visuais podem acontecer. Relate no
-> [Discord](https://discord.com/channels/1561484693881225219/1561485586169331882).
+> [Discord](https://discord.gg/SRsK2x5Tn).
 
 ## Requisitos
 
