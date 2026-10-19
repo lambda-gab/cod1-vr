@@ -28,6 +28,7 @@ jobs:
         shell: cmd
         run: |
           call proxy\build.bat || exit /b 1
+          call launcher\build_launcher.bat || exit /b 1
           call installer\build_setup.bat || exit /b 1
 
       - name: Package
@@ -35,7 +36,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item installer/out/CoD-VR-Setup.exe dist/
-          Compress-Archive -Path proxy/out/opengl32.dll, proxy/out/openxr_loader.dll, proxy/cod_vr.ini -DestinationPath dist/cod-vr-manual-install.zip
+          Compress-Archive -Path proxy/out/opengl32.dll, proxy/out/openxr_loader.dll, proxy/cod_vr.ini, launcher/out/CoD-VR-Launcher.exe -DestinationPath dist/cod-vr-manual-install.zip
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,0 +1,24 @@
+#include "launcher_res.h"
+
+IDI_LAUNCHER ICON   "res\\launcher.ico"
+IDR_BANNER   RCDATA "res\\banner.jpg"
+
+1 VERSIONINFO
+FILEVERSION 1,3,0,0
+PRODUCTVERSION 1,3,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "FileDescription", "Call of Duty VR launcher"
+      VALUE "ProductName", "Call of Duty VR"
+      VALUE "FileVersion", "1.3.0"
+      VALUE "ProductVersion", "1.3.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

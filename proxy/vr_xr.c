@@ -68,6 +68,9 @@ static struct {
     XrSpace    handSpace[2];
 } xr;
 
+static float xr_renderScale = 1.0f;   // eye swapchains: the recommended size times this
+static int   xr_recW, xr_recH, xr_maxW, xr_maxH;   // the runtime's recommended / largest eye image
+
 static const char *ResultStr(XrResult r)
 {
     static char buf[XR_MAX_RESULT_STRING_SIZE];
@@ -288,14 +291,40 @@ static int CreateSession(void)
     if (!format) { Log("OpenXR: no usable swapchain format"); return 0; }
     Log("OpenXR: swapchain format 0x%llx", format);
 
-    for (i = 0; i < 2; i++)
-        if (!CreateSwapchain(i, format, vcv[i].recommendedImageRectWidth, vcv[i].recommendedImageRectHeight)) return 0;
+    for (i = 0; i < 2; i++) {
+        // the eyes are rendered at this size (not the game window's): the runtime's recommended
+        // resolution, scaled by RenderScale, within what it accepts
+        int ew = (int)(vcv[i].recommendedImageRectWidth * xr_renderScale + 0.5f);
+        if (i == 0) {
+            xr_recW = vcv[0].recommendedImageRectWidth; xr_recH = vcv[0].recommendedImageRectHeight;
+            xr_maxW = vcv[0].maxImageRectWidth; xr_maxH = vcv[0].maxImageRectHeight;
+        }
+        int eh = (int)(vcv[i].recommendedImageRectHeight * xr_renderScale + 0.5f);
+        if (ew > (int)vcv[i].maxImageRectWidth) ew = vcv[i].maxImageRectWidth;
+        if (eh > (int)vcv[i].maxImageRectHeight) eh = vcv[i].maxImageRectHeight;
+        if (!CreateSwapchain(i, format, ew, eh)) return 0;
+    }
     if (xr.hudW > 0 && xr.hudH > 0 && !CreateSwapchain(2, format, xr.hudW, xr.hudH)) return 0;
     if (xr.scopeSize > 0 && !CreateSwapchain(3, format, xr.scopeSize, xr.scopeSize)) return 0;
     // the beam only needs a light buffer: half resolution
     for (i = 0; i < 2; i++)
         if (!CreateSwapchain(4 + i, format, vcv[i].recommendedImageRectWidth / 2, vcv[i].recommendedImageRectHeight / 2)) return 0;
     gl.GenFramebuffers(1, &xr.dstFbo);
+    return 1;
+}
+
+void XR_SetRenderScale(float s) { xr_renderScale = s < 0.5f ? 0.5f : s > 2.0f ? 2.0f : s; }
+
+void XR_RecommendedSize(int *w, int *h, int *maxW, int *maxH)
+{
+    *w = xr_recW; *h = xr_recH; *maxW = xr_maxW; *maxH = xr_maxH;
+}
+
+int XR_EyeSize(int *w, int *h)
+{
+    if (!xr.swapchain[0]) return 0;
+    *w = xr.scW[0];
+    *h = xr.scH[0];
     return 1;
 }
 
@@ -417,7 +446,7 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     int i;
 
     if (!xr.session) return 0;
-    if (xr.frameOpen) XR_EndFrame(NULL, 0, 0, NULL, NULL);   // previous frame never reached SwapBuffers
+    if (xr.frameOpen) XR_EndFrame(NULL, 0, 0, 0, 0, NULL, NULL);   // previous frame never reached SwapBuffers
     xr.laserOn = 0;
     PollEvents();
     if (!xr.running) return 0;
@@ -615,7 +644,7 @@ static XrQuaternionf MatrixToQuat(const float c0[3], const float c1[3], const fl
     return q;
 }
 
-void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, const vr_hud_t *hud, const vr_scope_t *scope)
+void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const vr_hud_t *hud, const vr_scope_t *scope)
 {
     XrCompositionLayerQuad lens = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     XrFrameEndInfo ei = { XR_TYPE_FRAME_END_INFO };
@@ -667,7 +696,7 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, const vr_hud_t *hud, cons
         layers[n++] = (const XrCompositionLayerBaseHeader *)&lens;
     }
 
-    if (render && hud && hud->fbo && xr.swapchain[2] && CopySwapchainImage(2, hud->fbo, 0, 0, w, h)) {
+    if (render && hud && hud->fbo && xr.swapchain[2] && CopySwapchainImage(2, hud->fbo, 0, 0, hudW, hudH)) {
         float width = hud->world ? hud->width : hud->menuWidth;
         quad.layerFlags = hud->opaque ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
         quad.space = hud->headLocked ? xr.view : xr.local;
@@ -675,9 +704,20 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, const vr_hud_t *hud, cons
         quad.subImage.swapchain = xr.swapchain[2];
         quad.subImage.imageRect.extent.width = xr.scW[2];
         quad.subImage.imageRect.extent.height = xr.scH[2];
-        quad.pose.orientation.w = 1;
-        quad.pose.position.y = hud->offsetY;
-        quad.pose.position.z = -hud->distance;
+        if (hud->posed) {
+            float right[3], back[3], c0[3], c1[3], c2[3];
+            for (i = 0; i < 3; i++) { right[i] = -hud->pose.axis[1][i]; back[i] = -hud->pose.axis[0][i]; }
+            FromQ3(right, c0);
+            FromQ3(hud->pose.axis[2], c1);
+            FromQ3(back, c2);
+            FromQ3(hud->pose.pos, &quad.pose.position.x);
+            quad.pose.orientation = MatrixToQuat(c0, c1, c2);
+            quad.space = xr.local;
+        } else {
+            quad.pose.orientation.w = 1;
+            quad.pose.position.y = hud->offsetY;
+            quad.pose.position.z = -hud->distance;
+        }
         quad.size.width = width;
         quad.size.height = width * xr.scH[2] / xr.scW[2];
         layers[n++] = (const XrCompositionLayerBaseHeader *)&quad;

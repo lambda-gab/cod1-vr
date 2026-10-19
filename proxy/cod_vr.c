@@ -98,6 +98,16 @@ static struct {
     int   mirrorLeft;       // 1 = a gun in the left hand is drawn mirrored
     int   drawTime;         // Realistic: msec to put a weapon away / raise one (0 = the game's animations)
     int   shoulderSlot[2];  // Realistic: weapon slot over the left [0] and right [1] shoulder
+    int   menuFollowsHead;  // 1 = menus and loading screens follow the head, 0 = fixed in front of you
+    int   objOnHand;        // 1 = the objectives screen shows above the left hand while it is held
+    float objWidth;         // metres
+    float objHeight;        // metres above the hand
+    int   emptyPointer;     // 1 = with empty hands the right hand aims, with a line to where it points
+    float renderScale;      // eye resolution, times the headset's recommended size
+    int   vignette;         // comfort: narrow the view while moving with the stick or turning smoothly
+    float vignetteStrength; // 0..1, how far it closes
+    float vignetteSpeed;    // game units per second where it starts closing (walking is about 190)
+    float vignetteTurn;     // degrees per second where it starts closing
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -112,7 +122,7 @@ static const struct { const char *key, *def; } g_buttons[BT_COUNT] = {
     { "SecondaryGrip", "" },                // off hand: holds the gun with both hands (TwoHanded)
     { "A", "+gostand" },
     { "B", "+reload" },
-    { "X", "weapnext" },
+    { "X", "+scores" },                     // objectives (weapons are taken from the body)
     { "Y", "+melee" },
     { "LeftStickClick", "+scores" },        // objectives
     { "RightStickClick", "toggleprone" },
@@ -137,7 +147,13 @@ void Log(const char *fmt, ...)
 
 // ---- eye framebuffers ----
 static HGLRC  fb_ctx;
-static int    fb_w, fb_h, fb_ok, fb_failed;
+static int    fb_w, fb_h, fb_ok, fb_failed;   // the game's window size (HUD, 2D, refdef coordinates)
+// The eye buffers are the headset's size, not the window's: the game sets its viewport and
+// scissor in window pixels, and hook_glViewport / hook_glScissor scale them while an eye
+// buffer is bound (the game never notices, its pixels are just smaller).
+static int    eye_w, eye_h, g_eyeBound;
+static GLint  g_vp[4], g_sc[4];
+static int    g_vpSet, g_scSet;
 static GLuint fb_fbo[2], fb_tex[2], fb_depth[2];
 // HUD buffer (the left eye's 2D) and a tiny buffer that swallows the right eye's identical 2D,
 // which would otherwise be blended twice.
@@ -199,6 +215,10 @@ static int       g_scopeWasActive;     // the last frame showed the scope view
 static float     g_lastSmoothing;      // filter time constant used last frame
 static int       g_scopeActive;        // this frame the zoomed view is drawn into the HUD buffer
 static int       g_lastHudWorld = 1;   // last frame showed the world (HUD size) or a menu (menu size)
+static int       g_menuQuadValid;      // menus / loading screens: the screen stays where it appeared
+static vr_pose_t g_menuQuad;
+static int       g_objOnHand;          // the objectives screen is held up above the left hand
+static int       g_pointerOn;          // empty hands: the right hand aims, a line shows where
 // menus
 static int       g_menuMode;           // the UI catches the keys
 static int       g_menuKeyDown[6];     // mouse1, escape, enter, up, down, menu
@@ -511,12 +531,21 @@ static void MenuControls(int dom)
     if (cfg.menuPointer && g_in.handValid[dom]) {
         const vr_pose_t *h = &g_in.hand[dom];
         float width = g_lastHudWorld ? hl->width : hl->menuWidth, height = width * fb_h / (float)fb_w;
-        float c[3], n[3], d[3], denom, t, hit[3], u, v, tx, ty;
+        float c[3], n[3], d[3], rt[3], upv[3], denom, t, hit[3], u, v, tx, ty;
         int i;
-        // the menu screen: head-locked, distance in front, offsetY up
+        // the menu screen: fixed where it appeared, or head-locked at distance, offsetY up
         for (i = 0; i < 3; i++) {
-            n[i] = g_head.axis[0][i];
-            c[i] = g_head.pos[i] + g_head.axis[0][i] * hl->distance + g_head.axis[2][i] * hl->offsetY;
+            if (g_menuQuadValid) {
+                n[i] = g_menuQuad.axis[0][i];
+                c[i] = g_menuQuad.pos[i];
+                rt[i] = -g_menuQuad.axis[1][i];
+                upv[i] = g_menuQuad.axis[2][i];
+            } else {
+                n[i] = g_head.axis[0][i];
+                c[i] = g_head.pos[i] + g_head.axis[0][i] * hl->distance + g_head.axis[2][i] * hl->offsetY;
+                rt[i] = -g_head.axis[1][i];
+                upv[i] = g_head.axis[2][i];
+            }
             d[i] = c[i] - h->pos[i];
         }
         denom = h->axis[0][0] * n[0] + h->axis[0][1] * n[1] + h->axis[0][2] * n[2];
@@ -524,8 +553,8 @@ static void MenuControls(int dom)
             t = (d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) / denom;
             if (t > 0) {
                 for (i = 0; i < 3; i++) hit[i] = h->pos[i] + h->axis[0][i] * t - c[i];
-                u = -(hit[0] * g_head.axis[1][0] + hit[1] * g_head.axis[1][1] + hit[2] * g_head.axis[1][2]);  // right
-                v = hit[0] * g_head.axis[2][0] + hit[1] * g_head.axis[2][1] + hit[2] * g_head.axis[2][2];     // up
+                u = hit[0] * rt[0] + hit[1] * rt[1] + hit[2] * rt[2];
+                v = hit[0] * upv[0] + hit[1] * upv[1] + hit[2] * upv[2];
                 {
                     float end[3];
                     for (i = 0; i < 3; i++) end[i] = h->pos[i] + h->axis[0][i] * t;
@@ -775,6 +804,9 @@ static const BYTE *CurrentWeaponDef(void)
     return def;
 }
 
+// A map is loaded (traces need one: without it CM_BoxTrace raises a fatal error).
+static int MapLoaded(void) { return MEM(int, ADDR_cm_numSubModels) > 0; }
+
 // World trace (CM_BoxTrace against the map): fraction of start->end before hitting something.
 static float WorldTrace(const float *start, const float *end)
 {
@@ -782,6 +814,7 @@ static float WorldTrace(const float *start, const float *end)
     static const float zero[3] = { 0, 0, 0 };
     const float *z = zero;
     int mask = cfg.traceMask;
+    if (!MapLoaded()) return 1.0f;
     memset(tr, 0, sizeof(tr));
     __try {
         __asm {
@@ -991,6 +1024,97 @@ static void HandWorld(int h, float out[3])
     for (i = 0; i < 3; i++) out[i] = g_lastViewOrg[i] + r[i];
 }
 
+// The game module's vm_t: its traps reach the engine through currentVM, so calling game code
+// (or a game trap) from outside the game's own frame needs currentVM set to it meanwhile.
+static BYTE *GameVM(void)
+{
+    static BYTE *gameVM;
+    int k;
+    if (!gameVM)
+        for (k = 0; k < VM_COUNT; k++) {
+            BYTE *vm = (BYTE *)ADDR_vmTable + k * VM_SIZE;
+            const char *name = (const char *)vm + VM_OFS_name;
+            if (*(void **)vm && (!_stricmp(name, "game") || !_stricmp(name, "qagame"))) gameVM = vm;
+        }
+    return gameVM;
+}
+
+// A configstring of the running game (server side), through the game's own trap.
+static int GameConfigString(int index, char *buf, int size)
+{
+    BYTE *vm = GameVM(), *prev;
+    int ok = 1, len = size;   // "size" is an assembler keyword
+    buf[0] = 0;
+    if (!vm || !GetModuleHandleA("gamex86.dll")) return 0;
+    prev = MEM(BYTE *, ADDR_currentVM);
+    MEM(BYTE *, ADDR_currentVM) = vm;
+    __try {
+        __asm {
+            push len
+            push buf
+            push index
+            push G_TRAP_GetConfigstring
+            mov eax, ADDR_VM_DllSyscall
+            call eax
+            add esp, 16
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = 0;
+    }
+    MEM(BYTE *, ADDR_currentVM) = prev;
+    buf[size - 1] = 0;
+    return ok;
+}
+
+// Value of key in an info string ("\\key\\value\\key\\value"), copied to out.
+static void InfoValue(const char *info, const char *key, char *out, int size)
+{
+    size_t kl = strlen(key);
+    out[0] = 0;
+    while (*info == '\\') {
+        const char *k = info + 1, *v = strchr(k, '\\'), *e;
+        if (!v) return;
+        e = strchr(v + 1, '\\');
+        if (!e) e = v + 1 + strlen(v + 1);
+        if ((size_t)(v - k) == kl && !_strnicmp(k, key, kl)) {
+            int n = (int)(e - v - 1);
+            if (n >= size) n = size - 1;
+            memcpy(out, v + 1, n);
+            out[n] = 0;
+            return;
+        }
+        info = e;
+    }
+}
+
+// The empty-hand pointer is wanted: always (EmptyHandPointer=2), or on the training map until
+// the first objective (pointing at the signs) is done (1).
+static int PointerWanted(void)
+{
+    static DWORD last;
+    static int wanted;
+    if (cfg.emptyPointer >= 2) return 1;
+    if (cfg.emptyPointer <= 0) return 0;
+    if (GetTickCount() - last > 500) {
+        char cs[2048], v[64];
+        int i, done = 0;
+        last = GetTickCount();
+        wanted = 0;
+        if (GameConfigString(CS_SERVERINFO, cs, sizeof(cs))) {
+            InfoValue(cs, "mapname", v, sizeof(v));
+            if (!_stricmp(v, "training")) {
+                for (i = 0; i < 16 && !done; i++)
+                    if (GameConfigString(CS_OBJECTIVES + i, cs, sizeof(cs))) {
+                        InfoValue(cs, "state", v, sizeof(v));
+                        if (v[0] && atoi(v) == OBJST_DONE) done = 1;
+                    }
+                wanted = !done;
+            }
+        }
+    }
+    return wanted;
+}
+
 static int DropFilter(EXCEPTION_POINTERS *e, HMODULE m)
 {
     BYTE *at = (BYTE *)e->ExceptionRecord->ExceptionAddress;
@@ -1022,14 +1146,8 @@ static void DropHeldWeapon(int h)
     }
     {
         // the drop's traps reach the engine through currentVM: make it the game's while it runs
-        static BYTE *gameVM;
+        BYTE *gameVM = GameVM();
         int k;
-        if (!gameVM)
-            for (k = 0; k < VM_COUNT; k++) {
-                BYTE *vm = (BYTE *)ADDR_vmTable + k * VM_SIZE;
-                const char *name = (const char *)vm + VM_OFS_name;
-                if (*(void **)vm && (!_stricmp(name, "game") || !_stricmp(name, "qagame"))) gameVM = vm;
-            }
         if (!gameVM) {
             for (k = 0; k < VM_COUNT; k++)
                 Log("realistic: vm %d '%.16s'", k, (const char *)ADDR_vmTable + k * VM_SIZE + VM_OFS_name);
@@ -1254,6 +1372,167 @@ static void UpdateHipAccuracy(void)
     if (cg && cgKnown) PatchSpread(cg, CG_OFS_weaponDefs, CG_OFS_numWeaponDefs, "cgame");
 }
 
+// Empty hands: a thin line from the hand to where the game's aim meets the map (the aim leaves
+// from the eye through a point ConvergeDistance along the hand, so it is drawn to that spot).
+static void DrawPointer(int h)
+{
+    static const float color[4] = { 1.0f, 1.0f, 1.0f, 0.45f };
+    float body = YawOf(g_lastViewAxis[0]) - g_headYawCmd, dir[3], end[3], hit[3], pts[2][3], frac;
+    int i;
+    if (!MapLoaded() || !g_lastHudWorld) return;   // loading or no level: nothing to point at
+    RotateZ(g_aimDir, body, dir);
+    for (i = 0; i < 3; i++) end[i] = g_lastViewOrg[i] + dir[i] * 8000.0f;
+    frac = WorldTrace(g_lastViewOrg, end);
+    for (i = 0; i < 3; i++) hit[i] = g_lastViewOrg[i] + (end[i] - g_lastViewOrg[i]) * frac;
+    memcpy(pts[0], g_in.hand[h].pos, sizeof(pts[0]));
+    WorldToTracking(hit, body, pts[1]);
+    XR_SetLine((const float (*)[3])pts, 2, color, 0);
+}
+
+// Builds a screen pose at pos facing away from the viewer along f, its up as close to vertical as f allows.
+static void ScreenPose(vr_pose_t *p, const float pos[3], const float f[3])
+{
+    float up[3] = { 0, 0, 1 }, l[3], fw[3];
+    memcpy(fw, f, sizeof(fw));
+    if (Normalize(fw) < 1e-3f) { fw[0] = 1; fw[1] = fw[2] = 0; }
+    Cross(up, fw, l);                    // left = up x forward
+    if (Normalize(l) < 1e-3f) { l[0] = 0; l[1] = 1; l[2] = 0; }
+    Cross(fw, l, up);                    // up = forward x left
+    memcpy(p->pos, pos, sizeof(p->pos));
+    memcpy(p->axis[0], fw, sizeof(fw));
+    memcpy(p->axis[1], l, sizeof(l));
+    memcpy(p->axis[2], up, sizeof(up));
+}
+
+// Menus and loading screens: placed level in front of the head when they come up, then fixed
+// in the room, so you can look around them (and point at their corners).
+static void PlaceMenuQuad(void)
+{
+    const vr_hud_t *hl = &cfg.hudLayer;
+    float f[3] = { g_head.axis[0][0], g_head.axis[0][1], 0 }, pos[3];
+    int i;
+    if (Normalize(f) < 1e-3f) { f[0] = 1; f[1] = 0; }
+    for (i = 0; i < 3; i++) pos[i] = g_head.pos[i] + f[i] * hl->distance;
+    pos[2] += hl->offsetY;
+    ScreenPose(&g_menuQuad, pos, f);
+    g_menuQuadValid = 1;
+}
+
+// The objectives screen above the left hand, facing the eyes.
+static void ObjectivesPose(vr_pose_t *p)
+{
+    float pos[3], f[3];
+    int i;
+    for (i = 0; i < 3; i++) pos[i] = g_in.hand[0].pos[i];
+    pos[2] += cfg.objHeight;
+    for (i = 0; i < 3; i++) f[i] = pos[i] - g_head.pos[i];
+    ScreenPose(p, pos, f);
+}
+
+// ---------------------------------------------------------------------------
+// Comfort vignette: seeing motion the body does not feel (walking with the stick, turning
+// smoothly) is what makes VR sickness; narrowing the view while it happens removes the motion at
+// the edges of the view, and it opens again when it stops. Walking for real (roomscale) and snap
+// turns do not close it. The speed is the game's own (pushing against a wall moves nothing).
+// ---------------------------------------------------------------------------
+static float g_vigAmount;   // 0 = open .. 1 = as closed as VignetteStrength allows
+
+static void UpdateVignette(float dt, float stick, float turnRate)
+{
+    static float prev[2], speedF;
+    static int havePrev;
+    float speed = 0, target = 0, tau;
+    if (havePrev && dt > 0) {
+        float dx = g_lastViewOrg[0] - prev[0], dy = g_lastViewOrg[1] - prev[1];
+        speed = sqrtf(dx * dx + dy * dy) / dt;
+        if (speed > 2000.0f) speed = 0;   // a jump in place: level start, load, teleport
+    }
+    prev[0] = g_lastViewOrg[0]; prev[1] = g_lastViewOrg[1];
+    havePrev = 1;
+    if (stick < 0.15f) speed = 0;   // roomscale: the body is really moving
+    // The game moves the player in steps, so the speed seen frame by frame jitters: smooth it
+    // (and let the stick, which is steady, say how much it closes) or the edge would pulse.
+    if (dt > 0) speedF += (speed - speedF) * (1.0f - expf(-dt / 0.3f));
+    if (cfg.vignette) {
+        // moving: the smoothed speed is past the threshold (fully at twice it), as far as the
+        // stick is pushed; turning: nothing below the threshold, fully closed at four times it
+        float moving = (speedF - cfg.vignetteSpeed) / cfg.vignetteSpeed;
+        float push = (stick - 0.15f) / 0.6f;
+        float bySpeed, byTurn = (turnRate - cfg.vignetteTurn) / (cfg.vignetteTurn * 3.0f);
+        if (moving < 0) moving = 0;
+        if (moving > 1) moving = 1;
+        if (push < 0) push = 0;
+        if (push > 1) push = 1;
+        bySpeed = moving * push;
+        target = bySpeed > byTurn ? bySpeed : byTurn;
+        if (target < 0) target = 0;
+        if (target > 1) target = 1;
+    }
+    // closes quickly (protection), opens slowly (no jarring release)
+    tau = target > g_vigAmount ? 0.06f : 0.22f;
+    if (dt > 0) g_vigAmount += (target - g_vigAmount) * (1.0f - expf(-dt / tau));
+    if (target == 0 && g_vigAmount < 0.002f) g_vigAmount = 0;
+    {
+        static int logged;
+        if (!logged && g_vigAmount > 0.5f) { logged = 1; Log("comfort vignette active (speed %.0f, turn %.0f)", speed, turnRate); }
+    }
+}
+
+// Draws the tunnel over both eye images: clear around the eye's own straight-ahead direction
+// (the eyes' fields of view are asymmetric), a soft edge, black outside. Every GL state it
+// touches is saved and restored.
+static void DrawVignette(void)
+{
+    float a = g_vigAmount * cfg.vignetteStrength;
+    int eye, i, k;
+    static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    if (a <= 0.002f || !gl.BlendFunc || !fb_ok) return;
+    for (eye = 0; eye < 2; eye++) {
+        const vr_pose_t *e = &g_eyes[eye];
+        float l = e->tanLeft, r = e->tanRight, u = e->tanUp, d = e->tanDown;
+        float sx, sy, cx, cy, rad[3];
+        if (r - l < 1e-3f || u - d < 1e-3f) continue;
+        sx = 2.0f / (r - l); sy = 2.0f / (u - d);          // NDC per unit of tangent
+        cx = -(r + l) / (r - l); cy = -(u + d) / (u - d);  // where straight ahead is in NDC
+        // The headset shows about tan 1.0-1.2 to each side: the clear aperture goes from the edge of
+        // the view (a = 0) to tan 0.3 (~17 deg, a = 1); Medium (0.6) clears ~34 deg.
+        rad[0] = 1.25f + (0.30f - 1.25f) * a;              // clear aperture, in tangent units
+        rad[1] = rad[0] * 1.35f + 0.08f;                   // end of the soft edge
+        rad[2] = 10.0f;                                    // past every corner
+        gl.BindFramebuffer(GL_FRAMEBUFFER, fb_fbo[eye]);
+        gl.PushAttrib(0x000FFFFF);   // GL_ALL_ATTRIB_BITS
+        gl.Disable(GL_SCISSOR_TEST);
+        gl.Disable(0x0B71); gl.Disable(0x0BC0); gl.Disable(0x0B44);   // depth, alpha test, cull
+        gl.Disable(0x0B60); gl.Disable(0x0B50); gl.Disable(0x0B90);   // fog, lighting, stencil
+        if (gl.ActiveTexture) {
+            for (i = 3; i >= 0; i--) { gl.ActiveTexture(0x84C0 + i); gl.Disable(GL_TEXTURE_2D); }
+        } else {
+            gl.Disable(GL_TEXTURE_2D);
+        }
+        gl.ColorMask(1, 1, 1, 1);
+        gl.Enable(0x0BE2);                     // GL_BLEND
+        gl.BlendFunc(0x0302, 0x0303);          // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+        gl.Viewport(0, 0, eye_w, eye_h);
+        gl.MatrixMode(0x1701); gl.PushMatrix(); gl.LoadMatrixf(ident);   // GL_PROJECTION
+        gl.MatrixMode(0x1700); gl.PushMatrix(); gl.LoadMatrixf(ident);   // GL_MODELVIEW
+        for (k = 0; k < 2; k++) {
+            gl.Begin(0x0008);   // GL_QUAD_STRIP
+            for (i = 0; i <= 48; i++) {
+                float t = i * (6.2831853f / 48), c = cosf(t), s = sinf(t);
+                gl.Color4f(0, 0, 0, k == 0 ? 0.0f : 1.0f);
+                gl.Vertex3f(cx + c * rad[k] * sx, cy + s * rad[k] * sy, 0);
+                gl.Color4f(0, 0, 0, 1.0f);
+                gl.Vertex3f(cx + c * rad[k + 1] * sx, cy + s * rad[k + 1] * sy, 0);
+            }
+            gl.End();
+        }
+        gl.MatrixMode(0x1700); gl.PopMatrix();
+        gl.MatrixMode(0x1701); gl.PopMatrix();
+        gl.PopAttrib();
+    }
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
 static void ProcessControllers(void)
 {
@@ -1281,6 +1560,7 @@ static void ProcessControllers(void)
         ReleaseAllButtons();
         g_realSync = 1;
         g_moveForward = g_moveRight = 0;
+        g_vigAmount = 0;
         MenuControls(dom);
         return;
     }
@@ -1294,6 +1574,7 @@ static void ProcessControllers(void)
     } else {
         float sx = g_in.stick[dom][0], sy = g_in.stick[dom][1];
         float mx = g_in.stick[off][0], my = g_in.stick[off][1];
+        float turnRate = 0;
 
         if (!g_btnDown[BT_PTRIGGER] && Pressed(g_in.trigger[dom], BT_PTRIGGER) && cfg.logNear) {
             g_nearLogFrames = 6;   // log a few frames after the shot
@@ -1339,6 +1620,7 @@ static void ProcessControllers(void)
             else if (fabsf(sx) < 0.3f) g_turnLatched = 0;
         } else if (fabsf(sx) > 0.15f) {
             va[YAW] -= sx * cfg.turnSpeed * dt;
+            turnRate = fabsf(sx) * cfg.turnSpeed;
         }
         if (!g_stanceLatched && fabsf(sy) > 0.7f && fabsf(sy) > fabsf(sx)) {
             SetButton(sy > 0 ? BT_STICKUP : BT_STICKDOWN, 1);
@@ -1348,9 +1630,15 @@ static void ProcessControllers(void)
 
         // Aim: from the eye through a point ConvergeDistance metres along the gun, so the
         // shots (which leave from the eye) cross the barrel line there.
-        if (g_gunValid) {
-            const vr_pose_t *h = &g_gun;
+        g_pointerOn = 0;
+        {
+            const vr_pose_t *h = g_gunValid ? &g_gun : NULL;
             float t[3], len;
+            if (!h && cfg.realistic && g_gunHand < 0 && g_in.handValid[dom] && MapLoaded() && PointerWanted()) {
+                h = &g_in.hand[dom];   // empty hands: point with the hand (training signs, looking around)
+                g_pointerOn = 1;
+            }
+            if (h) {
             int i;
             for (i = 0; i < 3; i++) t[i] = h->pos[i] + h->axis[0][i] * cfg.converge - g_head.pos[i];
             len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
@@ -1360,6 +1648,7 @@ static void ProcessControllers(void)
                 aimYaw = YawOf(t);
                 aimPitch = PitchOf(t);
                 fromHand = 1;
+            }
             }
         }
 
@@ -1377,7 +1666,15 @@ static void ProcessControllers(void)
 
         if (fromHand && !g_crosshairOff) { Cbuf("cg_drawCrosshair 0\n"); g_crosshairOff = 1; }
         UpdateAutoAds();
-        if (fromHand) UpdateGrenadeArc();
+        UpdateVignette(dt, sqrtf(mx * mx + my * my), turnRate);
+        if (fromHand && !g_pointerOn) UpdateGrenadeArc();
+        if (g_pointerOn) DrawPointer(dom);
+        {
+            // objectives held up: the HUD screen goes above the left hand
+            int b, held = 0;
+            for (b = 0; b < BT_COUNT; b++) if (g_btnDown[b] && !strcmp(cfg.bind[b], "+scores")) held = 1;
+            g_objOnHand = cfg.objOnHand && held && g_in.handValid[0];
+        }
     }
     UpdateViewAngles(aimYaw, aimPitch, fromHand);
 }
@@ -2177,6 +2474,22 @@ static void StartVR(void)
 {
     if (!cfg.vr || XR_Ready() || !gl.GetCurrentContext()) return;
     if (XR_Init(fb_w, fb_h, 0)) {
+        // Tell the launcher what the headset asks for, so it can show the real resolution of
+        // each "Headset resolution" choice.
+        const char *appdata = getenv("APPDATA");
+        int rw, rh, mw, mh;
+        XR_RecommendedSize(&rw, &rh, &mw, &mh);
+        if (appdata && rw > 0) {
+            char path[MAX_PATH], v[16];
+            _snprintf(path, sizeof(path), "%s\\CoD-VR", appdata);
+            path[sizeof(path) - 1] = 0;
+            CreateDirectoryA(path, NULL);
+            strncat(path, "\\settings.ini", sizeof(path) - strlen(path) - 1);
+            sprintf(v, "%d", rw); WritePrivateProfileStringA("Headset", "RecommendedWidth", v, path);
+            sprintf(v, "%d", rh); WritePrivateProfileStringA("Headset", "RecommendedHeight", v, path);
+            sprintf(v, "%d", mw); WritePrivateProfileStringA("Headset", "MaxWidth", v, path);
+            sprintf(v, "%d", mh); WritePrivateProfileStringA("Headset", "MaxHeight", v, path);
+        }
         // The headset paces the frames: don't wait for the monitor's vsync as well.
         BOOL (WINAPI *swapInterval)(int) = (void *)gl.GetProcAddress("wglSwapIntervalEXT");
         if (swapInterval) swapInterval(0);
@@ -2227,11 +2540,12 @@ static int EnsureFramebuffers(void)
 {
     HGLRC ctx = gl.GetCurrentContext();
     int w = MEM(int, ADDR_r_glConfig_vidWidth), h = MEM(int, ADDR_r_glConfig_vidHeight);
-    int i;
+    int i, ew, eh;
     GLint prevTex = 0;
 
     if (fb_failed || !ctx || w <= 0 || h <= 0) return 0;
-    if (fb_ok && ctx == fb_ctx && w == fb_w && h == fb_h) return 1;
+    if (!XR_EyeSize(&ew, &eh)) { ew = w; eh = h; }   // no headset yet: the window's size
+    if (fb_ok && ctx == fb_ctx && w == fb_w && h == fb_h && ew == eye_w && eh == eye_h) return 1;
     if (ctx != fb_ctx) fb_ok = 0;   // old context is gone with its objects
     DestroyFramebuffers();
 
@@ -2247,10 +2561,10 @@ static int EnsureFramebuffers(void)
     gl.GenFramebuffers(2, fb_fbo);
     gl.GenRenderbuffers(2, fb_depth);
     for (i = 0; i < 2; i++) {
-        InitColorTexture(fb_tex[i], w, h);
+        InitColorTexture(fb_tex[i], ew, eh);
 
         gl.BindRenderbuffer(GL_RENDERBUFFER, fb_depth[i]);
-        gl.RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+        gl.RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, ew, eh);
 
         gl.BindFramebuffer(GL_FRAMEBUFFER, fb_fbo[i]);
         gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb_tex[i], 0);
@@ -2272,8 +2586,9 @@ static int EnsureFramebuffers(void)
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
     gl.GetError();
 
-    fb_ok = 1; fb_ctx = ctx; fb_w = w; fb_h = h;
-    Log("eye framebuffers %dx%d ready", w, h);
+    fb_ok = 1; fb_ctx = ctx; fb_w = w; fb_h = h; eye_w = ew; eye_h = eh;
+    g_eyeBound = 0;
+    Log("eye framebuffers %dx%d ready (game window %dx%d)", ew, eh, w, h);
 
     StartVR();
     return 1;
@@ -2294,12 +2609,42 @@ void GL_Blit(GLuint srcFbo, int w, int h, GLuint dstFbo, int dw, int dh)
     GL_BlitRect(srcFbo, 0, 0, w, h, dstFbo, dw, dh);
 }
 
+// Puts the game's last viewport and scissor rectangle back, scaled for an eye buffer.
+static void ScaleRect(const GLint r[4], GLint out[4])
+{
+    if (g_eyeBound && fb_w > 0 && fb_h > 0 && (eye_w != fb_w || eye_h != fb_h)) {
+        float sx = (float)eye_w / fb_w, sy = (float)eye_h / fb_h;
+        GLint x0 = (GLint)floorf(r[0] * sx + 0.5f), y0 = (GLint)floorf(r[1] * sy + 0.5f);
+        out[0] = x0;
+        out[1] = y0;
+        out[2] = (GLint)floorf((r[0] + r[2]) * sx + 0.5f) - x0;
+        out[3] = (GLint)floorf((r[1] + r[3]) * sy + 0.5f) - y0;
+    } else {
+        memcpy(out, r, 4 * sizeof(GLint));
+    }
+}
+
+static void ReapplyRects(void)
+{
+    GLint r[4];
+    if (g_vpSet) { ScaleRect(g_vp, r); gl.Viewport(r[0], r[1], r[2], r[3]); }
+    if (g_scSet && gl.Scissor) { ScaleRect(g_sc, r); gl.Scissor(r[0], r[1], r[2], r[3]); }
+}
+
+static void SetEyeBound(int on)
+{
+    if (on == g_eyeBound) return;
+    g_eyeBound = on;
+    ReapplyRects();
+}
+
 static void BindTarget(GLuint fbo)
 {
     gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
     gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
     gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
     g_boundFbo = 1;
+    SetEyeBound(fbo && (fbo == fb_fbo[0] || fbo == fb_fbo[1]));
 }
 
 // 2D and world-less 3D of the current eye go to the HUD (left) or are discarded (right).
@@ -2326,12 +2671,32 @@ static void BindEye(int eye)
     gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
     gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
     g_boundFbo = 1;
+    SetEyeBound(1);
 }
 
 static void BindWindow(GLenum mode)
 {
     if (g_boundFbo) { gl.BindFramebuffer(GL_FRAMEBUFFER, 0); g_boundFbo = 0; }
     gl.DrawBuffer(mode);
+    SetEyeBound(0);
+}
+
+void WINAPI hook_glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
+{
+    GLint r[4];
+    g_vp[0] = x; g_vp[1] = y; g_vp[2] = w; g_vp[3] = h;
+    g_vpSet = 1;
+    ScaleRect(g_vp, r);
+    gl.Viewport(r[0], r[1], r[2], r[3]);
+}
+
+void WINAPI hook_glScissor(GLint x, GLint y, GLsizei w, GLsizei h)
+{
+    GLint r[4];
+    g_sc[0] = x; g_sc[1] = y; g_sc[2] = w; g_sc[3] = h;
+    g_scSet = 1;
+    ScaleRect(g_sc, r);
+    gl.Scissor(r[0], r[1], r[2], r[3]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2412,10 +2777,28 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
             hud.offsetY = 0;
         }
         if (!g_scopeActive) g_lastHudWorld = hud.world;
+        if (!g_scopeActive && hud.fbo) {
+            if (!hud.world && !cfg.menuFollowsHead) {
+                if (!g_menuQuadValid) PlaceMenuQuad();
+                hud.posed = 1;
+                hud.pose = g_menuQuad;
+            } else if (hud.world) {
+                g_menuQuadValid = 0;   // the next menu or loading screen is placed again
+                if (g_objOnHand) {
+                    hud.posed = 1;
+                    ObjectivesPose(&hud.pose);
+                    hud.width = cfg.objWidth;
+                }
+            }
+        }
         if (g_boundFbo) BindWindow(GL_BACK);
-        XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, fb_w, fb_h, &hud, NULL);
+        if (drawn && g_vrFrame && hud.world && !g_scopeActive) DrawVignette();
+        XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, NULL);
         // Monitor: the left eye while playing, the HUD buffer (menus) otherwise.
-        if (drawn) GL_Blit(hud.world ? fb_fbo[0] : hud.fbo, fb_w, fb_h, 0, fb_w, fb_h);
+        if (drawn) {
+            if (hud.world) GL_Blit(fb_fbo[0], eye_w, eye_h, 0, fb_w, fb_h);
+            else GL_Blit(hud.fbo, fb_w, fb_h, 0, fb_w, fb_h);
+        }
         gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
     } else if (g_stereoFrameDrawn && fb_ok) {
         int i;
@@ -2428,7 +2811,7 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
             if (scissor) gl.Disable(GL_SCISSOR_TEST);
             gl.BindFramebuffer(GL_READ_FRAMEBUFFER, fb_fbo[i]);
             gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            gl.BlitFramebuffer(0, 0, fb_w, fb_h, x0, 0, x0 + fb_w / 2, fb_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            gl.BlitFramebuffer(0, 0, eye_w, eye_h, x0, 0, x0 + fb_w / 2, fb_h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
             if (scissor) gl.Enable(GL_SCISSOR_TEST);
         }
         gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2447,11 +2830,29 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
+// The launcher keeps the player's choices in %APPDATA%/CoD-VR/settings.ini (writable without
+// administrator rights, unlike the game folder): a key there overrides cod_vr.ini.
+static char g_userIni[MAX_PATH];
+
+static int CfgInt(const char *sec, const char *key, int def, const char *ini)
+{
+    int v = (int)GetPrivateProfileIntA(sec, key, def, ini);
+    return g_userIni[0] ? (int)GetPrivateProfileIntA(sec, key, v, g_userIni) : v;
+}
+
+static void CfgStr(const char *sec, const char *key, const char *def, char *out, DWORD size, const char *ini)
+{
+    char v[256];
+    GetPrivateProfileStringA(sec, key, def, v, sizeof(v), ini);
+    if (g_userIni[0]) GetPrivateProfileStringA(sec, key, v, out, size, g_userIni);
+    else lstrcpynA(out, v, (int)size);
+}
+
 static float IniFloat(const char *sec, const char *key, float def, const char *ini)
 {
     char buf[64], d[64];
     sprintf(d, "%g", def);
-    GetPrivateProfileStringA(sec, key, d, buf, sizeof(buf), ini);
+    CfgStr(sec, key, d, buf, sizeof(buf), ini);
     return (float)atof(buf);
 }
 
@@ -2459,55 +2860,79 @@ static void LoadConfig(void)
 {
     char ini[MAX_PATH];
     _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
-    cfg.enabled    = GetPrivateProfileIntA("Stereo", "Enabled", cfg.enabled, ini);
-    cfg.swapEyes   = GetPrivateProfileIntA("Stereo", "SwapEyes", cfg.swapEyes, ini);
+    {
+        const char *appdata = getenv("APPDATA");
+        g_userIni[0] = 0;
+        if (appdata && appdata[0]) {
+            _snprintf(g_userIni, sizeof(g_userIni), "%s\\CoD-VR\\settings.ini", appdata);
+            g_userIni[sizeof(g_userIni) - 1] = 0;
+            if (GetFileAttributesA(g_userIni) == INVALID_FILE_ATTRIBUTES) g_userIni[0] = 0;
+        }
+    }
+    cfg.enabled    = CfgInt("Stereo", "Enabled", cfg.enabled, ini);
+    cfg.swapEyes   = CfgInt("Stereo", "SwapEyes", cfg.swapEyes, ini);
     cfg.separation = IniFloat("Stereo", "Separation", cfg.separation, ini);
-    cfg.vr         = GetPrivateProfileIntA("VR", "Enabled", cfg.vr, ini);
+    cfg.vr         = CfgInt("VR", "Enabled", cfg.vr, ini);
     cfg.worldScale = IniFloat("VR", "WorldScale", cfg.worldScale, ini);
-    cfg.positional = GetPrivateProfileIntA("VR", "PositionalTracking", cfg.positional, ini);
-    cfg.headAim    = GetPrivateProfileIntA("VR", "HeadAim", cfg.headAim, ini);
-    cfg.hud                 = GetPrivateProfileIntA("HUD", "Enabled", cfg.hud, ini);
-    cfg.hudLayer.headLocked = GetPrivateProfileIntA("HUD", "HeadLocked", cfg.hudLayer.headLocked, ini);
+    cfg.positional = CfgInt("VR", "PositionalTracking", cfg.positional, ini);
+    cfg.headAim    = CfgInt("VR", "HeadAim", cfg.headAim, ini);
+    cfg.hud                 = CfgInt("HUD", "Enabled", cfg.hud, ini);
+    cfg.hudLayer.headLocked = CfgInt("HUD", "HeadLocked", cfg.hudLayer.headLocked, ini);
     cfg.hudLayer.distance   = IniFloat("HUD", "Distance", cfg.hudLayer.distance, ini);
     cfg.hudLayer.offsetY    = IniFloat("HUD", "OffsetY", cfg.hudLayer.offsetY, ini);
     cfg.hudLayer.width      = IniFloat("HUD", "Width", cfg.hudLayer.width, ini);
     cfg.hudLayer.menuWidth  = IniFloat("HUD", "MenuWidth", cfg.hudLayer.menuWidth, ini);
-    cfg.controllers     = GetPrivateProfileIntA("Controllers", "Enabled", cfg.controllers, ini);
-    cfg.rightHanded     = GetPrivateProfileIntA("Controllers", "RightHanded", cfg.rightHanded, ini);
+    cfg.controllers     = CfgInt("Controllers", "Enabled", cfg.controllers, ini);
+    cfg.rightHanded     = CfgInt("Controllers", "RightHanded", cfg.rightHanded, ini);
     cfg.snapTurn        = IniFloat("Controllers", "SnapTurn", cfg.snapTurn, ini);
     cfg.turnSpeed       = IniFloat("Controllers", "SmoothTurnSpeed", cfg.turnSpeed, ini);
     cfg.converge        = IniFloat("Controllers", "ConvergeDistance", cfg.converge, ini);
-    cfg.weaponInHand    = GetPrivateProfileIntA("Controllers", "WeaponInHand", cfg.weaponInHand, ini);
+    cfg.weaponInHand    = CfgInt("Controllers", "WeaponInHand", cfg.weaponInHand, ini);
     cfg.weaponOffset[0] = IniFloat("Controllers", "WeaponOffsetForward", cfg.weaponOffset[0], ini);
     cfg.weaponOffset[1] = IniFloat("Controllers", "WeaponOffsetRight", cfg.weaponOffset[1], ini);
     cfg.weaponOffset[2] = IniFloat("Controllers", "WeaponOffsetUp", cfg.weaponOffset[2], ini);
-    cfg.twoHanded       = GetPrivateProfileIntA("Controllers", "TwoHanded", cfg.twoHanded, ini);
+    cfg.twoHanded       = CfgInt("Controllers", "TwoHanded", cfg.twoHanded, ini);
     cfg.twoHandReach    = IniFloat("Controllers", "TwoHandReach", cfg.twoHandReach, ini);
-    cfg.scope           = GetPrivateProfileIntA("Scope", "Enabled", cfg.scope, ini);
+    cfg.scope           = CfgInt("Scope", "Enabled", cfg.scope, ini);
     cfg.scopeMaxFov     = IniFloat("Scope", "MaxFov", cfg.scopeMaxFov, ini);
     cfg.scopeWidth      = IniFloat("Scope", "Width", cfg.scopeWidth, ini);
     cfg.scopeDistance   = IniFloat("Scope", "Distance", cfg.scopeDistance, ini);
     cfg.twoHandGripHeight = IniFloat("Controllers", "TwoHandGripHeight", cfg.twoHandGripHeight, ini);
-    cfg.logNear         = GetPrivateProfileIntA("Debug", "LogNearEntities", cfg.logNear, ini);
+    cfg.logNear         = CfgInt("Debug", "LogNearEntities", cfg.logNear, ini);
     cfg.muzzleOffset[0] = IniFloat("Controllers", "MuzzleOffsetRight", cfg.muzzleOffset[0], ini);
     cfg.muzzleOffset[1] = IniFloat("Controllers", "MuzzleOffsetUp", cfg.muzzleOffset[1], ini);
     cfg.worldFlashLength = IniFloat("MuzzleFlash", "WorldFlashLength", 0.25f, ini);
     // weapons are taken from the body and held while the grip is pressed (the code for the gun
     // always in the dominant hand stays behind cfg.realistic = 0, not offered for now)
     cfg.realistic = 1;
-    cfg.hipAccuracy   = GetPrivateProfileIntA("Controllers", "HipFireAccuracy", 1, ini);
-    cfg.mirrorLeft    = GetPrivateProfileIntA("Controllers", "MirrorLeftHand", 1, ini);
+    cfg.hipAccuracy   = CfgInt("Controllers", "HipFireAccuracy", 1, ini);
+    cfg.mirrorLeft    = CfgInt("Controllers", "MirrorLeftHand", 1, ini);
+    cfg.emptyPointer  = CfgInt("Controllers", "EmptyHandPointer", 1, ini);
+    cfg.renderScale   = IniFloat("VR", "RenderScale", 1.0f, ini);
+    cfg.vignette         = CfgInt("Comfort", "Vignette", 1, ini);
+    cfg.vignetteStrength = IniFloat("Comfort", "VignetteStrength", 0.6f, ini);
+    cfg.vignetteSpeed    = IniFloat("Comfort", "VignetteSpeed", 40.0f, ini);
+    cfg.vignetteTurn     = IniFloat("Comfort", "VignetteTurn", 45.0f, ini);
+    if (cfg.vignetteStrength < 0) cfg.vignetteStrength = 0;
+    if (cfg.vignetteStrength > 1) cfg.vignetteStrength = 1;
+    if (cfg.vignetteSpeed < 1) cfg.vignetteSpeed = 1;
+    if (cfg.vignetteTurn < 1) cfg.vignetteTurn = 1;
+    XR_SetRenderScale(cfg.renderScale);
+    cfg.menuFollowsHead = CfgInt("HUD", "MenuFollowsHead", 0, ini);
+    cfg.objOnHand     = CfgInt("HUD", "ObjectivesOnHand", 1, ini);
+    cfg.objWidth      = IniFloat("HUD", "ObjectivesWidth", 0.5f, ini);
+    cfg.objHeight     = IniFloat("HUD", "ObjectivesHeight", 0.15f, ini);
     // [Holsters] (v1.2.0 called the section [Realistic]: still read as the default)
-    cfg.dropOnRelease = GetPrivateProfileIntA("Holsters", "DropOnRelease", GetPrivateProfileIntA("Realistic", "DropOnRelease", 1, ini), ini);
-    cfg.drawTime      = GetPrivateProfileIntA("Holsters", "DrawTime", GetPrivateProfileIntA("Realistic", "DrawTime", 50, ini), ini);
+    cfg.dropOnRelease = CfgInt("Holsters", "DropOnRelease", CfgInt("Realistic", "DropOnRelease", 1, ini), ini);
+    cfg.drawTime      = CfgInt("Holsters", "DrawTime", CfgInt("Realistic", "DrawTime", 50, ini), ini);
     {
         static const char *keys[2] = { "LeftShoulder", "RightShoulder" }, *defs[2] = { "primaryb", "primary" };
         static const char *names[6] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade" };
         char v[32], old[32];
         int h, k;
         for (h = 0; h < 2; h++) {
-            GetPrivateProfileStringA("Realistic", keys[h], defs[h], old, sizeof(old), ini);
-            GetPrivateProfileStringA("Holsters", keys[h], old, v, sizeof(v), ini);
+            CfgStr("Realistic", keys[h], defs[h], old, sizeof(old), ini);
+            CfgStr("Holsters", keys[h], old, v, sizeof(v), ini);
             cfg.shoulderSlot[h] = h ? 1 : 2;
             for (k = 1; k < 6; k++) if (!_stricmp(v, names[k])) cfg.shoulderSlot[h] = k;
         }
@@ -2515,25 +2940,25 @@ static void LoadConfig(void)
     cfg.backHeight    = IniFloat("Holsters", "BackHeight", IniFloat("Realistic", "BackHeight", -0.30f, ini), ini);
     cfg.hipHeight     = IniFloat("Holsters", "HipHeight", IniFloat("Realistic", "HipHeight", -0.75f, ini), ini);
     cfg.lowerBackHeight = IniFloat("Holsters", "LowerBackHeight", IniFloat("Realistic", "LowerBackHeight", -0.70f, ini), ini);
-    cfg.roomScale       = GetPrivateProfileIntA("VR", "RoomScale", cfg.roomScale, ini);
+    cfg.roomScale       = CfgInt("VR", "RoomScale", cfg.roomScale, ini);
     cfg.weaponAngle[0]  = IniFloat("Controllers", "WeaponPitch", cfg.weaponAngle[0], ini);
     cfg.weaponAngle[1]  = IniFloat("Controllers", "WeaponYaw", cfg.weaponAngle[1], ini);
     cfg.aimSmoothing    = IniFloat("Controllers", "AimSmoothing", cfg.aimSmoothing, ini);
-    cfg.autoAds         = GetPrivateProfileIntA("Controllers", "AutoADS", cfg.autoAds, ini);
-    cfg.grenadeArc      = GetPrivateProfileIntA("Grenade", "Trajectory", cfg.grenadeArc, ini);
+    cfg.autoAds         = CfgInt("Controllers", "AutoADS", cfg.autoAds, ini);
+    cfg.grenadeArc      = CfgInt("Grenade", "Trajectory", cfg.grenadeArc, ini);
     cfg.gravity         = IniFloat("Grenade", "Gravity", cfg.gravity, ini);
     cfg.grenadeOpacity  = IniFloat("Grenade", "Opacity", cfg.grenadeOpacity, ini);
     {
         char mask[32];
-        GetPrivateProfileStringA("Grenade", "TraceMask", "1", mask, sizeof(mask), ini);
+        CfgStr("Grenade", "TraceMask", "1", mask, sizeof(mask), ini);
         cfg.traceMask = (int)strtoul(mask, NULL, 0);
     }
     cfg.scopeSmoothing  = IniFloat("Scope", "Smoothing", cfg.scopeSmoothing, ini);
-    cfg.menuPointer     = (float)GetPrivateProfileIntA("Controllers", "MenuPointer", (int)cfg.menuPointer, ini);
+    cfg.menuPointer     = (float)CfgInt("Controllers", "MenuPointer", (int)cfg.menuPointer, ini);
     {
         int b;
         for (b = 0; b < BT_COUNT; b++)
-            GetPrivateProfileStringA("Buttons", g_buttons[b].key, g_buttons[b].def, cfg.bind[b], sizeof(cfg.bind[b]), ini);
+            CfgStr("Buttons", g_buttons[b].key, g_buttons[b].def, cfg.bind[b], sizeof(cfg.bind[b]), ini);
     }
     if (cfg.enabled && !IsKnownExe()) {
         Log("not CoDSP.exe 1.5 (timestamp %08x expected): passthrough only", CODSP_TIMESTAMP);
@@ -2575,6 +3000,7 @@ static BOOL LoadRealOpenGL(void)
     RESOLVE(LineWidth, "glLineWidth");           RESOLVE(PointSize, "glPointSize");
     RESOLVE(Viewport, "glViewport");
     RESOLVE(DepthRange, "glDepthRange");         RESOLVE(FrontFace, "glFrontFace");
+    RESOLVE(Scissor, "glScissor");              RESOLVE(BlendFunc, "glBlendFunc");
     return TRUE;
 }
 
@@ -2603,6 +3029,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         "hud=%d (distance %.2f, width %.2f, menu %.2f, headLocked %d)",
         cfg.enabled, cfg.vr, cfg.separation, cfg.worldScale, cfg.positional, cfg.headAim,
         cfg.hud, cfg.hudLayer.distance, cfg.hudLayer.width, cfg.hudLayer.menuWidth, cfg.hudLayer.headLocked);
+    if (g_userIni[0]) Log("player settings from %s", g_userIni);
     Log("holsters: drop on release %d, back %.2f, hip %.2f, lower back %.2f, draw %d ms",
         cfg.dropOnRelease, cfg.backHeight, cfg.hipHeight, cfg.lowerBackHeight, cfg.drawTime);
     Log("controllers=%d rightHanded=%d snapTurn=%.0f converge=%.1f weaponInHand=%d offset=(%.1f %.1f %.1f)",

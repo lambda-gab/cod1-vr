@@ -39,7 +39,7 @@ CoD 1.5 only loads packs whose name starts with `pak`. Delete a pack to undo it.
 
 ## Installer command line
 
-`CoD-VR-Setup.exe /silent /dir="<game folder>" [/hands]` or `/silent /dir="..." /uninstall`.
+`CoD-VR-Setup.exe /silent /dir="<game folder>" [/hands] [/shortcut]` or `/silent /dir="..." /uninstall`.
 
 On updates `cod_vr.ini` is kept and the new defaults go to `cod_vr.ini.default`. Another `opengl32.dll` already in
 the folder is backed up.
@@ -51,6 +51,15 @@ If the game folder is under `Program Files`, copying files there needs administr
 `LogNearEntities=1` in `[Debug]` logs the entities added near the view when you pull the trigger (used to find
 effects such as muzzle flashes).
 
+## Launcher and player settings
+
+`launcher/` builds `CoD-VR-Launcher.exe` (`launcher\build_launcher.bat`; plain Win32 and GDI, the banner is a JPEG
+resource decoded with OLE). It writes the player's choices to `%APPDATA%\CoD-VR\settings.ini`; the mod reads every
+setting from `cod_vr.ini` and then from that file, which wins. The game's own graphics settings (texture quality,
+brightness) are passed when it starts: `+set r_picmip N +set r_ignorehwgamma 1 +set r_gamma G`. The mod writes the
+headset's recommended and largest eye size to `[Headset]` in the same file, so the launcher can show the resolution
+of each choice.
+
 ## Building
 
 You need Visual Studio with the C++ tools (the build uses the x86 compiler) and the Khronos OpenXR loader:
@@ -59,7 +68,8 @@ You need Visual Studio with the C++ tools (the build uses the x86 compiler) and 
    [OpenXR-SDK-Source releases](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases)
    and extract it to `deps/openxr/` (so that `deps/openxr/include` and `deps/openxr/Win32` exist).
 2. Run `proxy\build.bat`. The output goes to `proxy\out\` (`opengl32.dll` and `openxr_loader.dll`).
-3. Optional: `installer\build_setup.bat` builds `installer\out\CoD-VR-Setup.exe`, which embeds those files.
+3. `launcher\build_launcher.bat` builds the launcher; then, optionally, `installer\build_setup.bat` builds
+   `installer\out\CoD-VR-Setup.exe`, which embeds those files.
 
 Pushing a tag such as `v1.1.0` makes the GitHub Actions workflow (`.github/workflows/release.yml`) build everything
 and publish a release with the setup and a zip for manual installs.

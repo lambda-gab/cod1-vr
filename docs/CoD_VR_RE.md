@@ -373,3 +373,23 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
   renderizador desenha a arma com `(0, 0.1)`) passa a ser interceptado para trocar o `glFrontFace` para `GL_CW`
   enquanto a arma espelhada é desenhada.
 - Gatilhos: os dois atiram; com luneta (`adsOverlayShader`, `+0x224`) o da outra mão dá o zoom.
+
+
+## Resolução do headset, vinheta, menus e launcher (v1.3.0)
+
+- Os olhos eram renderizados em FBOs do tamanho da janela (1920x1080) e esticados para a swapchain (2112x2304 no
+  VDXR). Agora os FBOs têm o tamanho da swapchain (recomendado do runtime x `RenderScale`, até o máximo dele), e o
+  `glViewport`/`glScissor` do motor (em pixels da janela) passam a ser interceptados e escalados enquanto um FBO de olho
+  está ligado. O HUD continua no tamanho da janela.
+- Vinheta: depois da cena, antes de copiar para a swapchain, um anel preto (borda suave) é desenhado em cada olho, com
+  o centro na direção à frente daquele olho (FOV assimétrico), em espaço de tangente. Fecha com o analógico de andar
+  (velocidade real suavizada em 0,3 s, para o passo do jogo não fazer a borda pulsar) e com o giro suave.
+- Menus e loading: quad em pose fixa no espaço `local` (colocado à frente, nivelado, quando aparece). Objetivos: com um
+  botão `+scores` apertado, o quad vai para cima da mão esquerda, virado para os olhos.
+- Mãos vazias: a mira segue a mão direita e uma linha vai até onde o raio do jogo bate no mapa. Só no mapa `training`
+  até um objetivo ficar `done`: o mod lê os configstrings pelo trap `0x2e` do jogo (`CS_SERVERINFO` 0 com `mapname`,
+  objetivos em `15 + i` com `state`; estados `empty, active, invisible, done, current, failed`), com o `currentVM`
+  apontando para a VM do jogo durante a chamada (`VM_DllSyscall` em `0x44f040`).
+- Traces só com mapa carregado: `cm.numSubModels` (`0x14bd6e0`) zero faz o `CM_BoxTrace` dar
+  "CM_ClipHandleToModel: bad handle" (fatal) durante o carregamento.
+- Launcher: escreve em `%APPDATA%\CoD-VR\settings.ini`; o mod lê cada chave do `cod_vr.ini` e depois desse arquivo.

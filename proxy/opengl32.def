@@ -258,7 +258,7 @@ EXPORTS
   glRotatef=stub_255
   glScaled=stub_256
   glScalef=stub_257
-  glScissor=stub_258
+  glScissor=hook_glScissor
   glSelectBuffer=stub_259
   glShadeModel=stub_260
   glStencilFunc=stub_261
@@ -342,7 +342,7 @@ EXPORTS
   glVertex4s=stub_339
   glVertex4sv=stub_340
   glVertexPointer=stub_341
-  glViewport=stub_342
+  glViewport=hook_glViewport
   wglChoosePixelFormat=stub_343
   wglCopyContext=stub_344
   wglCreateContext=stub_345

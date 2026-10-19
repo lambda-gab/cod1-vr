@@ -3,10 +3,12 @@
 IDR_OPENGL32      RCDATA "..\proxy\out\opengl32.dll"
 IDR_OPENXR_LOADER RCDATA "..\proxy\out\openxr_loader.dll"
 IDR_COD_VR_INI    RCDATA "..\proxy\cod_vr.ini"
+// the launcher, built by ..\launcher\build_launcher.bat
+IDR_LAUNCHER      RCDATA "..\launcher\out\CoD-VR-Launcher.exe"
 
 1 VERSIONINFO
-FILEVERSION 1,2,0,0
-PRODUCTVERSION 1,2,0,0
+FILEVERSION 1,3,0,0
+PRODUCTVERSION 1,3,0,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -14,8 +16,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Call of Duty VR setup"
       VALUE "ProductName", "Call of Duty VR"
-      VALUE "FileVersion", "1.2.0"
-      VALUE "ProductVersion", "1.2.0"
+      VALUE "FileVersion", "1.3.0"
+      VALUE "ProductVersion", "1.3.0"
     END
   END
   BLOCK "VarFileInfo"

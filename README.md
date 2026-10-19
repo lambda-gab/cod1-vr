@@ -32,18 +32,21 @@ wanted to experience it again in VR.
 
 1. Download `CoD-VR-Setup.exe` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
 2. Run it. It finds the game folder (or lets you pick it) and checks that the game is version 1.5.
-3. Choose whether to hide the player's hands, so only the gun is in your hand (recommended).
-4. Connect the headset and start `CoDSP.exe`.
+3. Choose whether to hide the player's hands, so only the gun is in your hand (recommended), and whether to create
+   a desktop shortcut to the launcher.
+4. Connect the headset and start the game with the **Call of Duty VR launcher** (the shortcut, or
+   `CoD-VR-Launcher.exe` in the game folder).
 
-Run the installer again to update or uninstall. Your `cod_vr.ini` settings are kept on updates.
+Run the installer again to update or uninstall. Your settings are kept on updates.
 
 ### Manual
 
 1. Extract `cod-vr-manual-install.zip` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
-2. Copy `opengl32.dll`, `openxr_loader.dll` and `cod_vr.ini` to the game folder (where `CoDSP.exe` is).
-3. Connect the headset and start `CoDSP.exe`.
+2. Copy `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini` and `CoD-VR-Launcher.exe` to the game folder (where
+   `CoDSP.exe` is).
+3. Connect the headset and start `CoD-VR-Launcher.exe` (or `CoDSP.exe` directly).
 
-To uninstall, delete those three files. Hiding the hands and the VR tutorial texts need the installer (or the steps in
+To uninstall, delete those four files. Hiding the hands and the VR tutorial texts need the installer (or the steps in
 the [technical notes](docs/TECHNICAL.md)).
 
 ## Controls
@@ -73,7 +76,8 @@ Buttons (editable in `[Buttons]` of `cod_vr.ini`):
 | Left stick | Move (relative to the head) |
 | Right stick | Turn (45° snap); up/down changes stance |
 | A / B | Jump / reload |
-| X / Y | Next weapon / melee |
+| X | Objectives (shown above your left hand) |
+| Y | Melee |
 | Left stick click | Objectives |
 | Right stick click | Go prone |
 | Menu | Game menu |
@@ -82,7 +86,21 @@ In menus, point with the right hand: trigger clicks, B goes back, A confirms.
 
 ## Settings
 
-Everything is in `cod_vr.ini`, in the game folder, with a comment on each setting. If the game is under
+### The launcher
+
+The launcher has the settings most players want, saved as soon as you change them:
+
+- **GRAPHICS:** headset resolution (from *Potato* 50% to *GPU Furnace* 200%, with the size per eye), texture
+  quality, brightness.
+- **VR:** comfort vignette, snap or smooth turning, dominant hand, roomscale, grenade trajectory, dropping the weapon
+  on release, objectives on the hand, menus fixed or following the head.
+- **CONTROLS:** the controller layout.
+
+Its choices go to `%APPDATA%\CoD-VR\settings.ini` and take precedence over `cod_vr.ini`.
+
+### cod_vr.ini
+
+Everything else is in `cod_vr.ini`, in the game folder, with a comment on each setting. If the game is under
 `Program Files`, open the editor (Notepad) as administrator to save it. The most used ones:
 
 - `[Controllers]` `WeaponOffset*`, `WeaponPitch`, `WeaponYaw`: gun position and angle in the hand.
@@ -96,8 +114,25 @@ Everything is in `cod_vr.ini`, in the game folder, with a comment on each settin
   gun's own sights); `RightHanded`: which stick turns.
 - `[Holsters]`: weapon over each shoulder (left-handed players may want them swapped), holster heights, dropping
   the gun when you let go, draw time.
+- `[VR]` `RenderScale`: eye resolution, times the headset's recommended size.
+- `[Comfort]`: the vignette (on/off, strength, when it starts closing).
+- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`: menus and the objectives screen.
 
 ## Releases
+
+### v1.3.0
+
+- **Launcher** with PLAY, CONTROLS, GRAPHICS, VR and ABOUT; the installer can create a desktop shortcut to it.
+- **Sharper image:** each eye is rendered at the headset's own resolution (it was the game window's, stretched),
+  adjustable from 50% to 200%.
+- **Comfort vignette** while moving with the stick or turning smoothly (Off / Low / Medium / High).
+- Menus and loading screens stay fixed in front of you, so you can look around them.
+- X opens the objectives, shown above your left hand.
+- Training: with empty hands, a line shows where the right hand points, until the signs are done.
+- The controls are now always the body-holster ones (the Arcade mode was removed).
+
+Thanks to [lasmith1689-sys/cod1-vr](https://github.com/lasmith1689-sys/cod1-vr) for the vignette and headset
+resolution ideas.
 
 ### v1.2.0
 
@@ -135,8 +170,8 @@ Everything is in `cod_vr.ini`, in the game folder, with a comment on each settin
 
 ## Notes
 
-- **Tutorial, the signs at the start:** point the gun hand at each sign and move the hand up and down until the game
-  marks the objective as done.
+- **Tutorial, the signs at the start:** point your right hand (a line shows where) at each sign and move the hand
+  up and down until the game marks the objective as done.
 
 ## Technical information
 

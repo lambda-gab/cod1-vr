@@ -1,7 +1,7 @@
 // CoD VR setup: installs the mod into a Call of Duty folder, optionally builds the "no hands"
 // data pack from the player's own pak files, and uninstalls.
 //
-// The mod files (opengl32.dll, openxr_loader.dll, cod_vr.ini) are embedded as resources. No game
+// The mod files (opengl32.dll, openxr_loader.dll, cod_vr.ini) and the launcher are embedded as resources. No game
 // file is shipped: the hands pack is made here from the installed game's pak*.pk3, the same way
 // as mods/build_pk3.py.
 #define _CRT_SECURE_NO_WARNINGS
@@ -20,6 +20,8 @@
 #define BACKUP_SUFFIX     L".cod_vr_backup"
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
 #define TEXT_PACK         L"main\\pakz_vr_text.pk3"
+#define LAUNCHER_EXE      L"CoD-VR-Launcher.exe"
+#define SHORTCUT_NAME     L"Call of Duty VR.lnk"
 #define INVISIBLE_SKIN    "cloth_masked@vr_invisible.tga"   // alpha-tested skin type, alpha 0
 
 static const wchar_t *TITLE = L"Call of Duty VR";
@@ -392,6 +394,36 @@ static int BuildTextPack(const wchar_t *game)
 // ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
+// The desktop shortcut to the launcher.
+static int ShortcutPath(wchar_t *out)
+{
+    wchar_t desk[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desk))) return 0;
+    Join(out, desk, SHORTCUT_NAME);
+    return 1;
+}
+
+static int CreateShortcut(const wchar_t *game)
+{
+    wchar_t lnk[MAX_PATH], exe[MAX_PATH];
+    IShellLinkW *sl = NULL;
+    IPersistFile *pf = NULL;
+    int ok = 0;
+    if (!ShortcutPath(lnk)) return 0;
+    Join(exe, game, LAUNCHER_EXE);
+    if (FAILED(CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&sl))) return 0;
+    sl->lpVtbl->SetPath(sl, exe);
+    sl->lpVtbl->SetWorkingDirectory(sl, game);
+    sl->lpVtbl->SetIconLocation(sl, exe, 0);
+    sl->lpVtbl->SetDescription(sl, L"Call of Duty VR");
+    if (SUCCEEDED(sl->lpVtbl->QueryInterface(sl, &IID_IPersistFile, (void **)&pf))) {
+        ok = SUCCEEDED(pf->lpVtbl->Save(pf, lnk, TRUE));
+        pf->lpVtbl->Release(pf);
+    }
+    sl->lpVtbl->Release(sl);
+    return ok;
+}
+
 static int Install(const wchar_t *game, int *keptIni)
 {
     wchar_t dll[MAX_PATH], bak[MAX_PATH], p[MAX_PATH];
@@ -404,6 +436,8 @@ static int Install(const wchar_t *game, int *keptIni)
     if (!WriteResource(IDR_OPENGL32, dll)) return 0;
     Join(p, game, L"openxr_loader.dll");
     if (!WriteResource(IDR_OPENXR_LOADER, p)) return 0;
+    Join(p, game, LAUNCHER_EXE);
+    if (!WriteResource(IDR_LAUNCHER, p)) return 0;
     Join(p, game, L"cod_vr.ini");
     *keptIni = FileExists(p);
     if (*keptIni) {
@@ -425,9 +459,11 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, L"cod_vr.ini.default");  DeleteFileW(p);
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
     Join(p, game, TEXT_PACK);              DeleteFileW(p);
+    Join(p, game, LAUNCHER_EXE);           DeleteFileW(p);
+    if (ShortcutPath(p)) DeleteFileW(p);
 }
 
-// Command line (no dialogs): /silent /dir="<game folder>" [/hands] [/uninstall]
+// Command line (no dialogs): /silent /dir="<game folder>" [/hands] [/shortcut] [/uninstall]
 // Exit code 0 = done, 1 = failed, 2 = no game in that folder.
 static int Silent(const wchar_t *cmd)
 {
@@ -448,6 +484,7 @@ static int Silent(const wchar_t *cmd)
     if (wcsstr(cmd, L"/uninstall")) { Uninstall(game); return 0; }
     if (!Install(game, &keptIni)) return 1;
     BuildTextPack(game);
+    if (wcsstr(cmd, L"/shortcut")) CreateShortcut(game);
     Join(pack, game, HANDS_PACK);
     if (wcsstr(cmd, L"/hands")) return BuildHandsPack(game, &models) ? 0 : 1;
     DeleteFileW(pack);
@@ -515,11 +552,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         DeleteFileW(pack);
     }
 
+    if (Ask(MB_YESNO | MB_ICONQUESTION,
+            T(L"Create a desktop shortcut to the Call of Duty VR launcher?\n\n(The launcher starts the game and has the VR and graphics settings.)",
+              L"Criar um atalho na área de trabalho para o launcher do Call of Duty VR?\n\n(O launcher abre o jogo e tem as configurações de VR e gráficos.)")) == IDYES &&
+        !CreateShortcut(game))
+        Ask(MB_OK | MB_ICONWARNING, T(L"Could not create the shortcut. The launcher is %s in the game folder.",
+                                      L"Não foi possível criar o atalho. O launcher é o %s na pasta do jogo."), LAUNCHER_EXE);
+
     Ask(MB_OK | MB_ICONINFORMATION,
-        T(L"Done!\n\nConnect your headset (Virtual Desktop or Quest Link: the game needs a 32-bit OpenXR runtime) and start CoDSP.exe.\n\n"
-          L"Settings: cod_vr.ini in the game folder.%s%s\n\nRun this setup again to update or uninstall.",
-          L"Pronto!\n\nConecte o headset (Virtual Desktop ou Quest Link: o jogo precisa de um runtime OpenXR de 32 bits) e abra o CoDSP.exe.\n\n"
-          L"Configurações: cod_vr.ini na pasta do jogo.%s%s\n\nExecute este instalador de novo para atualizar ou desinstalar."),
+        T(L"Done!\n\nConnect your headset (Virtual Desktop or Quest Link: the game needs a 32-bit OpenXR runtime) and start the game "
+          L"with the Call of Duty VR launcher (CoD-VR-Launcher.exe in the game folder), which also has the settings.%s%s\n\n"
+          L"Run this setup again to update or uninstall.",
+          L"Pronto!\n\nConecte o headset (Virtual Desktop ou Quest Link: o jogo precisa de um runtime OpenXR de 32 bits) e abra o jogo "
+          L"pelo launcher do Call of Duty VR (CoD-VR-Launcher.exe na pasta do jogo), que também tem as configurações.%s%s\n\n"
+          L"Execute este instalador de novo para atualizar ou desinstalar."),
         keptIni ? T(L"\nYour existing cod_vr.ini was kept (new defaults: cod_vr.ini.default).",
                     L"\nSeu cod_vr.ini foi mantido (novos padrões: cod_vr.ini.default).") : L"",
         models ? T(L"\nHands hidden.", L"\nMãos escondidas.") : L"");

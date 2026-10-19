@@ -79,6 +79,8 @@ typedef struct {
     void      (WINAPI *PointSize)(GLfloat);
     void      (WINAPI *Viewport)(GLint, GLint, GLsizei, GLsizei);
     void      (WINAPI *DepthRange)(double, double);
+    void      (WINAPI *Scissor)(GLint, GLint, GLsizei, GLsizei);
+    void      (WINAPI *BlendFunc)(GLenum, GLenum);
     void      (WINAPI *FrontFace)(GLenum);
     void      (WINAPI *ActiveTexture)(GLenum);   // may be NULL
     // framebuffer objects (core 3.0 / ARB / EXT), resolved once a context exists
@@ -121,6 +123,8 @@ typedef struct {
     float  offsetY;      // metres up (negative = down)
     float  width;        // metres, while playing
     float  menuWidth;    // metres, in menus (no world drawn)
+    int    posed;        // 1 = placed at pose (tracking space) instead of headLocked / distance / offsetY
+    vr_pose_t pose;      // axis[0] points away from the viewer, axis[2] is the screen's up
 } vr_hud_t;
 
 // Scope lens: the magnified view rendered into a sub-rectangle of fbo, shown as a small quad.
@@ -133,10 +137,13 @@ typedef struct {
 } vr_scope_t;
 
 int  XR_Init(int hudW, int hudH, int scopeSize);      // needs the game's GL context current
+void XR_SetRenderScale(float s);                     // eye resolution = the runtime's recommended size x s
+int  XR_EyeSize(int *w, int *h);                     // eye swapchain size, 0 before XR_Init
+void XR_RecommendedSize(int *w, int *h, int *maxW, int *maxH);   // the runtime's, 0 before XR_Init
 void XR_Shutdown(void);                               // same; called before the context goes away
 int  XR_Ready(void);                                  // instance + session created
 int  XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head); // 1 = this frame goes to the headset
-void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, const vr_hud_t *hud, const vr_scope_t *scope); // copies and submits
+void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const vr_hud_t *hud, const vr_scope_t *scope); // copies and submits
 int  XR_FrameOpen(void);                              // XR_BeginFrame succeeded, XR_EndFrame pending
 
 // ---- controllers ----

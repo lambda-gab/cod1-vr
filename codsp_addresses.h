@@ -82,6 +82,8 @@
                                                 // trace_t starts with fraction (set to 1 first). Reached from
                                                 // cgame traps 0x27 / 0x29 (CL_CgameSystemCalls 0x402164 / 0x4021be).
 #define CONTENTS_SOLID              1
+#define ADDR_cm_numSubModels        0x014bd6e0  // models of the loaded map; 0 = no map: a trace would raise
+                                                // "CM_ClipHandleToModel: bad handle" (0x412b1e)
 #define ADDR_cls_keyCatchers        0x01439264  // bit 1 = UI (menus), bit 3 = cgame
 // engine event queue read by Com_EventLoop (0x42f1d0): 256 x { time, type, value, value2, ptrLength, ptr }
 #define ADDR_eventQue               0x0089e478
@@ -98,6 +100,11 @@
 // currentVM->systemCall: currentVM is only set while the engine is inside a VM_Call into that
 // module, so calling game code from outside needs it set to the game's vm_t meanwhile.
 #define ADDR_currentVM              0x013f9db4  // vm_t*
+#define ADDR_VM_DllSyscall          0x0044f040  // int (int cmd, ...): currentVM->systemCall(&cmd)
+#define G_TRAP_GetConfigstring      0x2e        // (index, char *buf, int size); 0x2d sets one
+#define CS_SERVERINFO               0           // \\key\\value... with mapname
+#define CS_OBJECTIVES               15          // 16 objectives: \\state\\N... (objective_state 0x200341e0)
+#define OBJST_DONE                  3           // empty, active, invisible, done, current, failed
 #define ADDR_vmTable                0x0152e960  // vm_t vms[3], 0x4c bytes each: systemCall at +0, name at +4
 #define VM_SIZE                     0x4c
 #define VM_COUNT                    3

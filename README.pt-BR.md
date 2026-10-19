@@ -32,19 +32,21 @@ quis vivê-lo de novo em VR.
 
 1. Baixe o `CoD-VR-Setup.exe` da [última release](https://github.com/lambda-gab/cod1-vr/releases/latest).
 2. Execute. Ele acha a pasta do jogo (ou deixa você escolher) e confere se o jogo é a versão 1.5.
-3. Escolha se quer esconder as mãos do personagem, deixando só a arma na sua mão (recomendado).
-4. Conecte o headset e abra o `CoDSP.exe`.
+3. Escolha se quer esconder as mãos do personagem, deixando só a arma na sua mão (recomendado), e se quer criar um
+   atalho do launcher na área de trabalho.
+4. Conecte o headset e abra o jogo pelo **launcher do Call of Duty VR** (o atalho, ou o `CoD-VR-Launcher.exe` na
+   pasta do jogo).
 
-Execute o instalador de novo para atualizar ou desinstalar. Nas atualizações, as suas configurações do `cod_vr.ini`
-são mantidas.
+Execute o instalador de novo para atualizar ou desinstalar. Nas atualizações, as suas configurações são mantidas.
 
 ### Manual
 
 1. Extraia o `cod-vr-manual-install.zip` da [última release](https://github.com/lambda-gab/cod1-vr/releases/latest).
-2. Copie `opengl32.dll`, `openxr_loader.dll` e `cod_vr.ini` para a pasta do jogo (onde está o `CoDSP.exe`).
-3. Conecte o headset e abra o `CoDSP.exe`.
+2. Copie `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini` e `CoD-VR-Launcher.exe` para a pasta do jogo (onde está
+   o `CoDSP.exe`).
+3. Conecte o headset e abra o `CoD-VR-Launcher.exe` (ou direto o `CoDSP.exe`).
 
-Para desinstalar, apague esses três arquivos. Esconder as mãos e os textos do treinamento para VR precisam do
+Para desinstalar, apague esses quatro arquivos. Esconder as mãos e os textos do treinamento para VR precisam do
 instalador (ou dos passos nas [informações técnicas](docs/TECHNICAL.pt-BR.md)).
 
 ## Controles
@@ -74,7 +76,8 @@ Botões (editáveis em `[Buttons]` no `cod_vr.ini`):
 | Analógico esquerdo | Andar (relativo à cabeça) |
 | Analógico direito | Girar (snap 45°); cima/baixo muda a postura |
 | A / B | Pular / recarregar |
-| X / Y | Próxima arma / coronhada |
+| X | Objetivos (aparecem acima da mão esquerda) |
+| Y | Coronhada |
 | Clique analógico esquerdo | Objetivos |
 | Clique analógico direito | Deitar |
 | Menu | Menu do jogo |
@@ -83,7 +86,21 @@ Nos menus, aponte com a mão direita: gatilho clica, B volta, A confirma.
 
 ## Configurações
 
-Tudo fica no `cod_vr.ini`, na pasta do jogo, com um comentário em cada opção. Se o jogo estiver em `Program Files`,
+### O launcher
+
+O launcher tem as opções que a maioria quer mexer, salvas assim que você muda:
+
+- **GRAPHICS:** resolução no headset (de *Potato* 50% a *GPU Furnace* 200%, com o tamanho por olho), qualidade das
+  texturas, brilho.
+- **VR:** vinheta de conforto, giro em passos ou suave, mão dominante, roomscale, trajetória da granada, soltar a arma
+  no chão, objetivos na mão, menus fixos ou seguindo a cabeça.
+- **CONTROLS:** o mapa dos controles.
+
+As escolhas vão para `%APPDATA%\CoD-VR\settings.ini` e têm prioridade sobre o `cod_vr.ini`.
+
+### cod_vr.ini
+
+O resto fica no `cod_vr.ini`, na pasta do jogo, com um comentário em cada opção. Se o jogo estiver em `Program Files`,
 abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais usadas:
 
 - `[Controllers]` `WeaponOffset*`, `WeaponPitch`, `WeaponYaw`: posição e ângulo da arma na mão.
@@ -97,8 +114,25 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   pela mira da própria arma); `RightHanded`: qual analógico gira.
 - `[Holsters]`: arma de cada ombro (canhotos podem querer trocar), alturas dos coldres, soltar a arma no chão, tempo
   de sacar.
+- `[VR]` `RenderScale`: resolução de cada olho, vezes a recomendada pelo headset.
+- `[Comfort]`: a vinheta (liga/desliga, intensidade, quando começa a fechar).
+- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`: menus e a tela de objetivos.
 
 ## Releases
+
+### v1.3.0
+
+- **Launcher** com PLAY, CONTROLS, GRAPHICS, VR e ABOUT; o instalador pode criar um atalho dele na área de trabalho.
+- **Imagem mais nítida:** cada olho é renderizado na resolução do próprio headset (antes era a da janela do jogo,
+  esticada), ajustável de 50% a 200%.
+- **Vinheta de conforto** ao andar com o analógico ou girar suave (Off / Low / Medium / High).
+- Menus e telas de carregamento ficam fixos à sua frente, dá para olhar em volta deles.
+- O X abre os objetivos, que aparecem acima da mão esquerda.
+- Treinamento: com as mãos vazias, uma linha mostra para onde a mão direita aponta, até as placas serem concluídas.
+- Os controles agora são sempre os de coldres no corpo (o modo Arcade foi removido).
+
+Obrigado ao [lasmith1689-sys/cod1-vr](https://github.com/lasmith1689-sys/cod1-vr) pelas ideias da vinheta e da
+resolução do headset.
 
 ### v1.2.0
 
@@ -138,8 +172,8 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Observações
 
-- **Treinamento, as placas do início:** aponte a mão da arma para cada placa e mova a mão para cima e para baixo até o
-  jogo marcar o objetivo como concluído.
+- **Treinamento, as placas do início:** aponte a mão direita (uma linha mostra para onde) para cada placa e mova a
+  mão para cima e para baixo até o jogo marcar o objetivo como concluído.
 
 ## Informações técnicas
 

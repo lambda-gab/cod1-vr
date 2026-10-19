@@ -39,7 +39,7 @@ O CoD 1.5 só carrega pacotes com nome `pak*`. Apague um pacote para desfazer.
 
 ## Linha de comando do instalador
 
-`CoD-VR-Setup.exe /silent /dir="<pasta do jogo>" [/hands]` ou `/silent /dir="..." /uninstall`.
+`CoD-VR-Setup.exe /silent /dir="<pasta do jogo>" [/hands] [/shortcut]` ou `/silent /dir="..." /uninstall`.
 
 Nas atualizações o `cod_vr.ini` é mantido e os novos padrões vão para `cod_vr.ini.default`. Outro `opengl32.dll` que
 já esteja na pasta ganha um backup.
@@ -51,6 +51,15 @@ Se a pasta do jogo estiver em `Program Files`, copiar arquivos para lá precisa 
 `LogNearEntities=1` em `[Debug]`, o log registra as entidades adicionadas perto da vista quando você aperta o gatilho
 (usado para achar efeitos como o clarão do disparo).
 
+## Launcher e configurações do jogador
+
+`launcher/` gera o `CoD-VR-Launcher.exe` (`launcher\build_launcher.bat`; Win32 e GDI puros, o banner é um recurso
+JPEG decodificado com OLE). Ele grava as escolhas do jogador em `%APPDATA%\CoD-VR\settings.ini`; o mod lê cada
+opção do `cod_vr.ini` e depois desse arquivo, que tem prioridade. As opções gráficas do próprio jogo (qualidade das
+texturas, brilho) vão na linha de comando ao abrir: `+set r_picmip N +set r_ignorehwgamma 1 +set r_gamma G`. O mod
+grava o tamanho de olho recomendado e o máximo do headset em `[Headset]` no mesmo arquivo, para o launcher mostrar a
+resolução de cada opção.
+
 ## Compilar
 
 Precisa de Visual Studio com as ferramentas C++ (o build usa o compilador x86) e do loader OpenXR da Khronos:
@@ -59,7 +68,8 @@ Precisa de Visual Studio com as ferramentas C++ (o build usa o compilador x86) e
    [OpenXR-SDK-Source releases](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases)
    e extraia em `deps/openxr/` (ficando `deps/openxr/include` e `deps/openxr/Win32`).
 2. Rode `proxy\build.bat`. A saída vai para `proxy\out\` (`opengl32.dll` e `openxr_loader.dll`).
-3. Opcional: `installer\build_setup.bat` gera o `installer\out\CoD-VR-Setup.exe`, com esses arquivos embutidos.
+3. `launcher\build_launcher.bat` gera o launcher; depois, opcionalmente, `installer\build_setup.bat` gera o
+   `installer\out\CoD-VR-Setup.exe`, com esses arquivos embutidos.
 
 Ao enviar uma tag como `v1.1.0`, o workflow do GitHub Actions (`.github/workflows/release.yml`) compila tudo e
 publica uma release com o instalador e um zip para instalação manual.

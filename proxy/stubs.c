@@ -627,7 +627,6 @@ __declspec(naked) void stub_254(void) { __asm jmp dword ptr [g_real + 1016] }
 __declspec(naked) void stub_255(void) { __asm jmp dword ptr [g_real + 1020] }
 __declspec(naked) void stub_256(void) { __asm jmp dword ptr [g_real + 1024] }
 __declspec(naked) void stub_257(void) { __asm jmp dword ptr [g_real + 1028] }
-__declspec(naked) void stub_258(void) { __asm jmp dword ptr [g_real + 1032] }
 __declspec(naked) void stub_259(void) { __asm jmp dword ptr [g_real + 1036] }
 __declspec(naked) void stub_260(void) { __asm jmp dword ptr [g_real + 1040] }
 __declspec(naked) void stub_261(void) { __asm jmp dword ptr [g_real + 1044] }
@@ -711,7 +710,6 @@ __declspec(naked) void stub_338(void) { __asm jmp dword ptr [g_real + 1352] }
 __declspec(naked) void stub_339(void) { __asm jmp dword ptr [g_real + 1356] }
 __declspec(naked) void stub_340(void) { __asm jmp dword ptr [g_real + 1360] }
 __declspec(naked) void stub_341(void) { __asm jmp dword ptr [g_real + 1364] }
-__declspec(naked) void stub_342(void) { __asm jmp dword ptr [g_real + 1368] }
 __declspec(naked) void stub_343(void) { __asm jmp dword ptr [g_real + 1372] }
 __declspec(naked) void stub_344(void) { __asm jmp dword ptr [g_real + 1376] }
 __declspec(naked) void stub_345(void) { __asm jmp dword ptr [g_real + 1380] }
