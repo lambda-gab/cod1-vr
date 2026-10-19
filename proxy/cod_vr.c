@@ -89,6 +89,15 @@ static struct {
     float scopeSmoothing;   // seconds: gun direction filter while the scope is up (0 = AimSmoothing)
     int   traceMask;        // contents the trajectory collides with
     float worldFlashLength; // scale of the spread of world flash sprites along the barrel
+    int   realistic;        // 0 = Arcade (gun always in the dominant hand), 1 = Realistic (draw, holster, drop)
+    int   dropOnRelease;    // Realistic: letting go of the gun away from a holster drops it on the floor
+    float backHeight;       // Realistic, metres from the eyes: hands above this and behind the head reach the back
+    float hipHeight;        // height of the pistol holster (at the side of the hand)
+    float lowerBackHeight;  // height of the grenades (behind the lower back)
+    int   hipAccuracy;      // 1 = shots without the game's aim-down-sights spread like aimed ones
+    int   mirrorLeft;       // 1 = a gun in the left hand is drawn mirrored
+    int   drawTime;         // Realistic: msec to put a weapon away / raise one (0 = the game's animations)
+    int   shoulderSlot[2];  // Realistic: weapon slot over the left [0] and right [1] shoulder
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -161,7 +170,7 @@ static int       g_projOverride = -1;  // eye whose frustum R_SetupProjection mu
 static float     g_headYawCmd;         // aim yaw (head or hand) already contained in the game's view this frame
 static float     g_headYawPrev;        // aim yaw written to cl.viewangles last
 static int       g_headYawInit;
-static int       g_aimFromHand;        // aim source of the last write (switching resets the yaw delta)
+static int       g_aimFromHand;        // aim source of the last write
 static vr_input_t g_in;                // controllers, read at the left eye's BeginFrame
 static int       g_btnDown[BT_COUNT];
 static int       g_turnLatched, g_stanceLatched;
@@ -326,7 +335,11 @@ static void UpdateViewAngles(float yaw, float pitch, int fromHand)
 {
     float *va = (float *)ADDR_cl_viewangles;
 
-    if (!g_headYawInit || fromHand != g_aimFromHand) { g_headYawPrev = yaw; g_headYawInit = 1; g_aimFromHand = fromHand; }
+    // A change of aim source (head <-> hand) is a turn of the game's view like any other: the
+    // world stays where it is. (Starting over from the new yaw would turn the world by the angle
+    // between head and hand: 180 degrees when drawing a gun from the back.)
+    if (!g_headYawInit) { g_headYawPrev = yaw; g_headYawInit = 1; }
+    g_aimFromHand = fromHand;
     g_headYawCmd = g_headYawPrev;          // what this frame's view was built from
     g_clPitchCmd = va[PITCH];
     if (!cfg.headAim) return;
@@ -416,10 +429,9 @@ static float Normalize(float v[3])
 
 // The gun follows the dominant hand. While the off-hand grip is held near the gun, the barrel
 // points from the dominant hand to the off hand, like holding a rifle by the handguard.
-static void UpdateGunPose(int dom, int off)
+static void UpdateGunPose(int dom, int off, int gripDown)
 {
     const vr_pose_t *d = &g_in.hand[dom], *o = &g_in.hand[off];
-    int gripDown = g_btnDown[BT_SGRIP];
 
     DWORD now = GetTickCount();
     if (!g_in.handValid[dom]) {
@@ -867,6 +879,381 @@ static void UpdateGrenadeArc(void)
     if (n >= 2) XR_SetLine((const float (*)[3])pts, n, color, 0.3f);
 }
 
+// ---------------------------------------------------------------------------
+// Realistic mode: the hands start empty. The grip over the shoulder (hand behind the head)
+// draws a long gun (each shoulder has its own); at the hip the pistol; behind the lower back a
+// grenade (away from the floor, where an empty hand picks weapons up). Letting go of the grip at a holster puts the weapon back; anywhere else
+// the gun falls to the floor (the game's own weapon drop, the one it uses when a picked-up
+// weapon takes the place of another). An empty hand's grip is "use": pick a weapon up (it goes
+// to that hand), open doors. The off hand's grip near the gun holds it with both hands.
+// The game always has some weapon selected: with empty hands it is hidden and does not fire.
+// ---------------------------------------------------------------------------
+enum { ZONE_NONE, ZONE_BACK_LEFT, ZONE_BACK_RIGHT, ZONE_HIP, ZONE_LOWER_BACK };
+enum { HELD_LONG, HELD_PISTOL, HELD_GRENADE };
+static int   g_gunHand = -1;       // hand holding the weapon, -1 = both hands empty
+static int   g_heldKind;
+static int   g_heldWeapon;         // the game's weapon in that hand, 0 while the switch is under way
+static int   g_wantWeapon;         // weapon asked for by the last draw
+static DWORD g_wantTime;
+static int   g_lastGameWeapon;
+static int   g_lastSlots[6], g_slotsKnown;   // the gun slots last frame (pickups)
+static int   g_gripDown[2], g_useHand = -1, g_realSync = 1;
+// The view weapon is drawn mirrored this frame (gun in the left hand). Its triangles then wind
+// the other way, so hook_glDepthRange flips the front face while the weapon is drawn.
+static int   g_mirrorGun;
+
+// The player's gclient_t in gamex86.dll, or NULL (another build, no level).
+static BYTE *PlayerClient(void)
+{
+    static HMODULE checked;
+    static int known;
+    HMODULE m = GetModuleHandleA("gamex86.dll");
+    BYTE *cl = NULL;
+    if (!m) return NULL;
+    if (m != checked) {
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)m + ((IMAGE_DOS_HEADER *)m)->e_lfanew);
+        known = nt->FileHeader.TimeDateStamp == GAME_TIMESTAMP;
+        if (!known) Log("gamex86.dll timestamp %08x unknown: Realistic mode cannot read the weapons", nt->FileHeader.TimeDateStamp);
+        checked = m;
+    }
+    if (!known) return NULL;
+    __try {
+        cl = *(BYTE **)((BYTE *)m + G_OFS_entities + GENT_OFS_client);
+        if (cl) (void)*(volatile int *)(cl + GCL_OFS_slots);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        cl = NULL;
+    }
+    return cl;
+}
+
+static int SlotWeapon(const BYTE *cl, int slot) { return cl ? cl[GCL_OFS_slots + slot] : 0; }
+static int GameWeapon(const BYTE *cl) { return cl ? *(const int *)(cl + GCL_OFS_weapon) : 0; }
+
+// Where a hand is relative to the body (the head's yaw stands in for the torso).
+static int HandZone(int h)
+{
+    const float *p = g_in.hand[h].pos;
+    float yaw = RAD(YawOf(g_head.axis[0])), c = cosf(yaw), s = sinf(yaw);
+    float dx = p[0] - g_head.pos[0], dy = p[1] - g_head.pos[1], up = p[2] - g_head.pos[2];
+    float fwd = dx * c + dy * s, left = -dx * s + dy * c;
+    float side = h == 1 ? -left : left;   // towards this hand's own side
+    if (up > cfg.backHeight && fwd < 0.05f && fabsf(left) < 0.5f) return left > 0 ? ZONE_BACK_LEFT : ZONE_BACK_RIGHT;
+    // grenades: anywhere behind the body from the waist line down to the lower back
+    if (fabsf(up - cfg.lowerBackHeight) < 0.32f && fabsf(left) < 0.4f && fwd < -0.03f && fwd > -0.7f) return ZONE_LOWER_BACK;
+    if (fabsf(up - cfg.hipHeight) < 0.2f && side > 0.12f && side < 0.5f && fwd > -0.15f && fwd < 0.2f) return ZONE_HIP;
+    return ZONE_NONE;
+}
+
+static void WeaponSlotCmd(int slot)
+{
+    static const char *names[6] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade" };
+    char line[48];
+    _snprintf(line, sizeof(line), "weaponslot %s\n", names[slot]);
+    Cbuf(line);
+}
+
+static void DrawWeapon(int h, int zone)
+{
+    BYTE *cl = PlayerClient();
+    int slot = 0, kind;
+    if (!cl) return;
+    if (zone == ZONE_BACK_LEFT || zone == ZONE_BACK_RIGHT) {
+        // each shoulder has its weapon ([Realistic] LeftShoulder / RightShoulder); with only one
+        // long gun, either shoulder gives it
+        int want = cfg.shoulderSlot[zone == ZONE_BACK_RIGHT], other = want == 1 ? 2 : want == 2 ? 1 : 0;
+        slot = SlotWeapon(cl, want) ? want : other && SlotWeapon(cl, other) ? other : 0;
+        kind = slot == 3 ? HELD_PISTOL : slot >= 4 ? HELD_GRENADE : HELD_LONG;
+    } else if (zone == ZONE_HIP) {
+        slot = SlotWeapon(cl, 3) ? 3 : 0;
+        kind = HELD_PISTOL;
+    } else {
+        slot = SlotWeapon(cl, 4) ? 4 : SlotWeapon(cl, 5) ? 5 : 0;
+        kind = HELD_GRENADE;
+    }
+    if (!slot) return;   // nothing in that holster
+    g_wantWeapon = SlotWeapon(cl, slot);
+    g_wantTime = GetTickCount();
+    if (GameWeapon(cl) != g_wantWeapon) WeaponSlotCmd(slot);
+    g_gunHand = h;
+    g_heldKind = kind;
+    g_heldWeapon = 0;
+    Log("realistic: hand %d draws slot %d (weapon %d)", h, slot, g_wantWeapon);
+}
+
+// The hand's position in the game world (the inverse of the eyes' placement).
+static void HandWorld(int h, float out[3])
+{
+    float rel[3], r[3], body = YawOf(g_lastViewAxis[0]) - g_headYawCmd;
+    int i;
+    BodyOffset(g_in.hand[h].pos, rel);
+    for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
+    RotateZ(rel, body, r);
+    for (i = 0; i < 3; i++) out[i] = g_lastViewOrg[i] + r[i];
+}
+
+static int DropFilter(EXCEPTION_POINTERS *e, HMODULE m)
+{
+    BYTE *at = (BYTE *)e->ExceptionRecord->ExceptionAddress;
+    Log("realistic: weapon drop failed: exception %08x at %p (gamex86 + %x), reading %p",
+        e->ExceptionRecord->ExceptionCode, at, (unsigned)(at - (BYTE *)m),
+        e->ExceptionRecord->NumberParameters > 1 ? (void *)e->ExceptionRecord->ExceptionInformation[1] : NULL);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Drops the weapon in use on the floor below the hand, with its ammo, as a pickup.
+static void DropHeldWeapon(int h)
+{
+    HMODULE m = GetModuleHandleA("gamex86.dll");
+    BYTE *cl = PlayerClient(), *player, *item = NULL, *fn, *prevVM;
+    int weapon = GameWeapon(cl), i;
+    float pos[3], frac;
+    if (!m || !cl || weapon <= 0) return;
+    player = (BYTE *)m + G_OFS_entities;
+    fn = (BYTE *)m + G_OFS_DropWeapon;
+    {
+        // the weapon's pickup item (bg_itemlist): LaunchItem reads its model name
+        const DWORD *it = (const DWORD *)((BYTE *)m + G_OFS_itemlist + weapon * G_ITEM_SIZE);
+        __try {
+            Log("realistic: dropping weapon %d, item %08x %08x %08x type %d", weapon, it[0], it[1], it[2], it[8]);
+            if (!it[2]) { Log("realistic: weapon %d has no pickup model, put away instead", weapon); return; }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return;
+        }
+    }
+    {
+        // the drop's traps reach the engine through currentVM: make it the game's while it runs
+        static BYTE *gameVM;
+        int k;
+        if (!gameVM)
+            for (k = 0; k < VM_COUNT; k++) {
+                BYTE *vm = (BYTE *)ADDR_vmTable + k * VM_SIZE;
+                const char *name = (const char *)vm + VM_OFS_name;
+                if (*(void **)vm && (!_stricmp(name, "game") || !_stricmp(name, "qagame"))) gameVM = vm;
+            }
+        if (!gameVM) {
+            for (k = 0; k < VM_COUNT; k++)
+                Log("realistic: vm %d '%.16s'", k, (const char *)ADDR_vmTable + k * VM_SIZE + VM_OFS_name);
+            Log("realistic: game VM not found, the weapon is put away instead");
+            return;
+        }
+        prevVM = MEM(BYTE *, ADDR_currentVM);
+        MEM(BYTE *, ADDR_currentVM) = gameVM;
+    }
+    __try {
+        __asm {
+            push 0              // no tag: launched from the player
+            push weapon
+            mov eax, player
+            mov ecx, fn
+            call ecx
+            add esp, 8
+            mov item, eax
+        }
+    } __except (DropFilter(GetExceptionInformation(), m)) {
+        MEM(BYTE *, ADDR_currentVM) = prevVM;
+        return;
+    }
+    MEM(BYTE *, ADDR_currentVM) = prevVM;
+    if (item) {
+        // let it fall from the hand, on this side of any wall between the eye and the hand
+        HandWorld(h, pos);
+        frac = WorldTrace(g_lastViewOrg, pos);
+        if (frac < 1.0f)
+            for (i = 0; i < 3; i++) pos[i] = g_lastViewOrg[i] + (pos[i] - g_lastViewOrg[i]) * frac * 0.9f;
+        __try {
+            memcpy(item + GENT_OFS_posBase, pos, sizeof(pos));
+            memset(item + GENT_OFS_posDelta, 0, 3 * sizeof(float));
+            memcpy(item + GENT_OFS_currentOrigin, pos, sizeof(pos));
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+    Log("realistic: weapon %d dropped (item %p)", weapon, item);
+    // the game still has the dropped weapon selected: change to one it has (hidden, empty hands)
+    for (i = 1; i <= 3; i++)
+        if (SlotWeapon(cl, i)) { WeaponSlotCmd(i); break; }
+}
+
+static void GripPressed(int h)
+{
+    int zone = HandZone(h);
+    if (g_gunHand < 0) {
+        if (zone != ZONE_NONE) {
+            DrawWeapon(h, zone);
+            if (g_gunHand == h) return;
+        }
+        g_useHand = h;   // grabbing nothing: use (pick up, doors)
+    } else if (h != g_gunHand) {
+        // the off hand: close to the gun it holds it with both hands (UpdateGunPose), else use
+        const float *a = g_in.hand[h].pos, *b = g_in.hand[g_gunHand].pos;
+        float d[3] = { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
+        if (sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) > cfg.twoHandReach) g_useHand = h;
+    }
+}
+
+static void GripReleased(int h)
+{
+    if (h == g_useHand) g_useHand = -1;
+    if (h != g_gunHand) return;
+    {
+        // a weapon goes back only where it belongs: long guns over a shoulder, the pistol at the
+        // hip, grenades at the lower back (a gun held low at the side is not being holstered)
+        int zone = HandZone(h);
+        int home = g_heldKind == HELD_LONG ? (zone == ZONE_BACK_LEFT || zone == ZONE_BACK_RIGHT)
+                 : g_heldKind == HELD_PISTOL ? zone == ZONE_HIP : 1;
+        if (!home && cfg.dropOnRelease && g_in.handValid[h])
+            DropHeldWeapon(h);
+        else
+            Log("realistic: hand %d puts the weapon away", h);
+    }
+    g_gunHand = -1;
+}
+
+// Follows what the game does with the weapon: the switch asked for, a grenade thrown (the
+// game goes back to another weapon), a weapon picked up with an empty hand.
+static void WatchHeldWeapon(void)
+{
+    BYTE *cl = PlayerClient();
+    int w = GameWeapon(cl);
+    if (!cl) return;
+    if (g_gunHand >= 0) {
+        if (!g_heldWeapon) {
+            if (w == g_wantWeapon) g_heldWeapon = w;
+            else if (GetTickCount() - g_wantTime > 1500) {   // the game did not change weapon
+                if (g_heldKind == HELD_GRENADE) g_gunHand = -1;
+                else g_heldWeapon = w;
+            }
+        } else if (w != g_heldWeapon) {
+            if (g_heldKind == HELD_GRENADE) g_gunHand = -1;   // thrown
+            else g_heldWeapon = w;                           // picked up, out of ammo, next weapon
+        }
+    } else if (g_useHand >= 0 && g_slotsKnown) {
+        // A weapon picked up with the empty hand goes to that hand. The game puts it in a slot
+        // (an empty one, or in place of the weapon it swaps out) but does not always change to
+        // it, so watch the gun slots and take whatever arrives.
+        int slot;
+        for (slot = 1; slot <= 3; slot++) {
+            int now = SlotWeapon(cl, slot);
+            if (!now || now == g_lastSlots[slot]) continue;
+            g_wantWeapon = now;
+            g_wantTime = GetTickCount();
+            if (w != now) WeaponSlotCmd(slot);
+            g_gunHand = g_useHand;
+            g_heldKind = slot == 3 ? HELD_PISTOL : HELD_LONG;
+            g_heldWeapon = 0;
+            g_useHand = -1;
+            Log("realistic: hand %d picked up weapon %d (slot %d)", g_gunHand, now, slot);
+            break;
+        }
+    }
+    {
+        int slot;
+        for (slot = 1; slot < 6; slot++) g_lastSlots[slot] = SlotWeapon(cl, slot);
+        g_slotsKnown = 1;
+    }
+    g_lastGameWeapon = w;
+}
+
+static void RealisticHands(void)
+{
+    int h;
+    for (h = 0; h < 2; h++) {
+        int was = g_gripDown[h];
+        int down = was ? g_in.grip[h] > 0.35f : g_in.grip[h] > 0.65f;
+        g_gripDown[h] = down;
+        if (g_realSync) continue;   // back from a menu: take the grips as they are, no actions
+        if (down && !was) GripPressed(h);
+        else if (!down && was) GripReleased(h);
+    }
+    if (g_realSync) { g_useHand = -1; g_realSync = 0; }
+    WatchHeldWeapon();
+    SetButton(BT_PGRIP, g_useHand >= 0);
+    SetButton(BT_SGRIP, 0);
+    {
+        // Either trigger fires (the gun is aimed with its own sights, the game's aim-down-sights
+        // mode is not needed); with a scoped weapon the other hand's trigger zooms the scope.
+        const BYTE *def = CurrentWeaponDef();
+        int scoped = 0, other = 1 - g_gunHand;
+        int fire;
+        __try {
+            const char *ov = def ? *(const char * const *)(def + WEAPDEF_OFS_adsOverlayShader) : NULL;
+            scoped = ov && ov[0];
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            scoped = 0;
+        }
+        fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
+                                  (!scoped && Pressed(g_in.trigger[other], BT_PTRIGGER)));
+        SetButton(BT_STRIGGER, g_gunHand >= 0 && scoped && Pressed(g_in.trigger[other], BT_STRIGGER));
+        if (fire != g_btnDown[BT_PTRIGGER]) {
+            BYTE *cl = PlayerClient();
+            HMODULE gm = GetModuleHandleA("gamex86.dll");
+            int w = GameWeapon(cl), clip = -1;
+            __try {
+                BYTE **defs = gm ? *(BYTE ***)((BYTE *)gm + G_OFS_weaponDefs) : NULL;
+                if (cl && defs && w > 0 && defs[w]) clip = *(int *)(cl + GCL_OFS_ammoclip + *(int *)(defs[w] + WEAPDEF_OFS_clipIndex) * 4);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+            Log("realistic: trigger %s, hand %d, weapon %d, clip %d", fire ? "down" : "up", g_gunHand, w, clip);
+        }
+        SetButton(BT_PTRIGGER, fire);
+    }
+}
+
+// In VR the player aims with the gun's real sights, but the game only uses its aimed accuracy
+// while it is in its aim-down-sights mode (whose animation takes the gun away from the hands):
+// a shot "from the hip" spreads several degrees whatever the gun points at. Make the hip spread
+// of every weapon the aimed one, in the game (which shoots) and in the cgame (prediction).
+static void PatchSpread(HMODULE m, int ofsDefs, int ofsCount, const char *what)
+{
+    int count, i, n = 0, t = 0;
+    BYTE **defs;
+    __try {
+        count = *(int *)((BYTE *)m + ofsCount);
+        defs = *(BYTE ***)((BYTE *)m + ofsDefs);
+        if (!defs || count <= 0 || count > 256) return;
+        for (i = 1; i <= count; i++) {
+            float *hip, ads;
+            int k;
+            if (!defs[i]) continue;
+            hip = (float *)(defs[i] + WEAPDEF_OFS_hipSpreadStandMin);
+            ads = *(float *)(defs[i] + WEAPDEF_OFS_adsSpread);
+            if (cfg.hipAccuracy)
+                for (k = 0; k < 4; k++) if (hip[k] != ads) { hip[k] = ads; n++; }
+            if (cfg.realistic && cfg.drawTime > 0) {
+                // the hand takes the weapon: no lowering / raising animation (M1A1 stock unfolding)
+                int *times = (int *)(defs[i] + WEAPDEF_OFS_dropTime);
+                for (k = 0; k < 4; k++) if (times[k] > cfg.drawTime) { times[k] = cfg.drawTime; t++; }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    if (n) Log("%s: hip fire spread set to the aimed spread (%d values)", what, n);
+    if (t) Log("%s: weapon switch times set to %d ms (%d values)", what, cfg.drawTime, t);
+}
+
+static void UpdateHipAccuracy(void)
+{
+    static DWORD last;
+    static HMODULE gChecked, cgChecked;
+    static int gKnown, cgKnown;
+    HMODULE g = GetModuleHandleA("gamex86.dll"), cg = GetModuleHandleA("cgamex86.dll");
+    if ((!cfg.hipAccuracy && !(cfg.realistic && cfg.drawTime > 0)) || GetTickCount() - last < 1000)
+        return;   // weapons load as the level uses them
+    last = GetTickCount();
+    if (g && g != gChecked) {
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)g + ((IMAGE_DOS_HEADER *)g)->e_lfanew);
+        gKnown = nt->FileHeader.TimeDateStamp == GAME_TIMESTAMP;
+        gChecked = g;
+    }
+    if (cg && cg != cgChecked) {
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)cg + ((IMAGE_DOS_HEADER *)cg)->e_lfanew);
+        cgKnown = nt->FileHeader.TimeDateStamp == CGAME_TIMESTAMP;
+        cgChecked = cg;
+    }
+    if (g && gKnown) PatchSpread(g, G_OFS_weaponDefs, G_OFS_numWeaponDefs, "game");
+    if (cg && cgKnown) PatchSpread(cg, CG_OFS_weaponDefs, CG_OFS_numWeaponDefs, "cgame");
+}
+
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
 static void ProcessControllers(void)
 {
@@ -887,10 +1274,12 @@ static void ProcessControllers(void)
 
     if (cfg.controllers) XR_GetInput(&g_in);
     else memset(&g_in, 0, sizeof(g_in));
+    UpdateHipAccuracy();
 
     if (g_ignoreHeld && !AnyInputHeld()) g_ignoreHeld = 0;
     if (g_in.active && (MEM(int, ADDR_cls_keyCatchers) & 2)) {   // a menu is open
         ReleaseAllButtons();
+        g_realSync = 1;
         g_moveForward = g_moveRight = 0;
         MenuControls(dom);
         return;
@@ -901,6 +1290,7 @@ static void ProcessControllers(void)
         ReleaseAllButtons();
         g_gunValid = g_twoHand = 0;
         g_moveForward = g_moveRight = 0;
+        g_realSync = 1;
     } else {
         float sx = g_in.stick[dom][0], sy = g_in.stick[dom][1];
         float mx = g_in.stick[off][0], my = g_in.stick[off][1];
@@ -912,10 +1302,14 @@ static void ProcessControllers(void)
             g_nearLogFrames--;
         }
         if (!g_ignoreHeld) {
-            SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER));
-            SetButton(BT_PGRIP, Pressed(g_in.grip[dom], BT_PGRIP));
-            SetButton(BT_STRIGGER, Pressed(g_in.trigger[off], BT_STRIGGER));
-            SetButton(BT_SGRIP, Pressed(g_in.grip[off], BT_SGRIP));
+            if (cfg.realistic) {
+                RealisticHands();
+            } else {
+                SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER));
+                SetButton(BT_PGRIP, Pressed(g_in.grip[dom], BT_PGRIP));
+                SetButton(BT_STRIGGER, Pressed(g_in.trigger[off], BT_STRIGGER));
+                SetButton(BT_SGRIP, Pressed(g_in.grip[off], BT_SGRIP));
+            }
             SetButton(BT_A, (g_in.buttons & VRB_A) != 0);
             SetButton(BT_B, (g_in.buttons & VRB_B) != 0);
             SetButton(BT_X, (g_in.buttons & VRB_X) != 0);
@@ -923,9 +1317,21 @@ static void ProcessControllers(void)
             SetButton(BT_LCLICK, (g_in.buttons & VRB_LSTICK) != 0);
             SetButton(BT_RCLICK, (g_in.buttons & VRB_RSTICK) != 0);
             SetButton(BT_MENU, (g_in.buttons & VRB_MENU) != 0);
+        } else {
+            g_realSync = 1;
         }
-        UpdateGunPose(dom, off);
-        if (g_in.handValid[dom]) AdjustGunPose(dt);
+        g_mirrorGun = cfg.mirrorLeft && (cfg.realistic ? g_gunHand == 0 : !cfg.rightHanded);
+        if (!cfg.realistic) {
+            UpdateGunPose(dom, off, g_btnDown[BT_SGRIP]);
+            if (g_in.handValid[dom]) AdjustGunPose(dt);
+        } else if (g_gunHand >= 0) {
+            int o = 1 - g_gunHand;
+            UpdateGunPose(g_gunHand, o, g_gripDown[o] && g_useHand != o);
+            if (g_in.handValid[g_gunHand]) AdjustGunPose(dt);
+            if (!g_heldWeapon) g_gunValid = 0;   // still switching: the previous weapon is being lowered
+        } else {
+            g_gunValid = g_twoHand = 0;   // empty hands: no gun drawn, aim with the head
+        }
 
         // Turn stick: left/right turns the body, up/down raises or lowers the stance.
         if (cfg.snapTurn > 0) {
@@ -1183,6 +1589,7 @@ static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3],
         local[1] = -(cfg.muzzleOffset[0] + g_flashAdj[1]);
         local[2] = cfg.muzzleOffset[1] + g_flashAdj[2];
     }
+    if (g_mirrorGun) local[1] = -local[1];   // left hand: the right-handed model mirrored (see hook_glDepthRange)
     for (i = 0; i < 3; i++)
         p[i] = (isPoint ? handOrg[i] : 0.0f) + local[0] * handAxis[0][i] + local[1] * handAxis[1][i] + local[2] * handAxis[2][i];
 }
@@ -1958,6 +2365,16 @@ void WINAPI hook_glDrawBuffer(GLenum mode)
     BindWindow(mode);
 }
 
+// The renderer draws the view weapon (RF_DEPTHHACK) with glDepthRange(0, 0.1) and everything
+// else with (0, 1). While a mirrored weapon is drawn, its front faces wind clockwise.
+void WINAPI hook_glDepthRange(double zNear, double zFar)
+{
+    static GLenum front = GL_CCW;
+    GLenum want = g_mirrorGun && zFar < 0.99 ? GL_CW : GL_CCW;
+    gl.DepthRange(zNear, zFar);
+    if (want != front && gl.FrontFace) { gl.FrontFace(want); front = want; }
+}
+
 void WINAPI hook_glReadBuffer(GLenum mode)
 {
     if (g_boundFbo && (mode == GL_BACK || mode == GL_FRONT || mode == GL_BACK_LEFT || mode == GL_BACK_RIGHT ||
@@ -2075,6 +2492,29 @@ static void LoadConfig(void)
     cfg.muzzleOffset[0] = IniFloat("Controllers", "MuzzleOffsetRight", cfg.muzzleOffset[0], ini);
     cfg.muzzleOffset[1] = IniFloat("Controllers", "MuzzleOffsetUp", cfg.muzzleOffset[1], ini);
     cfg.worldFlashLength = IniFloat("MuzzleFlash", "WorldFlashLength", 0.25f, ini);
+    {
+        char mode[32];
+        GetPrivateProfileStringA("Controllers", "Mode", "Realistic", mode, sizeof(mode), ini);
+        cfg.realistic = !_stricmp(mode, "Realistic") || !_stricmp(mode, "Realista");
+    }
+    cfg.hipAccuracy   = GetPrivateProfileIntA("Controllers", "HipFireAccuracy", 1, ini);
+    cfg.mirrorLeft    = GetPrivateProfileIntA("Controllers", "MirrorLeftHand", 1, ini);
+    cfg.dropOnRelease = GetPrivateProfileIntA("Realistic", "DropOnRelease", 1, ini);
+    cfg.drawTime      = GetPrivateProfileIntA("Realistic", "DrawTime", 50, ini);
+    {
+        static const char *keys[2] = { "LeftShoulder", "RightShoulder" }, *defs[2] = { "primaryb", "primary" };
+        static const char *names[6] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade" };
+        char v[32];
+        int h, k;
+        for (h = 0; h < 2; h++) {
+            GetPrivateProfileStringA("Realistic", keys[h], defs[h], v, sizeof(v), ini);
+            cfg.shoulderSlot[h] = h ? 1 : 2;
+            for (k = 1; k < 6; k++) if (!_stricmp(v, names[k])) cfg.shoulderSlot[h] = k;
+        }
+    }
+    cfg.backHeight    = IniFloat("Realistic", "BackHeight", -0.30f, ini);
+    cfg.hipHeight     = IniFloat("Realistic", "HipHeight", -0.75f, ini);
+    cfg.lowerBackHeight = IniFloat("Realistic", "LowerBackHeight", -0.70f, ini);
     cfg.roomScale       = GetPrivateProfileIntA("VR", "RoomScale", cfg.roomScale, ini);
     cfg.weaponAngle[0]  = IniFloat("Controllers", "WeaponPitch", cfg.weaponAngle[0], ini);
     cfg.weaponAngle[1]  = IniFloat("Controllers", "WeaponYaw", cfg.weaponAngle[1], ini);
@@ -2134,6 +2574,7 @@ static BOOL LoadRealOpenGL(void)
     RESOLVE(Vertex3f, "glVertex3f");             RESOLVE(Color4f, "glColor4f");
     RESOLVE(LineWidth, "glLineWidth");           RESOLVE(PointSize, "glPointSize");
     RESOLVE(Viewport, "glViewport");
+    RESOLVE(DepthRange, "glDepthRange");         RESOLVE(FrontFace, "glFrontFace");
     return TRUE;
 }
 
@@ -2162,6 +2603,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         "hud=%d (distance %.2f, width %.2f, menu %.2f, headLocked %d)",
         cfg.enabled, cfg.vr, cfg.separation, cfg.worldScale, cfg.positional, cfg.headAim,
         cfg.hud, cfg.hudLayer.distance, cfg.hudLayer.width, cfg.hudLayer.menuWidth, cfg.hudLayer.headLocked);
+    Log("mode %s (drop on release %d, back %.2f, hip %.2f, lower back %.2f)", cfg.realistic ? "Realistic" : "Arcade",
+        cfg.dropOnRelease, cfg.backHeight, cfg.hipHeight, cfg.lowerBackHeight);
     Log("controllers=%d rightHanded=%d snapTurn=%.0f converge=%.1f weaponInHand=%d offset=(%.1f %.1f %.1f)",
         cfg.controllers, cfg.rightHanded, cfg.snapTurn, cfg.converge, cfg.weaponInHand,
         cfg.weaponOffset[0], cfg.weaponOffset[1], cfg.weaponOffset[2]);

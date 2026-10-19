@@ -94,30 +94,14 @@
 #define K_UPARROW                   154
 #define K_DOWNARROW                 155
 #define K_MOUSE1                    200
-#define ADDR_cls_keyCatchers        0x01439264  // bit 1 = UI (menus), bit 3 = cgame
-// engine event queue read by Com_EventLoop (0x42f1d0): 256 x { time, type, value, value2, ptrLength, ptr }
-#define ADDR_eventQue               0x0089e478
-#define ADDR_eventHead              0x013f9e14
-#define ADDR_eventTail              0x013f9e18
-#define SE_KEY                      1           // value = key, value2 = down
-#define SE_MOUSE                    3           // value = dx, value2 = dy (to the UI while it catches keys)
-#define K_ENTER                     13
-#define K_ESCAPE                    27
-#define K_UPARROW                   154
-#define K_DOWNARROW                 155
-#define K_MOUSE1                    200
-#define ADDR_cls_keyCatchers        0x01439264  // bit 1 = UI (menus), bit 3 = cgame
-// engine event queue read by Com_EventLoop (0x42f1d0): 256 x { time, type, value, value2, ptrLength, ptr }
-#define ADDR_eventQue               0x0089e478
-#define ADDR_eventHead              0x013f9e14
-#define ADDR_eventTail              0x013f9e18
-#define SE_KEY                      1           // value = key, value2 = down
-#define SE_MOUSE                    3           // value = dx, value2 = dy (to the UI while it catches keys)
-#define K_ENTER                     13
-#define K_ESCAPE                    27
-#define K_UPARROW                   154
-#define K_DOWNARROW                 155
-#define K_MOUSE1                    200
+// Module VMs (native DLLs here). A DLL's traps go through VM_DllSyscall (0x44f040), which calls
+// currentVM->systemCall: currentVM is only set while the engine is inside a VM_Call into that
+// module, so calling game code from outside needs it set to the game's vm_t meanwhile.
+#define ADDR_currentVM              0x013f9db4  // vm_t*
+#define ADDR_vmTable                0x0152e960  // vm_t vms[3], 0x4c bytes each: systemCall at +0, name at +4
+#define VM_SIZE                     0x4c
+#define VM_COUNT                    3
+#define VM_OFS_name                 4
 
 // refEntity_t (0x9c bytes): same field offsets as Quake 3 up to oldorigin
 #define REFENT_SIZE                 0x9c
@@ -145,8 +129,33 @@
 #define WEAPDEF_OFS_projectileSpeed 0x314       // int, units/s along the view
 #define WEAPDEF_OFS_projectileSpeedUp 0x318     // int, units/s added upwards
 #define WEAPTYPE_GRENADE            1
+#define WEAPDEF_OFS_hipSpreadStandMin 0x23c     // float; then DuckedMin, ProneMin, Max (same layout in game and cgame)
+#define WEAPDEF_OFS_adsSpread       0x38c       // float
+#define WEAPDEF_OFS_dropTime        0x200       // int msec; then raiseTime, altDropTime, altRaiseTime
+#define WEAPDEF_OFS_adsOverlayShader 0x224      // char*: set for scoped weapons
+#define WEAPDEF_OFS_clipIndex       0x1a0       // int: index into ps.ammoclip
 #define ADDR_cl_cgameUserCmdValue   0x0142f2d8  // selected weapon index (cgame trap 0x57), copied to usercmd + 6
 #define CG_ADDR_vmMain              0x30018cd0
+
+// ---- gamex86.dll (base 0x20000000): the single player game, runs in the same process ----
+#define GAME_TIMESTAMP              0x40443fb0  // PE TimeDateStamp of the gamex86.dll analysed
+#define G_OFS_entities              0x0012fa80  // module offset: gentity_t g_entities[] (0 = the player)
+#define G_OFS_itemlist              0x000a7148  // module offset: gitem_t bg_itemlist[], 0x30 bytes, weapons by number
+#define G_ITEM_SIZE                 0x30        // +8 world model name (char*), +0x20 giType
+#define G_OFS_weaponDefs            0x00125650  // module offset: weaponDef_t **weaponDefs (index = weapon number)
+#define G_OFS_numWeaponDefs         0x0012564c  // module offset: highest valid weapon number
+#define GCL_OFS_ammoclip            0xf4        // int[]: rounds in the clip, by weaponDef clipIndex
+#define GENT_OFS_client             0x104       // gclient_t*
+#define GENT_OFS_posBase            0x20        // s.pos.trBase (s.pos at +0x14: trType, trTime, trDuration, base, delta)
+#define GENT_OFS_posDelta           0x2c        // s.pos.trDelta
+#define GENT_OFS_currentOrigin      0xe0        // r.currentOrigin
+#define GCL_OFS_weapon              0xa0        // ps.weapon: the weapon in use
+#define GCL_OFS_slots               0x2fc       // BYTE[6]: weapon in slot 1 primary, 2 primaryb, 3 pistol,
+                                                // 4 grenade, 5 smokegrenade (0 = empty)
+#define G_OFS_DropWeapon            0x0001bca0  // gentity_t *(int weapon, const char *tag): player gentity in EAX,
+                                                // cdecl. Takes the weapon and its ammo from the player and
+                                                // launches it as an item (Drop_Item 0x1bb30 -> LaunchItem 0x1b980);
+                                                // the pickup swap (0x1ac50) calls it with tag 0.
 #define CG_ADDR_dllEntry            0x30022540
 
 // refdef_t as read by RE_RenderScene (same layout as Q3/RTCW):

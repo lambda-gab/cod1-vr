@@ -345,3 +345,31 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
   pressionado ou solto há menos de 200 ms), sprites assim a menos de 7 unidades dessa linha são levados para a mão como
   o clarão do viewmodel, com o espalhamento ao longo do cano comprimido (`WorldFlashLength`, 0,25).
 - `[MuzzleFlash]`: correção por arma (`nome=frente direita cima`), relida a cada segundo.
+
+
+## Modo Realista, precisão e espelhamento (v1.2.0)
+
+- Inventário do jogador no `gamex86.dll` (timestamp `0x40443fb0`, base `0x20000000`): `g_entities` em `+0x12fa80`
+  (`0x2c8` bytes, 0 = jogador), `gclient` em `ent + 0x104`, `ps.weapon` em `+0xa0`, slots de arma em `+0x2fc`
+  (bytes: 1 primary, 2 primaryb, 3 pistol, 4 grenade, 5 smokegrenade), munição do pente em `+0xf4 + clipIndex*4`.
+- Zonas pelo yaw da cabeça: ombros (acima de `BackHeight` e atrás da cabeça, lado pelo sinal lateral), quadril do
+  lado da mão, lombar/cintura atrás do corpo. Cada arma só é guardada na própria zona; fora dela, cai.
+- Queda: `0x2001bca0` (`gentity_t *(arma, tag)`, jogador em EAX, cdecl), a mesma da troca ao pegar uma arma do chão
+  (`0x2001ac50`). Ela tira a arma e a munição do jogador (`0x2000b150`) e lança o item (`Drop_Item 0x2001bb30` →
+  `LaunchItem 0x2001b980`, trajetória com gravidade em `s.pos`, `+0x14`). Depois o mod põe `trBase`/`currentOrigin`
+  na mão (limitado por um trace a partir do olho) e zera a velocidade.
+- As traps de um módulo DLL passam por `VM_DllSyscall` (`0x44f040`), que usa `currentVM` (`0x13f9db4`). Ele só vale
+  durante um `VM_Call` naquele módulo; chamar código do jogo de fora dava acesso a NULL. O mod aponta `currentVM` para
+  a VM `game` (tabela de `vm_t` em `0x152e960`, `0x4c` bytes, nome em `+4`) durante a chamada.
+- Pegar do chão: o grip da mão vazia é `+activate`; uma arma que aparece num slot de arma enquanto a mão aperta vai
+  para essa mão (o jogo nem sempre troca para ela sozinho).
+- Precisão: campos do weaponDef (mesmo layout no game e no cgame, tabela de parsing com `{nome, offset, tipo}`):
+  `hipSpreadStandMin/DuckedMin/ProneMin/Max` (`+0x23c..0x248`) recebem `adsSpread` (`+0x38c`). Saque rápido:
+  `dropTime/raiseTime/altDropTime/altRaiseTime` (`+0x200..0x20c`, ms) limitados a `DrawTime`. A arma fica escondida
+  até `ps.weapon` chegar à arma pedida.
+- O salto de 180° ao sacar das costas: `UpdateViewAngles` recomeçava o delta de yaw ao trocar a fonte da mira
+  (cabeça ↔ mão), e o mundo girava pelo ângulo entre as duas. Agora a troca é um giro como outro qualquer.
+- Espelhamento na mão esquerda: o eixo lateral das entidades da arma é invertido na vista, e o `glDepthRange` (o
+  renderizador desenha a arma com `(0, 0.1)`) passa a ser interceptado para trocar o `glFrontFace` para `GL_CW`
+  enquanto a arma espelhada é desenhada.
+- Gatilhos no Realista: os dois atiram; com luneta (`adsOverlayShader`, `+0x224`) o da outra mão dá o zoom.

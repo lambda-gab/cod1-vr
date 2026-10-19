@@ -48,7 +48,12 @@ the [technical notes](docs/TECHNICAL.md)).
 
 ## Controls
 
-Defaults, editable in `[Buttons]` of `cod_vr.ini`:
+There are two control modes, chosen with `Mode` in `[Controllers]` of `cod_vr.ini`: **Realistic** (the default) and
+**Arcade**.
+
+### Arcade (`Mode=Arcade`)
+
+The gun is always in the right hand (`RightHanded=0` for the left). Buttons are editable in `[Buttons]`:
 
 | Control | Action |
 |---|---|
@@ -66,6 +71,28 @@ Defaults, editable in `[Buttons]` of `cod_vr.ini`:
 
 In menus, point with the gun hand: trigger clicks, B goes back, A confirms.
 
+### Realistic (default)
+
+Both hands start empty and you take the weapons from your body, with either hand:
+
+| Where you put the hand and press the grip | What you take |
+|---|---|
+| Over the right shoulder (hand behind the head) | Weapon 1 (primary) |
+| Over the left shoulder | Weapon 2 (secondary) |
+| At the hip, on that hand's side | Pistol |
+| Behind you, from the waist line to the lower back | Grenade |
+
+- Keep the grip pressed to hold the weapon. Let go where it belongs (long guns over a shoulder, the pistol at the
+  hip, grenades at the back) to put it away.
+- Let go anywhere else and the gun **falls to the floor**. Grab it with an empty hand to pick it up: it goes to
+  that hand.
+- An empty hand's grip is "use" (doors, picking things up). The other hand's grip near the gun holds it with
+  both hands.
+- Either trigger fires. With a scoped rifle, the other hand's trigger zooms the scope.
+- A gun in the left hand is mirrored. The other buttons and sticks are the same as in Arcade.
+- Which weapon is over each shoulder can be swapped in `[Realistic]` (`RightShoulder`, `LeftShoulder`), as can
+  the holster heights.
+
 ## Settings
 
 Everything is in `cod_vr.ini`, in the game folder, with a comment on each setting. If the game is under
@@ -78,8 +105,24 @@ Everything is in `cod_vr.ini`, in the game folder, with a comment on each settin
 - `[VR]` `RoomScale`, `PositionalTracking`, `WorldScale`.
 - `[HUD]` and `[Scope]`: size and distance of the floating screens, scope smoothing.
 - `[Grenade]`: trajectory on/off and its opacity.
+- `[Controllers]` `Mode`: `Arcade` or `Realistic`; `HipFireAccuracy`: shots as accurate as aimed ones (on by
+  default, since in VR you aim with the gun's own sights).
+- `[Realistic]`: drop on release, holster heights, weapon over each shoulder, draw time.
 
 ## Releases
+
+### v1.2.0
+
+- New **Realistic** control mode, now the default (`Mode=Arcade` brings back the previous controls): empty hands, weapons taken from the shoulders (weapon 1 on the
+  right, weapon 2 on the left), the pistol from the hip and grenades from the back, with either hand. Letting go
+  away from the holster drops the gun on the floor, and you can pick it up again.
+- Quick draw in Realistic mode: no raise animation, and the previous weapon no longer shows during a switch.
+- A gun in the left hand is mirrored.
+- Better aim: shots go where the sights point, without the game's hip fire spread (`HipFireAccuracy`).
+- Fix: the world no longer turns when the aim passes between the head and the hand.
+- Updating keeps your `cod_vr.ini`, and the new settings take their defaults, so an update also starts in
+  Realistic mode; add `Mode=Arcade` to `[Controllers]` for the previous controls. `cod_vr.ini.default` has all the
+  new settings with comments.
 
 ### v1.1.1
 

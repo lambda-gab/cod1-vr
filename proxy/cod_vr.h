@@ -12,6 +12,8 @@ typedef unsigned char GLboolean;
 #define GL_FRONT                    0x0404
 #define GL_BACK                     0x0405
 #define GL_BACK_LEFT                0x0402
+#define GL_CW                     0x0900
+#define GL_CCW                    0x0901
 #define GL_BACK_RIGHT               0x0403
 #define GL_FRONT_LEFT               0x0400
 #define GL_FRONT_RIGHT              0x0401
@@ -76,6 +78,8 @@ typedef struct {
     void      (WINAPI *LineWidth)(GLfloat);
     void      (WINAPI *PointSize)(GLfloat);
     void      (WINAPI *Viewport)(GLint, GLint, GLsizei, GLsizei);
+    void      (WINAPI *DepthRange)(double, double);
+    void      (WINAPI *FrontFace)(GLenum);
     void      (WINAPI *ActiveTexture)(GLenum);   // may be NULL
     // framebuffer objects (core 3.0 / ARB / EXT), resolved once a context exists
     void      (WINAPI *GenFramebuffers)(GLsizei, GLuint *);

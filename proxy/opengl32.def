@@ -69,7 +69,7 @@ EXPORTS
   glDeleteTextures=stub_66
   glDepthFunc=stub_67
   glDepthMask=stub_68
-  glDepthRange=stub_69
+  glDepthRange=hook_glDepthRange
   glDisable=stub_70
   glDisableClientState=stub_71
   glDrawArrays=stub_72
