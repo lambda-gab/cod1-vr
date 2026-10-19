@@ -59,6 +59,8 @@ typedef struct {
     void      (WINAPI *BindTexture)(GLenum, GLuint);
     void      (WINAPI *TexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
     void      (WINAPI *TexParameteri)(GLenum, GLenum, GLint);
+    void      (WINAPI *TexParameterf)(GLenum, GLenum, GLfloat);
+    void      (WINAPI *GetFloatv)(GLenum, GLfloat *);
     void      (WINAPI *GetIntegerv)(GLenum, GLint *);
     GLenum    (WINAPI *GetError)(void);
     void      (WINAPI *Clear)(GLbitfield);
@@ -92,6 +94,7 @@ typedef struct {
     void      (WINAPI *DeleteRenderbuffers)(GLsizei, const GLuint *);
     void      (WINAPI *BindRenderbuffer)(GLenum, GLuint);
     void      (WINAPI *RenderbufferStorage)(GLenum, GLenum, GLsizei, GLsizei);
+    void      (WINAPI *RenderbufferStorageMultisample)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);   // may be NULL
     void      (WINAPI *FramebufferRenderbuffer)(GLenum, GLenum, GLenum, GLuint);
     GLenum    (WINAPI *CheckFramebufferStatus)(GLenum);
     void      (WINAPI *BlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
@@ -104,6 +107,18 @@ void Log(const char *fmt, ...);
 // Copies a w x h color region from one framebuffer to a dw x dh region of another, with scissor off.
 void GL_Blit(GLuint srcFbo, int w, int h, GLuint dstFbo, int dw, int dh);
 void GL_BlitRect(GLuint srcFbo, int sx, int sy, int sw, int sh, GLuint dstFbo, int dw, int dh);
+
+// postfx.c: sharpening, bloom and a colour style on the eye images
+typedef struct {
+    float sharpen;          // 0..1
+    float bloom;            // strength, 0 = off
+    float bloomThreshold;   // brightness where bloom starts, 0..1
+    float contrast, saturation, tint[3];
+} postfx_t;
+void PostFX_Apply(const GLuint eyeFbo[2], const GLuint eyeTex[2], int w, int h, const postfx_t *fx);
+void PostFX_CaptureDepth(int eye, GLuint srcFbo, int w, int h);   // leaves srcFbo bound
+void PostFX_SSAO(const GLuint eyeFbo[2], int w, int h, const float tans[2][4], const float proj[2],
+                 float strength, float radius);
 
 // ---- OpenXR backend (vr_xr.c) ----
 // One eye (or the head) in tracking space, converted to Quake 3 conventions:
@@ -173,4 +188,5 @@ void XR_SetLaser(const float from[3], const float to[3]);
 // Any polyline (up to 64 points, same space and conventions), with an optional ring of 'ring'
 // metres lying flat around the last point. Used for the grenade trajectory.
 void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring);
+void XR_Haptic(int hand, float amplitude, int ms);   // 0 = left, 1 = right
 

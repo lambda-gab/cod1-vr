@@ -51,6 +51,14 @@ Se a pasta do jogo estiver em `Program Files`, copiar arquivos para lá precisa 
 `LogNearEntities=1` em `[Debug]`, o log registra as entidades adicionadas perto da vista quando você aperta o gatilho
 (usado para achar efeitos como o clarão do disparo).
 
+## Qualidade de imagem e pós-processamento
+
+Os olhos são desenhados em buffers multisample (`MSAA`), resolvidos no fim do quadro. O filtro anisotrópico é aplicado
+em toda textura com mipmap quando o jogo define o filtro dela (hooks de `glTexParameterf/i`). O `postfx.c` roda passes
+GLSL nas imagens resolvidas dos olhos, mesmo com o jogo usando OpenGL de função fixa: oclusão de ambiente a partir da
+profundidade de cada olho (copiada antes das cenas de efeito de tela cheia a limparem), nitidez adaptativa, estilos de
+cor e bloom.
+
 ## Launcher e configurações do jogador
 
 `launcher/` gera o `CoD-VR-Launcher.exe` (`launcher\build_launcher.bat`; Win32 e GDI puros, o banner é um recurso

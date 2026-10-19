@@ -393,3 +393,21 @@ da posição das mãos. Ele ficou desligado por padrão (`AutoADS=0`); o ADS man
 - Traces só com mapa carregado: `cm.numSubModels` (`0x14bd6e0`) zero faz o `CM_BoxTrace` dar
   "CM_ClipHandleToModel: bad handle" (fatal) durante o carregamento.
 - Launcher: escreve em `%APPDATA%\CoD-VR\settings.ini`; o mod lê cada chave do `cod_vr.ini` e depois desse arquivo.
+
+
+## Modelos trocados no primeiro olho (v1.4.0)
+
+- Sintoma: só no olho desenhado primeiro (o esquerdo), soldados com peças de outros modelos (equipamento, cabeças
+  soltas) e texturas levemente trocadas. Com `[Debug] RightEyeFirst=1` o problema passou para o olho direito: era o
+  primeiro olho, não o esquerdo.
+- Causa: as superfícies dos modelos animados (xmodel) de uma cena são itens de 16 bytes em `backEndData + 0x1dd700`
+  (até 8192, o jogo checa o espaço em `0x506a31`), adicionados a partir do contador `0x1536498` (`0x506070`). O
+  `RE_RenderScene` zera esse contador no começo de toda cena (`0x4df0cf`), e as draw surfaces apontam para esses itens.
+  O segundo olho reescrevia os itens do primeiro antes de o backend desenhar.
+- Correção: os 10 bytes do `mov dword ptr [0x1536498], 0` viram NOPs (conferidos antes), e o mod zera o contador uma
+  vez por quadro, no começo do `RE_BeginFrame`. As cenas do quadro acumulam itens como já acontecia com as draw
+  surfaces (`0x1536490`, limite `0x10000`, sem dar a volta).
+- A lista em `0x154d728`/`0x154d710` (itens de 0x30 bytes, até 32, ligados a entidades) é preenchida pelo cgame e
+  agora também é restaurada para o segundo olho.
+- Margem de recorte: `CullMargin` (10° por lado) evita superfícies piscando nas bordas na reprojeção do runtime em
+  viradas rápidas de cabeça.

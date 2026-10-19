@@ -75,6 +75,10 @@ As armas são pegas do corpo, com qualquer uma das mãos, e ficam na mão enquan
 - Solte em qualquer outro lugar e a arma **cai no chão**. Pegue com a mão vazia para recuperar: ela vai para
   essa mão.
 - A arma na mão esquerda aparece espelhada.
+- Agache de verdade e o soldado agacha. Fique em pé, reto, e clique o analógico esquerdo para recentralizar (a sua
+  altura e o centro do roomscale).
+- Segure a arma com as duas mãos para uma mira mais firme e menos coice.
+- Os controles vibram ao chegar num coldre, ao pegar, guardar ou soltar uma arma, ao atirar e ao levar tiro.
 
 Botões (editáveis em `[Buttons]` no `cod_vr.ini`):
 
@@ -88,7 +92,7 @@ Botões (editáveis em `[Buttons]` no `cod_vr.ini`):
 | A / B | Pular / recarregar |
 | X | Objetivos (aparecem acima da mão esquerda) |
 | Y | Coronhada |
-| Clique analógico esquerdo | Objetivos |
+| Clique analógico esquerdo | Recentralizar (fique em pé, reto) |
 | Clique analógico direito | Deitar |
 | Menu | Menu do jogo |
 
@@ -100,10 +104,12 @@ Nos menus, aponte com a mão direita: gatilho clica, B volta, A confirma.
 
 O launcher tem as opções que a maioria quer mexer, salvas assim que você muda:
 
-- **GRAPHICS:** resolução no headset (de *Potato* 50% a *GPU Furnace* 200%, com o tamanho por olho), qualidade das
-  texturas, brilho.
-- **VR:** vinheta de conforto, giro em passos ou suave, mão dominante, roomscale, trajetória da granada, soltar a arma
-  no chão, objetivos na mão, menus fixos ou seguindo a cabeça.
+- **GRAPHICS:** resolução no headset (de *Potato* 50% a *GPU Furnace* 200%, com o tamanho por olho), antialiasing
+  (MSAA), filtro de texturas (anisotrópico), qualidade das texturas, brilho, e opções de teste de pós-processamento
+  (oclusão de ambiente, nitidez, estilo de cor, bloom: deixe desligadas se a imagem piorar).
+- **VR:** vinheta de conforto, giro em passos ou suave, mão dominante, roomscale, agachar de verdade, menus fixos ou
+  seguindo a cabeça, trajetória da granada, soltar a arma no chão, firmeza e coice com as duas mãos, objetivos na mão
+  e intensidade da vibração para tiros, dano e coldres.
 - **CONTROLS:** o mapa dos controles.
 
 As escolhas vão para `%APPDATA%\CoD-VR\settings.ini` e têm prioridade sobre o `cod_vr.ini`.
@@ -126,9 +132,27 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   de sacar.
 - `[VR]` `RenderScale`: resolução de cada olho, vezes a recomendada pelo headset.
 - `[Comfort]`: a vinheta (liga/desliga, intensidade, quando começa a fechar).
-- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`: menus e a tela de objetivos.
+- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`, `ObjectivesBackground`: menus e a tela de
+  objetivos.
+- `[VR]` `MSAA`, `Anisotropy`, `CullMargin`, `HeightOffset`; `[PostFX]`: qualidade da imagem e efeitos.
+- `[Controllers]` `HapticsShots`, `HapticsDamage`, `HapticsHolsters`, `PhysicalCrouch`, `CrouchDepth`,
+  `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.4.0
+
+- **Vibração:** ao chegar com a mão num coldre, ao pegar, guardar ou soltar uma arma, a cada tiro (fuzis de luneta
+  também) e ao levar tiro. Cada tipo tem a sua intensidade no launcher.
+- **Agachar de verdade:** agache e o soldado agacha, com a visão na sua altura real.
+- **Recentralizar** com o clique do analógico esquerdo: a sua altura e o centro do roomscale.
+- **Firmeza com as duas mãos:** segurar a arma com as duas mãos amortece o tremor e reduz o coice.
+- **Qualidade de imagem:** antialiasing (MSAA), filtro anisotrópico, texturas em 32 bits e opções de teste de
+  pós-processamento (oclusão de ambiente, nitidez, estilos de cor, bloom).
+- Os objetivos na mão ganharam um fundo escuro de cantos arredondados, mais fácil de ler.
+- O launcher fica aberto enquanto você joga, para testar configurações; a página VR está em duas colunas.
+- **Correção:** soldados desenhados com peças de outros modelos (equipamento, cabeças) no olho esquerdo.
+- **Correção:** texturas piscando nas bordas da visão ao virar a cabeça rápido.
 
 ### v1.3.0
 
@@ -177,7 +201,8 @@ resolução do headset.
 
 ## Próximos passos
 
-- Correção de falhas visuais (artefatos).
+- Coronhada com o movimento da arma e recarga manual (pentes e clipes).
+- Corrigir as falhas visuais que ainda forem relatadas.
 - Suporte ao **United Offensive** (`CoDUOSP.exe`).
 
 ## Observações

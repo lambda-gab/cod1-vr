@@ -17,7 +17,7 @@
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.3.0"
+#define VERSION_TEXT L"v1.4.0"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 
@@ -54,6 +54,7 @@ typedef struct {
     int showRes;  // RenderScale choices: show the eye resolution each one gives
 } option_t;
 
+// VR page, two columns: comfort and movement on the left (VR_COL2 first on the right)
 static option_t g_vrOpts[] = {
     { L"Comfort vignette", L"Narrows the view while you move with the stick or turn smoothly. Helps if you feel sick.",
       "Comfort", 4, { L"Off", L"Low", L"Medium", L"High" },
@@ -66,17 +67,39 @@ static option_t g_vrOpts[] = {
       { "SmoothTurnSpeed=90", "SmoothTurnSpeed=150", "SmoothTurnSpeed=220" }, 1 },
     { L"Dominant hand", L"Which stick turns and which hand points in the menus. Weapons go to either hand.",
       "Controllers", 2, { L"Right", L"Left" }, { "RightHanded=1", "RightHanded=0" }, 0 },
-    { L"Roomscale", L"Walk, lean and crouch for real: the soldier follows your body.",
+    { L"Roomscale", L"Walk and lean for real: the soldier follows your body.",
       "VR", 2, { L"On", L"Off" }, { "RoomScale=1", "RoomScale=0" }, 0 },
-    { L"Grenade trajectory", L"A line that shows where a grenade will fly and land.",
-      "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
-    { L"Drop weapon on release", L"Letting go of the grip away from its holster drops the weapon on the floor.",
-      "Holsters", 2, { L"On", L"Off" }, { "DropOnRelease=1", "DropOnRelease=0" }, 0 },
-    { L"Objectives on the hand", L"The objectives (X button) show above your left hand instead of in front of you.",
-      "HUD", 2, { L"On", L"Off" }, { "ObjectivesOnHand=1", "ObjectivesOnHand=0" }, 0 },
-    { L"Menus and loading screens", L"Fixed in front of you, or following your head.",
+    { L"Physical crouch", L"Crouching for real crouches the soldier. Recenter (left stick click) standing up straight.",
+      "Controllers", 2, { L"On", L"Off" }, { "PhysicalCrouch=1", "PhysicalCrouch=0" }, 0 },
+    { L"Crouch depth", L"How low your head goes to crouch the soldier.",
+      "Controllers", 3, { L"Shallow 25 cm", L"Normal 32 cm", L"Deep 45 cm" },
+      { "CrouchDepth=0.25", "CrouchDepth=0.32", "CrouchDepth=0.45" }, 1 },
+    { L"Menus", L"Menus and loading screens: fixed in front of you, or following your head.",
       "HUD", 2, { L"Fixed", L"Follow head" }, { "MenuFollowsHead=0", "MenuFollowsHead=1" }, 0 },
+    // right column
+    { L"Grenade line", L"A line that shows where a grenade will fly and land.",
+      "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
+    { L"Drop on release", L"Letting go of the grip away from its holster drops the weapon on the floor.",
+      "Holsters", 2, { L"On", L"Off" }, { "DropOnRelease=1", "DropOnRelease=0" }, 0 },
+    { L"Two-hand steadiness", L"With both hands on the gun, hand tremor is damped; deliberate swings still follow quickly.",
+      "Controllers", 4, { L"Off", L"Low", L"Normal", L"High" },
+      { "TwoHandStabilization=0", "TwoHandStabilization=0.4", "TwoHandStabilization=0.75", "TwoHandStabilization=1" }, 2 },
+    { L"Two-hand recoil", L"How much the gun kicks while you hold it with both hands.",
+      "Controllers", 3, { L"Full", L"Reduced", L"Minimal" },
+      { "TwoHandRecoilReduction=0", "TwoHandRecoilReduction=0.5", "TwoHandRecoilReduction=0.8" }, 2 },
+    { L"Objectives on hand", L"The objectives (X button) show above your left hand instead of in front of you.",
+      "HUD", 2, { L"On", L"Off" }, { "ObjectivesOnHand=1", "ObjectivesOnHand=0" }, 0 },
+    { L"Vibration: shots", L"Controller vibration when you fire.",
+      "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
+      { "HapticsShots=0", "HapticsShots=0.35", "HapticsShots=0.6", "HapticsShots=1" }, 2 },
+    { L"Vibration: hits", L"Both controllers shake when you are hit, harder for more damage.",
+      "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
+      { "HapticsDamage=0", "HapticsDamage=0.35", "HapticsDamage=0.6", "HapticsDamage=1" }, 2 },
+    { L"Vibration: holsters", L"Reaching a holster, taking, putting away and dropping weapons, recentering.",
+      "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
+      { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
 };
+#define VR_COL2 8
 
 static option_t g_gfxOpts[] = {
     { L"Headset resolution", L"Sharpness in the headset, per eye. Lower it if the game stutters; above Ultra needs a strong GPU.",
@@ -84,12 +107,29 @@ static option_t g_gfxOpts[] = {
                  L"Eagle Eye (160%)", L"Sniper Vision (180%)", L"GPU Furnace (200%)" },
       { "RenderScale=0.5", "RenderScale=0.7", "RenderScale=0.85", "RenderScale=1", "RenderScale=1.2", "RenderScale=1.4",
         "RenderScale=1.6", "RenderScale=1.8", "RenderScale=2" }, 3, 0, 1 },
+    { L"Antialiasing", L"Smooths jagged edges and the shimmer of fences and wires. 4x suits most PCs; 8x is heavier.",
+      "VR", 4, { L"Off", L"2x MSAA", L"4x MSAA", L"8x MSAA" }, { "MSAA=1", "MSAA=2", "MSAA=4", "MSAA=8" }, 2 },
+    { L"Texture filtering", L"Keeps floors and walls sharp when seen at an angle. Almost free on any recent GPU.",
+      "VR", 4, { L"Off", L"4x anisotropic", L"8x anisotropic", L"16x anisotropic" },
+      { "Anisotropy=1", "Anisotropy=4", "Anisotropy=8", "Anisotropy=16" }, 3 },
     { L"Texture quality", L"Detail of the game's textures. Maximum suits any recent PC.",
       "Launcher", 3, { L"Maximum", L"High", L"Medium" }, { "Picmip=0", "Picmip=1", "Picmip=2" }, 0 },
     { L"Brightness", L"Makes the game brighter in the headset (applied when the game starts).",
       "Launcher", 4, { L"Normal", L"Brighter", L"Bright", L"Brightest" },
       { "Gamma=1", "Gamma=1.2", "Gamma=1.4", "Gamma=1.6" }, 0 },
+    // post-processing, in its own section from here (GFX_POST_FIRST)
+    { L"Ambient occlusion", L"Soft contact shadows where surfaces meet: corners, under objects, around crates.",
+      "PostFX", 4, { L"Off", L"Low", L"Medium", L"High" },
+      { "AmbientOcclusion=0", "AmbientOcclusion=0.4", "AmbientOcclusion=0.65", "AmbientOcclusion=0.9" }, 0 },
+    { L"Sharpening", L"Gives the old textures their definition back, without halos.",
+      "PostFX", 4, { L"Off", L"Low", L"Medium", L"High" }, { "Sharpen=0", "Sharpen=0.3", "Sharpen=0.6", "Sharpen=1" }, 0 },
+    { L"Color style", L"Original: the game's own colours. Cinema: muted and warm, like a war film.",
+      "PostFX", 4, { L"Original", L"Natural", L"Cinema", L"Vivid" },
+      { "Color=original", "Color=natural", "Color=cinema", "Color=vivid" }, 0 },
+    { L"Bloom", L"A soft glow around bright light: fire, explosions, the sky.",
+      "PostFX", 3, { L"Off", L"Low", L"Medium" }, { "Bloom=0", "Bloom=0.15", "Bloom=0.3" }, 0 },
 };
+#define GFX_POST_FIRST 5
 
 #define NUM_VR  (int)(sizeof(g_vrOpts) / sizeof(g_vrOpts[0]))
 #define NUM_GFX (int)(sizeof(g_gfxOpts) / sizeof(g_gfxOpts[0]))
@@ -156,6 +196,17 @@ static void SaveOption(option_t *o)
 static void LoadAll(void)
 {
     int i;
+    {
+        // v1.3 had one vibration setting: it becomes the default of the three kinds
+        char old[16], cur[16];
+        GetPrivateProfileStringA("Controllers", "Haptics", "", old, sizeof(old), g_userIni);
+        GetPrivateProfileStringA("Controllers", "HapticsShots", "", cur, sizeof(cur), g_userIni);
+        if (old[0] && !cur[0]) {
+            WritePrivateProfileStringA("Controllers", "HapticsShots", old, g_userIni);
+            WritePrivateProfileStringA("Controllers", "HapticsDamage", old, g_userIni);
+            WritePrivateProfileStringA("Controllers", "HapticsHolsters", old, g_userIni);
+        }
+    }
     for (i = 0; i < NUM_VR; i++) LoadOption(&g_vrOpts[i]);
     for (i = 0; i < NUM_GFX; i++) LoadOption(&g_gfxOpts[i]);
 }
@@ -163,18 +214,34 @@ static void LoadAll(void)
 // ---------------------------------------------------------------------------
 // Starting the game
 // ---------------------------------------------------------------------------
+// The game started from here, while it runs (the launcher stays open to try settings).
+static HANDLE g_game;
+
+static int GameRunning(void)
+{
+    if (g_game && WaitForSingleObject(g_game, 0) == WAIT_TIMEOUT) return 1;
+    if (g_game) { CloseHandle(g_game); g_game = NULL; }
+    return 0;
+}
+
 static int StartGame(HWND wnd)
 {
     char exe[MAX_PATH], cmd[512], picmip[16], gamma[16];
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
+    if (GameRunning()) {
+        MessageBoxW(wnd, L"The game is already running. Settings changed here apply the next time it starts.",
+                    L"Call of Duty VR", MB_ICONINFORMATION);
+        return 0;
+    }
     _snprintf(exe, sizeof(exe), "%s\\CoDSP.exe", g_dir);
     GetPrivateProfileStringA("Launcher", "Picmip", "0", picmip, sizeof(picmip), g_userIni);
     GetPrivateProfileStringA("Launcher", "Gamma", "1", gamma, sizeof(gamma), g_userIni);
     // r_ignorehwgamma: the game's own brightness is a ramp on the monitor, which the headset never
     // sees; with it ignored, r_gamma brightens the textures themselves
-    _snprintf(cmd, sizeof(cmd), "\"%s\" +set r_picmip %d +set r_ignorehwgamma 1 +set r_gamma %.2f",
-              exe, atoi(picmip), atof(gamma));
+    // full colour depth and trilinear filtering for the textures as well
+    _snprintf(cmd, sizeof(cmd), "\"%s\" +set r_picmip %d +set r_texturebits 32 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR"
+              " +set r_ignorehwgamma 1 +set r_gamma %.2f", exe, atoi(picmip), atof(gamma));
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
     if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, g_dir, &si, &pi)) {
@@ -182,7 +249,7 @@ static int StartGame(HWND wnd)
         return 0;
     }
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    g_game = pi.hProcess;
     return 1;
 }
 
@@ -282,12 +349,14 @@ static void DrawPageTitle(HDC dc, const wchar_t *title, const wchar_t *sub)
     if (sub) Text(dc, g_fSmall, COL_DIM, P(50), P(62), P(950), P(84), sub, DT_SINGLELINE);
 }
 
-static void DrawOptions(HDC dc, option_t *opts, int n, int rowH, int top)
+// Rows opts[first .. first + n - 1] from y = top; returns the one under the mouse, or -1.
+static int DrawRows(HDC dc, option_t *opts, int first, int n, int rowH, int top)
 {
-    int i, hint = -1;
-    for (i = 0; i < n; i++) {
+    int j, hint = -1;
+    for (j = 0; j < n; j++) {
+        int i = first + j;
         option_t *o = &opts[i];
-        int y0 = P(top + i * rowH), y1 = P(top + (i + 1) * rowH - 4);
+        int y0 = P(top + j * rowH), y1 = P(top + (j + 1) * rowH - 4);
         int vx0 = P(560), vx1 = P(950);
         int hot = Hovered(HIT_ROW, i) || Hovered(HIT_PREV, i) || Hovered(HIT_NEXT, i);
         const wchar_t *val = o->cur >= 0 ? o->names[o->cur] : L"Custom";
@@ -317,11 +386,56 @@ static void DrawOptions(HDC dc, option_t *opts, int n, int rowH, int top)
         AddHit(vx1 - P(40), y0, vx1, y1, HIT_NEXT, i);
         AddHit(P(40), y0, P(960), y1, HIT_ROW, i);
     }
+    return hint;
+}
+
+// Rows in a column from x0 to x1 (label, then the value with its arrows); returns the hovered one.
+static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int top, int x0, int x1)
+{
+    int j, hint = -1, vx0 = P(x0 + 215), vx1 = P(x1);
+    for (j = 0; j < n; j++) {
+        int i = first + j;
+        option_t *o = &opts[i];
+        int y0 = P(top + j * rowH), y1 = P(top + (j + 1) * rowH - 4);
+        int hot = Hovered(HIT_ROW, i) || Hovered(HIT_PREV, i) || Hovered(HIT_NEXT, i);
+        const wchar_t *val = o->cur >= 0 ? o->names[o->cur] : L"Custom";
+        if (hot) { Fill(dc, P(x0), y0, P(x1), y1, RGB(34, 30, 20)); hint = i; }
+        Text(dc, g_fText, COL_TEXT, P(x0 + 12), y0, vx0, y1, o->label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        Text(dc, g_fBold, Hovered(HIT_PREV, i) ? COL_GOLD : COL_DIM, vx0, y0, vx0 + P(26), y1, L"\x25C0", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        Text(dc, g_fBold, COL_STEEL, vx0 + P(26), y0, vx1 - P(26), y1, val, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS);
+        Text(dc, g_fBold, Hovered(HIT_NEXT, i) ? COL_GOLD : COL_DIM, vx1 - P(26), y0, vx1, y1, L"\x25B6", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        AddHit(vx0, y0, vx0 + P(26), y1, HIT_PREV, i);
+        AddHit(vx1 - P(26), y0, vx1, y1, HIT_NEXT, i);
+        AddHit(P(x0), y0, P(x1), y1, HIT_ROW, i);
+    }
+    return hint;
+}
+
+static void DrawHint(HDC dc, option_t *opts, int hint)
+{
     if (hint >= 0)
         Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476), opts[hint].hint, DT_SINGLELINE | DT_END_ELLIPSIS);
     else
         Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476),
              L"Click a setting to change it. Changes are saved at once and used the next time the game starts.", DT_SINGLELINE);
+}
+
+static void DrawOptions(HDC dc, option_t *opts, int n, int rowH, int top)
+{
+    DrawHint(dc, opts, DrawRows(dc, opts, 0, n, rowH, top));
+}
+
+// GRAPHICS: the main settings, then the post-processing ones under their own title.
+static void DrawGraphics(HDC dc)
+{
+    int h1, h2;
+    DrawPageTitle(dc, L"GRAPHICS", L"The game's own options (Options in the game menu) still apply on top of these.");
+    h1 = DrawRows(dc, g_gfxOpts, 0, GFX_POST_FIRST, 36, 94);
+    Text(dc, g_fBold, COL_GOLD, P(50), P(278), P(950), P(300), L"POST-PROCESSING", DT_SINGLELINE | DT_VCENTER);
+    Text(dc, g_fSmall, COL_DIM, P(50), P(300), P(950), P(318),
+         L"Test options: if the image looks worse, leave them off.", DT_SINGLELINE | DT_VCENTER);
+    h2 = DrawRows(dc, g_gfxOpts, GFX_POST_FIRST, NUM_GFX - GFX_POST_FIRST, 29, 322);
+    DrawHint(dc, g_gfxOpts, h1 >= 0 ? h1 : h2);
 }
 
 static void DrawControls(HDC dc)
@@ -341,7 +455,7 @@ static void DrawControls(HDC dc)
         { L"A / B", L"Jump / reload" },
         { L"X", L"Objectives" },
         { L"Y", L"Melee" },
-        { L"Left stick click", L"Objectives" },
+        { L"Left stick click", L"Recenter (stand up straight)" },
         { L"Right stick click", L"Go prone" },
         { L"Menu", L"Game menu" },
     };
@@ -397,9 +511,10 @@ static void DrawBar(HDC dc)
     // PLAY
     {
         int x0 = P(30), y0 = P(BAR_Y + 14), x1 = P(210), y1 = P(BASE_H - 14);
-        int hot = Hovered(HIT_PLAY, 0);
-        Fill(dc, x0, y0, x1, y1, hot ? RGB(236, 192, 80) : COL_GOLD);
-        Text(dc, g_fPlay, RGB(20, 16, 6), x0, y0, x1, y1, L"PLAY", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        int hot = Hovered(HIT_PLAY, 0), running = GameRunning();
+        Fill(dc, x0, y0, x1, y1, running ? COL_GOLD_DARK : hot ? RGB(236, 192, 80) : COL_GOLD);
+        Text(dc, running ? g_fNav : g_fPlay, RGB(20, 16, 6), x0, y0, x1, y1, running ? L"RUNNING" : L"PLAY",
+             DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         AddHit(x0, y0, x1, y1, HIT_PLAY, 0);
     }
     for (i = 0; i < 4; i++) {
@@ -434,11 +549,15 @@ static void Paint(HWND wnd, HDC wdc)
         Veil(dc, 0, 0, P(BASE_W), P(BAR_Y), 225);
         if (g_page == PAGE_CONTROLS) DrawControls(dc);
         else if (g_page == PAGE_GRAPHICS) {
-            DrawPageTitle(dc, L"GRAPHICS", L"The game's own options (Options in the game menu) still apply on top of these.");
-            DrawOptions(dc, g_gfxOpts, NUM_GFX, 52, 104);
+            DrawGraphics(dc);
         } else if (g_page == PAGE_VR) {
+            int h1, h2;
             DrawPageTitle(dc, L"VR", NULL);
-            DrawOptions(dc, g_vrOpts, NUM_VR, 39, 70);
+            Text(dc, g_fBold, COL_GOLD, P(40), P(66), P(480), P(90), L"COMFORT AND MOVEMENT", DT_SINGLELINE | DT_VCENTER);
+            Text(dc, g_fBold, COL_GOLD, P(510), P(66), P(960), P(90), L"WEAPONS AND VIBRATION", DT_SINGLELINE | DT_VCENTER);
+            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 42, 94, 40, 480);
+            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 42, 94, 510, 960);
+            DrawHint(dc, g_vrOpts, h1 >= 0 ? h1 : h2);
         } else if (g_page == PAGE_ABOUT) DrawAbout(dc);
     }
     DrawBar(dc);
@@ -475,7 +594,7 @@ static void Click(HWND wnd, int idx)
     h = &g_hits[idx];
     switch (h->type) {
     case HIT_PLAY:
-        if (StartGame(wnd)) PostMessageW(wnd, WM_CLOSE, 0, 0);
+        StartGame(wnd);
         break;
     case HIT_NAV:
         g_page = g_page == h->arg ? PAGE_HOME : h->arg;
@@ -509,6 +628,12 @@ static LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_TIMER: {
+        static int was;
+        int now = GameRunning();
+        if (now != was) { was = now; InvalidateRect(wnd, NULL, FALSE); }
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         int h = HitAt(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, wnd, 0 };
@@ -533,7 +658,8 @@ static LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             if (g_page != PAGE_HOME) { g_page = PAGE_HOME; InvalidateRect(wnd, NULL, FALSE); }
             else PostMessageW(wnd, WM_CLOSE, 0, 0);
         } else if (wp == VK_RETURN) {
-            if (StartGame(wnd)) PostMessageW(wnd, WM_CLOSE, 0, 0);
+            StartGame(wnd);
+            InvalidateRect(wnd, NULL, FALSE);
         }
         return 0;
     case WM_DESTROY:
@@ -635,6 +761,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     if (!wnd) return 1;
     ShowWindow(wnd, show);
     UpdateWindow(wnd);
+    SetTimer(wnd, 1, 1000, NULL);   // PLAY comes back when the game is closed
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

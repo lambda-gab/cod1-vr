@@ -309,9 +309,9 @@ EXPORTS
   glTexGeniv=stub_306
   glTexImage1D=stub_307
   glTexImage2D=stub_308
-  glTexParameterf=stub_309
+  glTexParameterf=hook_glTexParameterf
   glTexParameterfv=stub_310
-  glTexParameteri=stub_311
+  glTexParameteri=hook_glTexParameteri
   glTexParameteriv=stub_312
   glTexSubImage1D=stub_313
   glTexSubImage2D=stub_314

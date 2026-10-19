@@ -7,8 +7,8 @@ IDR_COD_VR_INI    RCDATA "..\proxy\cod_vr.ini"
 IDR_LAUNCHER      RCDATA "..\launcher\out\CoD-VR-Launcher.exe"
 
 1 VERSIONINFO
-FILEVERSION 1,3,0,0
-PRODUCTVERSION 1,3,0,0
+FILEVERSION 1,4,0,0
+PRODUCTVERSION 1,4,0,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -16,8 +16,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Call of Duty VR setup"
       VALUE "ProductName", "Call of Duty VR"
-      VALUE "FileVersion", "1.3.0"
-      VALUE "ProductVersion", "1.3.0"
+      VALUE "FileVersion", "1.4.0"
+      VALUE "ProductVersion", "1.4.0"
     END
   END
   BLOCK "VarFileInfo"

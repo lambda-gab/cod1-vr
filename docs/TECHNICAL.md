@@ -51,6 +51,13 @@ If the game folder is under `Program Files`, copying files there needs administr
 `LogNearEntities=1` in `[Debug]` logs the entities added near the view when you pull the trigger (used to find
 effects such as muzzle flashes).
 
+## Image quality and post-processing
+
+The eyes are drawn into multisampled buffers (`MSAA`), resolved at the end of the frame. Anisotropic filtering is set
+on every mipmapped texture when the game gives it its filter (`glTexParameterf/i` hooks). `postfx.c` runs GLSL passes
+on the resolved eye images, even though the game itself is fixed-function: ambient occlusion from each eye's depth
+(copied before the full-screen effect scenes clear it), contrast-adaptive sharpening, colour styles and bloom.
+
 ## Launcher and player settings
 
 `launcher/` builds `CoD-VR-Launcher.exe` (`launcher\build_launcher.bat`; plain Win32 and GDI, the banner is a JPEG

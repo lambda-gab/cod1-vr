@@ -24,7 +24,7 @@ static PFN_xrGetInstanceProcAddr xrGetInstanceProcAddr;
     X(xrWaitFrame) X(xrBeginFrame) X(xrEndFrame) X(xrLocateViews) X(xrLocateSpace) X(xrResultToString) \
     X(xrStringToPath) X(xrCreateActionSet) X(xrCreateAction) X(xrSuggestInteractionProfileBindings) \
     X(xrAttachSessionActionSets) X(xrCreateActionSpace) X(xrSyncActions) X(xrGetActionStateFloat) \
-    X(xrGetActionStateBoolean) X(xrGetActionStateVector2f)
+    X(xrGetActionStateBoolean) X(xrGetActionStateVector2f) X(xrApplyHapticFeedback)
 #define X(name) static PFN_##name name;
 XR_FUNCS(X)
 #undef X
@@ -63,7 +63,7 @@ static struct {
     int        viewsValid;
     // controllers (action set and actions live with the instance, spaces with the session)
     XrActionSet actionSet;
-    XrAction   aPose, aTrigger, aGrip, aStick, aStickClick, aA, aB, aX, aY, aMenu;
+    XrAction   aPose, aTrigger, aGrip, aStick, aStickClick, aA, aB, aX, aY, aMenu, aHaptic;
     XrPath     handPath[2];
     XrSpace    handSpace[2];
 } xr;
@@ -210,11 +210,13 @@ static int CreateActions(void)
         { &xr.aA, "/user/hand/right/input/a/click" },             { &xr.aB, "/user/hand/right/input/b/click" },
         { &xr.aX, "/user/hand/left/input/x/click" },              { &xr.aY, "/user/hand/left/input/y/click" },
         { &xr.aMenu, "/user/hand/left/input/menu/click" },
+        { &xr.aHaptic, "/user/hand/left/output/haptic" },         { &xr.aHaptic, "/user/hand/right/output/haptic" },
     };
     static const binding_t simple[] = {
         { &xr.aPose, "/user/hand/left/input/aim/pose" },          { &xr.aPose, "/user/hand/right/input/aim/pose" },
         { &xr.aTrigger, "/user/hand/left/input/select/click" },   { &xr.aTrigger, "/user/hand/right/input/select/click" },
         { &xr.aMenu, "/user/hand/left/input/menu/click" },
+        { &xr.aHaptic, "/user/hand/left/output/haptic" },         { &xr.aHaptic, "/user/hand/right/output/haptic" },
     };
 
     if (xr.actionSet) return 1;
@@ -232,7 +234,8 @@ static int CreateActions(void)
         !CreateAction(&xr.aB, "button_b", "B", XR_ACTION_TYPE_BOOLEAN_INPUT, 0) ||
         !CreateAction(&xr.aX, "button_x", "X", XR_ACTION_TYPE_BOOLEAN_INPUT, 0) ||
         !CreateAction(&xr.aY, "button_y", "Y", XR_ACTION_TYPE_BOOLEAN_INPUT, 0) ||
-        !CreateAction(&xr.aMenu, "menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT, 0))
+        !CreateAction(&xr.aMenu, "menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT, 0) ||
+        !CreateAction(&xr.aHaptic, "haptic", "Vibration", XR_ACTION_TYPE_VIBRATION_OUTPUT, 1))
         return 0;
     Suggest("/interaction_profiles/oculus/touch_controller", touch, sizeof(touch) / sizeof(touch[0]));
     Suggest("/interaction_profiles/khr/simple_controller", simple, sizeof(simple) / sizeof(simple[0]));
@@ -368,7 +371,7 @@ void XR_Shutdown(void)
         XrInstance keep = xr.instance;
         XrSystemId sys = xr.system;
         XrActionSet set = xr.actionSet;
-        XrAction actions[10];
+        XrAction actions[11];
         XrPath hands[2];
         memcpy(actions, &xr.aPose, sizeof(actions));
         memcpy(hands, xr.handPath, sizeof(hands));
@@ -747,6 +750,20 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
         XrResult r = xrEndFrame(xr.session, &ei);
         if (XR_FAILED(r)) Log("OpenXR: xrEndFrame failed: %s", ResultStr(r));
     }
+}
+
+// A vibration on one controller: amplitude 0..1, for ms milliseconds (runtime's frequency).
+void XR_Haptic(int hand, float amplitude, int ms)
+{
+    XrHapticVibration vib = { XR_TYPE_HAPTIC_VIBRATION };
+    XrHapticActionInfo hi = { XR_TYPE_HAPTIC_ACTION_INFO };
+    if (!xr.session || !xr.aHaptic || !xrApplyHapticFeedback || hand < 0 || hand > 1 || amplitude <= 0) return;
+    vib.duration = (XrDuration)ms * 1000000;
+    vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+    vib.amplitude = amplitude > 1 ? 1 : amplitude;
+    hi.action = xr.aHaptic;
+    hi.subactionPath = xr.handPath[hand];
+    xrApplyHapticFeedback(xr.session, &hi, (const XrHapticBaseHeader *)&vib);
 }
 
 static float GetFloat(XrAction a, int hand)

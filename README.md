@@ -75,6 +75,10 @@ Weapons are taken from your body, with either hand, and held while the grip is p
 - Let go anywhere else and the gun **falls to the floor**. Grab it with an empty hand to pick it up: it goes to
   that hand.
 - A gun in the left hand is mirrored.
+- Crouch for real and the soldier crouches. Stand up straight and click the left stick to recenter (your height
+  and the roomscale centre).
+- Hold the gun with both hands for a steadier aim and less recoil.
+- The controllers vibrate when you reach a holster, take, put away or drop a weapon, fire and get hit.
 
 Buttons (editable in `[Buttons]` of `cod_vr.ini`):
 
@@ -88,7 +92,7 @@ Buttons (editable in `[Buttons]` of `cod_vr.ini`):
 | A / B | Jump / reload |
 | X | Objectives (shown above your left hand) |
 | Y | Melee |
-| Left stick click | Objectives |
+| Left stick click | Recenter (stand up straight) |
 | Right stick click | Go prone |
 | Menu | Game menu |
 
@@ -100,10 +104,12 @@ In menus, point with the right hand: trigger clicks, B goes back, A confirms.
 
 The launcher has the settings most players want, saved as soon as you change them:
 
-- **GRAPHICS:** headset resolution (from *Potato* 50% to *GPU Furnace* 200%, with the size per eye), texture
-  quality, brightness.
-- **VR:** comfort vignette, snap or smooth turning, dominant hand, roomscale, grenade trajectory, dropping the weapon
-  on release, objectives on the hand, menus fixed or following the head.
+- **GRAPHICS:** headset resolution (from *Potato* 50% to *GPU Furnace* 200%, with the size per eye), antialiasing
+  (MSAA), texture filtering (anisotropic), texture quality, brightness, and post-processing test options (ambient
+  occlusion, sharpening, colour style, bloom: leave them off if the image looks worse).
+- **VR:** comfort vignette, snap or smooth turning, dominant hand, roomscale, physical crouch, menus fixed or
+  following the head, grenade trajectory, dropping the weapon on release, two-hand steadiness and recoil, objectives
+  on the hand, and vibration strength for shots, hits and holsters.
 - **CONTROLS:** the controller layout.
 
 Its choices go to `%APPDATA%\CoD-VR\settings.ini` and take precedence over `cod_vr.ini`.
@@ -126,9 +132,27 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
   the gun when you let go, draw time.
 - `[VR]` `RenderScale`: eye resolution, times the headset's recommended size.
 - `[Comfort]`: the vignette (on/off, strength, when it starts closing).
-- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`: menus and the objectives screen.
+- `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`, `ObjectivesBackground`: menus and the
+  objectives screen.
+- `[VR]` `MSAA`, `Anisotropy`, `CullMargin`, `HeightOffset`; `[PostFX]`: image quality and effects.
+- `[Controllers]` `HapticsShots`, `HapticsDamage`, `HapticsHolsters`, `PhysicalCrouch`, `CrouchDepth`,
+  `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.4.0
+
+- **Vibration:** when a hand reaches a holster, when you take, put away or drop a weapon, on every shot (scoped
+  rifles too) and when you get hit. Each kind has its own strength in the launcher.
+- **Physical crouch:** crouch for real and the soldier crouches, with the view at your real height.
+- **Recenter** with the left stick click: your height and the roomscale centre.
+- **Two-hand steadiness:** holding the gun with both hands damps hand tremor and reduces recoil.
+- **Image quality:** antialiasing (MSAA), anisotropic texture filtering, 32-bit textures, and post-processing test
+  options (ambient occlusion, sharpening, colour styles, bloom).
+- The objectives on the hand have a dark rounded background, easier to read.
+- The launcher stays open while you play, to try settings; the VR page is in two columns.
+- **Fix:** soldiers drawn with parts of other models (gear, heads) in the left eye.
+- **Fix:** textures flashing at the edges of the view on quick head turns.
 
 ### v1.3.0
 
@@ -175,7 +199,8 @@ resolution ideas.
 
 ## Next steps
 
-- Fix visual glitches (artifacts).
+- Melee by swinging the gun, and reloading by hand (magazines and clips).
+- Fix the visual glitches that are still reported.
 - **United Offensive** (`CoDUOSP.exe`) support.
 
 ## Notes

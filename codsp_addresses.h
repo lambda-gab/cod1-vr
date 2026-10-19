@@ -41,6 +41,14 @@
 #define ADDR_r_firstSceneEntity     0x0154d72c
 #define ADDR_r_firstSceneDlight     0x0154d718
 #define ADDR_r_firstScenePoly       0x0154d720
+// Animated model (xmodel) surfaces of a scene: 16-byte items at backEndData + 0x1dd700 (8192 of them,
+// R_AddXModelSurfaces checks the room at 0x506a31), added from index ADDR_xsurfCount (0x506070).
+// RE_RenderScene starts it at 0 for every scene (0x4df0cf); the draw surfaces of a scene point at
+// these items, so a second scene in the same frame rewrote the first one's before it was drawn.
+#define ADDR_xsurfCount             0x01536498
+#define ADDR_RenderScene_xsurfReset 0x004df0cf  // mov dword ptr [0x1536498], 0 (10 bytes)
+#define ADDR_r_firstSceneList6      0x0154d728  // a sixth scene list (0x30-byte items at backEndData + 0x81100,
+                                                // count at 0x154d710, probably coronas): RE_ClearScene 0x4de950
 #define ADDR_r_numEntities          0x0154d70c  // added this frame (limit 2045)
 #define ADDR_r_numDlights           0x0154d714
 #define ADDR_r_numPolys             0x0154d730
@@ -139,8 +147,14 @@
 #define WEAPDEF_OFS_hipSpreadStandMin 0x23c     // float; then DuckedMin, ProneMin, Max (same layout in game and cgame)
 #define WEAPDEF_OFS_adsSpread       0x38c       // float
 #define WEAPDEF_OFS_dropTime        0x200       // int msec; then raiseTime, altDropTime, altRaiseTime
+// recoil ranges (float degrees: pitch min, pitch max, yaw min, yaw max) of the gun model and the view
+#define WEAPDEF_OFS_adsGunKick      0x350
+#define WEAPDEF_OFS_adsViewKick     0x370
+#define WEAPDEF_OFS_hipGunKick      0x390
+#define WEAPDEF_OFS_hipViewKick     0x3b0
 #define WEAPDEF_OFS_adsOverlayShader 0x224      // char*: set for scoped weapons
-#define WEAPDEF_OFS_clipIndex       0x1a0       // int: index into ps.ammoclip
+#define WEAPDEF_OFS_ammoIndex       0x1a0       // int: index into ps.ammo (the reserve)
+#define WEAPDEF_OFS_clipIndex       0x1a8       // int: index into ps.ammoclip (Drop / pickup of weapons, 0x2001bca0)
 #define ADDR_cl_cgameUserCmdValue   0x0142f2d8  // selected weapon index (cgame trap 0x57), copied to usercmd + 6
 #define CG_ADDR_vmMain              0x30018cd0
 
@@ -151,11 +165,14 @@
 #define G_ITEM_SIZE                 0x30        // +8 world model name (char*), +0x20 giType
 #define G_OFS_weaponDefs            0x00125650  // module offset: weaponDef_t **weaponDefs (index = weapon number)
 #define G_OFS_numWeaponDefs         0x0012564c  // module offset: highest valid weapon number
-#define GCL_OFS_ammoclip            0xf4        // int[]: rounds in the clip, by weaponDef clipIndex
+#define GCL_OFS_ammo                0xf4        // int[]: reserve ammunition, by weaponDef ammoIndex
+#define GCL_OFS_ammoclip            0x1f4       // int[]: rounds in the clip, by weaponDef clipIndex
 #define GENT_OFS_client             0x104       // gclient_t*
 #define GENT_OFS_posBase            0x20        // s.pos.trBase (s.pos at +0x14: trType, trTime, trDuration, base, delta)
 #define GENT_OFS_posDelta           0x2c        // s.pos.trDelta
 #define GENT_OFS_currentOrigin      0xe0        // r.currentOrigin
+#define GENT_OFS_health             0x1d8       // int (spawn field table "health"; "maxhealth" at 0x1dc)
+#define GENT_OFS_health             0x1d8       // int (spawn field table "health"; "maxhealth" at 0x1dc)
 #define GCL_OFS_weapon              0xa0        // ps.weapon: the weapon in use
 #define GCL_OFS_slots               0x2fc       // BYTE[6]: weapon in slot 1 primary, 2 primaryb, 3 pistol,
                                                 // 4 grenade, 5 smokegrenade (0 = empty)

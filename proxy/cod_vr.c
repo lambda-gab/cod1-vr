@@ -108,6 +108,24 @@ static struct {
     float vignetteStrength; // 0..1, how far it closes
     float vignetteSpeed;    // game units per second where it starts closing (walking is about 190)
     float vignetteTurn;     // degrees per second where it starts closing
+    float haptics;          // controller vibration strength, 0 = off (default of the three below)
+    float hapShots;         // vibration strength of the shots
+    float hapDamage;        // ... of being hit
+    float hapHolster;       // ... of the holsters and of taking, putting away, dropping weapons
+    int   physCrouch;       // 1 = crouching for real crouches the soldier
+    float crouchDepth;      // metres the head goes below its standing height to crouch
+    float heightOffset;     // metres added to the head height (taller / shorter in the game)
+    float twoHandStab;      // 0..1: aim steadiness while the gun is held with both hands
+    float twoHandKick;      // 0..1: share of the recoil taken away while the gun is held with both hands
+    float objBackground;    // 0..1: opacity of the dark panel behind the objectives on the hand
+    float objMargin;        // share of the screen on each side between the panel's edge and the objectives
+    int   msaa;             // samples per pixel in the eye buffers (1 = off)
+    float anisotropy;       // texture filtering level forced on every mipmapped texture (1 = off)
+    postfx_t postfx;        // sharpening, bloom, colour style of the eye images
+    float ssao;             // ambient occlusion strength, 0 = off
+    float ssaoRadius;       // game units
+    float cullMargin;       // degrees added on each side of the view for what the game draws
+    int   rightEyeFirst;    // diagnostics: render the right eye's scene before the left one
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -124,7 +142,7 @@ static const struct { const char *key, *def; } g_buttons[BT_COUNT] = {
     { "B", "+reload" },
     { "X", "+scores" },                     // objectives (weapons are taken from the body)
     { "Y", "+melee" },
-    { "LeftStickClick", "+scores" },        // objectives
+    { "LeftStickClick", "vr:recenter" },    // stand up straight and press: height and roomscale centre
     { "RightStickClick", "toggleprone" },
     { "Menu", "key:ESCAPE" },              // the game opens its menu on the Escape key
     { "TurnStickUp", "raisestance" },
@@ -155,6 +173,11 @@ static int    eye_w, eye_h, g_eyeBound;
 static GLint  g_vp[4], g_sc[4];
 static int    g_vpSet, g_scSet;
 static GLuint fb_fbo[2], fb_tex[2], fb_depth[2];
+// MSAA: the eyes are drawn into multisampled buffers and resolved into fb_tex at the end of the frame
+static GLuint fb_ms[2], fb_msColor[2], fb_msDepth[2];
+static float  g_worldProj[2] = { -1.0f, -8.0f };   // projection [10], [14] of the eyes' world view
+static int    g_depthCaptured[2];                 // this frame's eye depth is kept for the SSAO
+static int    g_msaaOn;   // samples, 0 = off
 // HUD buffer (the left eye's 2D) and a tiny buffer that swallows the right eye's identical 2D,
 // which would otherwise be blended twice.
 static GLuint hud_fbo[2], hud_tex[2], hud_depth;
@@ -238,6 +261,10 @@ static signed char ClampMove(float v);
 static void (__cdecl *Detour(DWORD target, const BYTE *prologue, int len, void *hook))(void);
 static void FlushHeldEntities(const cod_refdef_t *fd);
 static void ProcessControllers(void);
+static void Recenter(void);
+static void Buzz(int h, float amp, int ms, float strength);
+static const char *WeaponName(const BYTE *def);
+static void InitColorTexture(GLuint tex, int w, int h);
 static void UpdateAutoAds(void);
 static void UpdateGrenadeArc(void);
 static void QueueEvent(int type, int value, int value2);
@@ -285,14 +312,22 @@ static PFN_RenderScene orig_RenderScene;
 // offset between cl.viewangles and the predicted view (the server's delta_angles).
 // A tracked point relative to the player in the game (metres, tracking axes): relative to the
 // roomscale anchor, or to the head when only rotation is tracked.
+// Height: the tracking origin is where the head was when the headset started, which is the
+// game's eye height. Recenter moves that reference to the head's current height; while the
+// player crouches for real and the game crouches the soldier for it, g_crouchCorr gives back the
+// game's own drop of the eye, so the camera stays at the real head.
+static float g_heightRef, g_crouchCorr;
+
+static float HeightShift(void) { return -g_heightRef + cfg.heightOffset + g_crouchCorr; }
+
 static void BodyOffset(const float p[3], float out[3])
 {
     if (!cfg.positional) {
         out[0] = p[0] - g_head.pos[0]; out[1] = p[1] - g_head.pos[1]; out[2] = p[2] - g_head.pos[2];
     } else if (cfg.roomScale && g_anchorInit) {
-        out[0] = p[0] - g_anchor[0]; out[1] = p[1] - g_anchor[1]; out[2] = p[2];
+        out[0] = p[0] - g_anchor[0]; out[1] = p[1] - g_anchor[1]; out[2] = p[2] + HeightShift();
     } else {
-        out[0] = p[0]; out[1] = p[1]; out[2] = p[2];
+        out[0] = p[0]; out[1] = p[1]; out[2] = p[2] + HeightShift();
     }
 }
 
@@ -400,6 +435,10 @@ static void RunBind(int b, int down)
     const char *cmd = cfg.bind[b];
     char line[80];
     if (!cmd[0]) return;
+    if (!_stricmp(cmd, "vr:recenter")) {
+        if (down) Recenter();
+        return;
+    }
     if (!_strnicmp(cmd, "key:", 4)) {
         int key = KeyByName(cmd + 4);
         if (key) QueueEvent(SE_KEY, key, down);
@@ -624,6 +663,20 @@ static void AdjustGunPose(float dt)
         if (g_scopeWasActive) scopeHold = 0.3f;
         else if (scopeHold > 0) scopeHold -= dt;
         tau = scopeHold > 0 && cfg.scopeSmoothing > 0 ? cfg.scopeSmoothing : cfg.aimSmoothing;
+        if (g_twoHand && cfg.twoHandStab > 0) {
+            // Held with both hands: an adaptive filter. Small motions (the hands' tremor) are
+            // damped a lot; the further the gun turns from where it is steadied, the quicker it
+            // follows, so a deliberate swing is not left behind.
+            float ang = 0, k, t2;
+            if (g_gunSmoothInit) {
+                float c = f[0] * g_gunFwdSmooth[0] + f[1] * g_gunFwdSmooth[1] + f[2] * g_gunFwdSmooth[2];
+                ang = c >= 1.0f ? 0.0f : DEG(acosf(c < -1.0f ? -1.0f : c));
+            }
+            k = ang / 6.0f;
+            if (k > 1) k = 1;
+            t2 = cfg.twoHandStab * 0.18f * (1.0f - k) + 0.01f * k;
+            if (t2 > tau) tau = t2;
+        }
         if (tau != g_lastSmoothing && g_lastSmoothing == 0) g_gunSmoothInit = 0;   // start from the current pose
         g_lastSmoothing = tau;
         if (tau <= 0) goto unfiltered;
@@ -846,9 +899,9 @@ static void WorldToTracking(const float w[3], float body, float out[3])
     if (!cfg.positional) {
         for (i = 0; i < 3; i++) out[i] = r[i] + g_head.pos[i];
     } else if (cfg.roomScale && g_anchorInit) {
-        out[0] = r[0] + g_anchor[0]; out[1] = r[1] + g_anchor[1]; out[2] = r[2];
+        out[0] = r[0] + g_anchor[0]; out[1] = r[1] + g_anchor[1]; out[2] = r[2] - HeightShift();
     } else {
-        memcpy(out, r, sizeof(r));
+        out[0] = r[0]; out[1] = r[1]; out[2] = r[2] - HeightShift();
     }
 }
 
@@ -934,6 +987,7 @@ static int   g_gripDown[2], g_useHand = -1, g_realSync = 1;
 // The view weapon is drawn mirrored this frame (gun in the left hand). Its triangles then wind
 // the other way, so hook_glDepthRange flips the front face while the weapon is drawn.
 static int   g_mirrorGun;
+static int   g_gunFlashed;       // the weapon in the hand showed a muzzle flash since the last check
 
 // The player's gclient_t in gamex86.dll, or NULL (another build, no level).
 static BYTE *PlayerClient(void)
@@ -1010,6 +1064,7 @@ static void DrawWeapon(int h, int zone)
     g_gunHand = h;
     g_heldKind = kind;
     g_heldWeapon = 0;
+    Buzz(h, 0.5f, 50, cfg.hapHolster);
     Log("realistic: hand %d draws slot %d (weapon %d)", h, slot, g_wantWeapon);
 }
 
@@ -1191,6 +1246,157 @@ static void DropHeldWeapon(int h)
         if (SlotWeapon(cl, i)) { WeaponSlotCmd(i); break; }
 }
 
+// Controller vibration, scaled by Haptics (0.6 = the strengths written here).
+// Controller vibration of one kind (HapticsShots / Damage / Holsters; 0.6 = the strengths here).
+static void Buzz(int h, float amp, int ms, float strength)
+{
+    if (strength > 0) XR_Haptic(h, amp * strength / 0.6f, ms);
+}
+
+// Rounds in the clip of weapon w, or -1.
+static int GameClip(const BYTE *cl, int w)
+{
+    HMODULE gm = GetModuleHandleA("gamex86.dll");
+    int clip = -1;
+    if (!cl || !gm || w <= 0) return -1;
+    __try {
+        BYTE **defs = *(BYTE ***)((BYTE *)gm + G_OFS_weaponDefs);
+        if (defs && defs[w]) clip = *(const int *)(cl + GCL_OFS_ammoclip + *(int *)(defs[w] + WEAPDEF_OFS_clipIndex) * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        clip = -1;
+    }
+    return clip;
+}
+
+// A hand reaching a holster it can use: an empty hand where a weapon is, or the weapon's own place.
+static int ZoneUseful(int h, int zone)
+{
+    BYTE *cl = PlayerClient();
+    if (zone == ZONE_NONE || !cl) return 0;
+    if (h == g_gunHand)
+        return g_heldKind == HELD_LONG ? (zone == ZONE_BACK_LEFT || zone == ZONE_BACK_RIGHT)
+             : g_heldKind == HELD_PISTOL ? zone == ZONE_HIP : zone == ZONE_LOWER_BACK;
+    if (g_gunHand >= 0) return 0;   // one weapon at a time
+    if (zone == ZONE_BACK_LEFT || zone == ZONE_BACK_RIGHT) return SlotWeapon(cl, 1) || SlotWeapon(cl, 2);
+    if (zone == ZONE_HIP) return SlotWeapon(cl, 3) != 0;
+    return SlotWeapon(cl, 4) || SlotWeapon(cl, 5);
+}
+
+// Every frame: a tick when a hand reaches a usable holster, a kick on each shot (seen by the
+// muzzle flash of the weapon in the hand, at most every 70 ms, so automatic fire rattles), and
+// both hands shake when the player is hit, harder for more damage.
+static void UpdateHaptics(void)
+{
+    static int lastZone[2], lastHealth = -1, lastWeapon, lastClip = -1;
+    static DWORD lastShot;
+    HMODULE gm = GetModuleHandleA("gamex86.dll");
+    DWORD now = GetTickCount();
+    BYTE *cl = PlayerClient();
+    int h, health = -1, w = GameWeapon(cl), clip = GameClip(cl, w), shot;
+    for (h = 0; h < 2; h++) {
+        int zone = g_in.handValid[h] ? HandZone(h) : ZONE_NONE;
+        if (zone != lastZone[h] && ZoneUseful(h, zone)) Buzz(h, 0.25f, 25, cfg.hapHolster);
+        lastZone[h] = zone;
+    }
+    // a shot: a round left the clip of the same weapon (scoped rifles show no flash), or the
+    // weapon in the hand drew its muzzle flash
+    shot = g_gunFlashed || (w == lastWeapon && clip >= 0 && lastClip >= 0 && clip < lastClip);
+    if (shot && g_gunHand >= 0 && now - lastShot >= 70) {
+        lastShot = now;
+        Buzz(g_gunHand, 0.85f, 40, cfg.hapShots);
+        if (g_twoHand) Buzz(1 - g_gunHand, 0.5f, 40, cfg.hapShots);
+    }
+    g_gunFlashed = 0;
+    lastWeapon = w;
+    lastClip = clip;
+    if (gm && PlayerClient()) {
+        __try {
+            health = *(const int *)((BYTE *)gm + G_OFS_entities + GENT_OFS_health);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            health = -1;
+        }
+    }
+    if (health >= 0 && lastHealth > 0 && health < lastHealth) {
+        int dmg = lastHealth - health;
+        float amp = 0.45f + dmg / 60.0f;
+        int ms = 90 + dmg * 3;
+        if (health <= 0) { amp = 1.0f; ms = 600; }   // killed
+        if (amp > 1.0f) amp = 1.0f;
+        if (ms > 300 && health > 0) ms = 300;
+        Buzz(0, amp, ms, cfg.hapDamage);
+        Buzz(1, amp, ms, cfg.hapDamage);
+    }
+    lastHealth = health;
+}
+
+// Stand up straight and press the recenter button: this is the soldier's eye height, and the
+// roomscale centre is here.
+static void Recenter(void)
+{
+    g_heightRef = g_head.pos[2];
+    g_anchorInit = 0;
+    g_crouchCorr = 0;
+    Log("recentered: head height %.2f", g_heightRef);
+    Buzz(0, 0.5f, 60, cfg.hapHolster);
+    Buzz(1, 0.5f, 60, cfg.hapHolster);
+}
+
+// Physical crouch: the head going CrouchDepth below its standing height crouches the soldier,
+// standing up stands him. While crouched for real the camera keeps the real head height (the
+// game's own lower eye is given back), so crouching behind cover looks the way it feels.
+static int g_crouchOwned;   // the game crouched because the player did (camera corrected)
+
+// The game's eye height above the player's origin: 60 standing, 40 crouched, 11 prone.
+static float GameViewHeight(const float *vieworg)
+{
+    HMODULE gm = GetModuleHandleA("gamex86.dll");
+    float vh = 60.0f;
+    if (!gm || !PlayerClient()) return vh;
+    __try {
+        vh = vieworg[2] - ((const float *)((BYTE *)gm + G_OFS_entities + GENT_OFS_currentOrigin))[2];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        vh = 60.0f;
+    }
+    return vh;
+}
+
+// Called with the game's own view of the frame, before the eyes and the gun are placed: gives
+// back exactly how far the game has lowered its eye, in the same frame (a correction measured on
+// the previous frame, or smoothed, lagged behind the game's crouch and the view dipped).
+static void SetCrouchCorrection(const float *vieworg)
+{
+    float c = 0;
+    if (g_crouchOwned) {
+        c = (60.0f - GameViewHeight(vieworg)) / cfg.worldScale;
+        if (c < 0) c = 0;
+        if (c > 0.8f) c = 0.8f;
+    }
+    g_crouchCorr = c;
+}
+
+static void UpdatePhysicalCrouch(float dt)
+{
+    static int crouched;
+    float drop = g_heightRef - g_head.pos[2], vh;
+    int stance;
+    (void)dt;
+    if (!cfg.physCrouch || !cfg.positional || !MapLoaded() || !g_lastHudWorld || !PlayerClient()) {
+        crouched = g_crouchOwned = 0;
+        return;
+    }
+    vh = GameViewHeight(g_lastViewOrg);
+    stance = vh > 50 ? 0 : vh > 25 ? 1 : 2;
+    if (!crouched && drop > cfg.crouchDepth) {
+        crouched = 1;
+        if (stance == 0) { Cbuf("lowerstance\n"); g_crouchOwned = 1; }
+    } else if (crouched && drop < cfg.crouchDepth - 0.08f) {
+        crouched = 0;
+        if (stance == 1 && g_crouchOwned) Cbuf("raisestance\n");
+    }
+    if (g_crouchOwned && stance == 2) g_crouchOwned = 0;               // went prone with the stick
+    if (!crouched && g_crouchOwned && vh >= 59.5f) g_crouchOwned = 0;  // stood up again
+}
+
 static void GripPressed(int h)
 {
     int zone = HandZone(h);
@@ -1218,10 +1424,13 @@ static void GripReleased(int h)
         int zone = HandZone(h);
         int home = g_heldKind == HELD_LONG ? (zone == ZONE_BACK_LEFT || zone == ZONE_BACK_RIGHT)
                  : g_heldKind == HELD_PISTOL ? zone == ZONE_HIP : 1;
-        if (!home && cfg.dropOnRelease && g_in.handValid[h])
+        if (!home && cfg.dropOnRelease && g_in.handValid[h]) {
             DropHeldWeapon(h);
-        else
+            Buzz(h, 0.7f, 80, cfg.hapHolster);
+        } else {
+            Buzz(h, 0.45f, 50, cfg.hapHolster);
             Log("realistic: hand %d puts the weapon away", h);
+        }
     }
     g_gunHand = -1;
 }
@@ -1259,6 +1468,7 @@ static void WatchHeldWeapon(void)
             g_heldKind = slot == 3 ? HELD_PISTOL : HELD_LONG;
             g_heldWeapon = 0;
             g_useHand = -1;
+            Buzz(g_gunHand, 0.5f, 50, cfg.hapHolster);
             Log("realistic: hand %d picked up weapon %d (slot %d)", g_gunHand, now, slot);
             break;
         }
@@ -1284,6 +1494,7 @@ static void RealisticHands(void)
     }
     if (g_realSync) { g_useHand = -1; g_realSync = 0; }
     WatchHeldWeapon();
+    UpdateHaptics();
     SetButton(BT_PGRIP, g_useHand >= 0);
     SetButton(BT_SGRIP, 0);
     {
@@ -1301,17 +1512,6 @@ static void RealisticHands(void)
         fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
                                   (!scoped && Pressed(g_in.trigger[other], BT_PTRIGGER)));
         SetButton(BT_STRIGGER, g_gunHand >= 0 && scoped && Pressed(g_in.trigger[other], BT_STRIGGER));
-        if (fire != g_btnDown[BT_PTRIGGER]) {
-            BYTE *cl = PlayerClient();
-            HMODULE gm = GetModuleHandleA("gamex86.dll");
-            int w = GameWeapon(cl), clip = -1;
-            __try {
-                BYTE **defs = gm ? *(BYTE ***)((BYTE *)gm + G_OFS_weaponDefs) : NULL;
-                if (cl && defs && w > 0 && defs[w]) clip = *(int *)(cl + GCL_OFS_ammoclip + *(int *)(defs[w] + WEAPDEF_OFS_clipIndex) * 4);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-            }
-            Log("realistic: trigger %s, hand %d, weapon %d, clip %d", fire ? "down" : "up", g_gunHand, w, clip);
-        }
         SetButton(BT_PTRIGGER, fire);
     }
 }
@@ -1478,6 +1678,101 @@ static void UpdateVignette(float dt, float stick, float turnRate)
     }
 }
 
+// The objectives held up on the hand: a translucent black panel with rounded corners behind
+// them (drawn "under" what the game drew: where the HUD is transparent the panel shows, the text
+// on top is untouched), so they read well against the world.
+static GLuint g_objFbo, g_objTex;
+static int    g_objW, g_objH;
+static HGLRC  g_objCtx;
+
+// The game draws the objectives almost to the screen's edge: to leave a margin of panel around
+// them, the HUD image is put back a little smaller (centred) before the panel goes under it.
+static void InsetHud(GLuint fbo, int w, int h)
+{
+    int mx = (int)(w * cfg.objMargin), my = (int)(h * cfg.objMargin);
+    GLint prevTex = 0;
+    if (mx <= 0 && my <= 0) return;
+    if (g_objFbo && (g_objW != w || g_objH != h || g_objCtx != gl.GetCurrentContext())) {
+        if (g_objCtx == gl.GetCurrentContext()) { gl.DeleteFramebuffers(1, &g_objFbo); gl.DeleteTextures(1, &g_objTex); }
+        g_objFbo = g_objTex = 0;
+    }
+    if (!g_objFbo) {
+        gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+        gl.GenTextures(1, &g_objTex);
+        InitColorTexture(g_objTex, w, h);
+        gl.BindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+        gl.GenFramebuffers(1, &g_objFbo);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, g_objFbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_objTex, 0);
+        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+            gl.DeleteFramebuffers(1, &g_objFbo); gl.DeleteTextures(1, &g_objTex);
+            g_objFbo = g_objTex = 0;
+            return;
+        }
+        g_objW = w; g_objH = h; g_objCtx = gl.GetCurrentContext();
+    }
+    GL_Blit(fbo, w, h, g_objFbo, w, h);   // a copy of the HUD as the game drew it
+    gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
+    gl.PushAttrib(GL_COLOR_BUFFER_BIT | GL_SCISSOR_BIT);
+    gl.Disable(GL_SCISSOR_TEST);
+    gl.ColorMask(1, 1, 1, 1);
+    gl.ClearColor(0, 0, 0, 0);
+    gl.Clear(GL_COLOR_BUFFER_BIT);
+    gl.PopAttrib();
+    gl.BindFramebuffer(GL_READ_FRAMEBUFFER, g_objFbo);
+    gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    gl.BlitFramebuffer(0, 0, w, h, mx, my, w - mx, h - my, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void DrawObjectivesPanel(GLuint fbo, int w, int h)
+{
+    float a = cfg.objBackground, proj[16] = { 0 }, x0, y0, x1, y1, r;
+    static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    int i, c;
+    if (!fbo || !gl.BlendFunc || w <= 0 || h <= 0) return;
+    InsetHud(fbo, w, h);
+    if (a <= 0.01f) return;
+    if (a > 1) a = 1;
+    proj[0] = 2.0f / w; proj[5] = 2.0f / h; proj[10] = 1; proj[12] = -1; proj[13] = -1; proj[15] = 1;
+    // nearly the whole screen: the objectives text starts close to its left edge
+    x0 = w * 0.005f; x1 = w * 0.995f; y0 = h * 0.01f; y1 = h * 0.99f; r = h * 0.045f;
+    gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
+    gl.PushAttrib(0x000FFFFF);   // GL_ALL_ATTRIB_BITS
+    gl.Disable(GL_SCISSOR_TEST);
+    gl.Disable(0x0B71); gl.Disable(0x0BC0); gl.Disable(0x0B44);   // depth, alpha test, cull
+    gl.Disable(0x0B60); gl.Disable(0x0B50); gl.Disable(0x0B90);   // fog, lighting, stencil
+    if (gl.ActiveTexture) {
+        for (i = 3; i >= 0; i--) { gl.ActiveTexture(0x84C0 + i); gl.Disable(GL_TEXTURE_2D); }
+    } else {
+        gl.Disable(GL_TEXTURE_2D);
+    }
+    gl.ColorMask(1, 1, 1, 1);
+    gl.Enable(0x0BE2);                 // GL_BLEND
+    gl.BlendFunc(0x0305, 1);           // ONE_MINUS_DST_ALPHA, ONE: "under" what is already there
+    gl.Viewport(0, 0, w, h);
+    gl.MatrixMode(0x1701); gl.PushMatrix(); gl.LoadMatrixf(proj);    // GL_PROJECTION, pixels
+    gl.MatrixMode(0x1700); gl.PushMatrix(); gl.LoadMatrixf(ident);   // GL_MODELVIEW
+    gl.Color4f(0, 0, 0, a);            // premultiplied black
+    gl.Begin(0x0006);                  // GL_TRIANGLE_FAN
+    gl.Vertex3f((x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0);
+    for (c = 0; c < 4; c++) {
+        // corners counter-clockwise: bottom right, top right, top left, bottom left
+        float cx = (c == 0 || c == 1) ? x1 - r : x0 + r, cy = (c == 0 || c == 3) ? y0 + r : y1 - r;
+        for (i = 0; i <= 8; i++) {
+            float t = (c * 90.0f - 90.0f + i * (90.0f / 8)) * 0.0174533f;
+            gl.Vertex3f(cx + cosf(t) * r, cy + sinf(t) * r, 0);
+        }
+    }
+    gl.Vertex3f(x1 - r, y0, 0);        // close the fan where it started
+    gl.End();
+    gl.MatrixMode(0x1700); gl.PopMatrix();
+    gl.MatrixMode(0x1701); gl.PopMatrix();
+    gl.PopAttrib();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 // Draws the tunnel over both eye images: clear around the eye's own straight-ahead direction
 // (the eyes' fields of view are asymmetric), a soft edge, black outside. Every GL state it
 // touches is saved and restored.
@@ -1531,6 +1826,54 @@ static void DrawVignette(void)
         gl.PopAttrib();
     }
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// Recoil while the gun is held with both hands: the kick ranges of every weapon (the gun model's
+// and the view's) are scaled down, from their original values kept here, and put back when the
+// support hand lets go. In the game (which kicks the aim) and the cgame (which draws it).
+#define KICK_FIELDS 16
+typedef struct { const BYTE *def; char name[32]; float orig[KICK_FIELDS]; } kick_save_t;
+static kick_save_t g_kickSave[2][257];
+
+static void ScaleKick(HMODULE m, int ofsDefs, int ofsCount, kick_save_t *save, float factor)
+{
+    static const int groups[4] = { WEAPDEF_OFS_adsGunKick, WEAPDEF_OFS_adsViewKick, WEAPDEF_OFS_hipGunKick, WEAPDEF_OFS_hipViewKick };
+    __try {
+        int count = *(int *)((BYTE *)m + ofsCount), i, g, k;
+        BYTE **defs = *(BYTE ***)((BYTE *)m + ofsDefs);
+        if (!defs || count <= 0 || count > 256) return;
+        for (i = 1; i <= count; i++) {
+            BYTE *d = defs[i];
+            if (!d) continue;
+            const char *nm = WeaponName(d);
+            if (save[i].def != d || strncmp(save[i].name, nm ? nm : "", sizeof(save[i].name) - 1)) {
+                // a new level loads new weapon defs: keep their own values
+                save[i].def = d;
+                strncpy(save[i].name, nm ? nm : "", sizeof(save[i].name) - 1);
+                save[i].name[sizeof(save[i].name) - 1] = 0;
+                for (g = 0; g < 4; g++) for (k = 0; k < 4; k++) save[i].orig[g * 4 + k] = ((float *)(d + groups[g]))[k];
+            }
+            for (g = 0; g < 4; g++) for (k = 0; k < 4; k++) ((float *)(d + groups[g]))[k] = save[i].orig[g * 4 + k] * factor;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static void UpdateTwoHandKick(void)
+{
+    static float applied = 1.0f;
+    static DWORD last;
+    float factor = g_twoHand ? 1.0f - cfg.twoHandKick : 1.0f;
+    HMODULE g, cg;
+    // on a change, and every second (weapons load as the level uses them)
+    if (factor == applied && GetTickCount() - last < 1000) return;
+    if (factor == 1.0f && applied == 1.0f && cfg.twoHandKick <= 0) return;
+    last = GetTickCount();
+    applied = factor;
+    g = GetModuleHandleA("gamex86.dll");
+    cg = GetModuleHandleA("cgamex86.dll");
+    if (g && PlayerClient()) ScaleKick(g, G_OFS_weaponDefs, G_OFS_numWeaponDefs, g_kickSave[0], factor);
+    if (cg && CurrentWeaponDef()) ScaleKick(cg, CG_OFS_weaponDefs, CG_OFS_numWeaponDefs, g_kickSave[1], factor);
 }
 
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
@@ -1667,6 +2010,8 @@ static void ProcessControllers(void)
         if (fromHand && !g_crosshairOff) { Cbuf("cg_drawCrosshair 0\n"); g_crosshairOff = 1; }
         UpdateAutoAds();
         UpdateVignette(dt, sqrtf(mx * mx + my * my), turnRate);
+        UpdatePhysicalCrouch(dt);
+        UpdateTwoHandKick();
         if (fromHand && !g_pointerOn) UpdateGrenadeArc();
         if (g_pointerOn) DrawPointer(dom);
         {
@@ -1758,6 +2103,7 @@ static void __cdecl hk_AddRefEntity(void *ent, int param)
         return;   // gun hand not tracked: hide the view weapon rather than draw it at the face
     if (cfg.logNear) g_statTypes[*(int *)ent & 15]++;
     if (hold) {
+        if (*(int *)ent != REFENT_TYPE_MODEL) g_gunFlashed = 1;   // flash sprites of the shot
         memcpy(g_held[g_heldCount], ent, REFENT_SIZE);
         g_heldWorldFlash[g_heldCount] = worldFlash;
         g_heldParam[g_heldCount++] = param;
@@ -1927,6 +2273,7 @@ static void __cdecl hk_BeginFrame(int stereoFrame)
     if (!cfg.enabled) { orig_BeginFrame(stereoFrame); return; }
 
     if (stereoFrame != 2) {   // start of a frame
+        MEM(int, ADDR_xsurfCount) = 0;   // the per-scene reset happens here, once per frame
         g_heldCount = 0;
         g_pitchSampled = 0;
         if (fb_ok) StartVR();
@@ -2002,7 +2349,7 @@ static void SamplePitchOffset(const cod_refdef_t *fd)
 // x = 1 (the eyes use x = 0).
 static void RenderScopeView(cod_refdef_t *fd)
 {
-    int saved[3], x = fd->x, w = fd->width;
+    int saved[4], x = fd->x, w = fd->width;
 
     g_scopeActive = 0;
     if (!cfg.scope || !g_hudActive || fd->fov_x >= cfg.scopeMaxFov || fd->x != 0) return;
@@ -2012,11 +2359,13 @@ static void RenderScopeView(cod_refdef_t *fd)
     saved[0] = MEM(int, ADDR_r_firstSceneEntity);
     saved[1] = MEM(int, ADDR_r_firstSceneDlight);
     saved[2] = MEM(int, ADDR_r_firstScenePoly);
+    saved[3] = MEM(int, ADDR_r_firstSceneList6);
     g_projOverride = -1;
     orig_RenderScene(fd);
     MEM(int, ADDR_r_firstSceneEntity) = saved[0];
     MEM(int, ADDR_r_firstSceneDlight) = saved[1];
     MEM(int, ADDR_r_firstScenePoly) = saved[2];
+    MEM(int, ADDR_r_firstSceneList6) = saved[3];
 
     fd->x = x;
     fd->width = w;
@@ -2029,7 +2378,7 @@ static void RenderScopeView(cod_refdef_t *fd)
 static void RenderBothEyes(cod_refdef_t *fd)
 {
     float savedOrg[3], savedAxis[3][3], savedFov[2], cullFov[2];
-    int saved[3], x = fd->x, y = fd->y, w = fd->width, h = fd->height, eye;
+    int saved[4], x = fd->x, y = fd->y, w = fd->width, h = fd->height, eye, k;
 
     // A sky portal scene (rdflags bit 3) has its own camera: the aim, the scope and the view
     // weapon belong to the main scene.
@@ -2037,6 +2386,7 @@ static void RenderBothEyes(cod_refdef_t *fd)
         if (!g_pitchSampled) { SamplePitchOffset(fd); g_pitchSampled = 1; }
         memcpy(g_lastViewOrg, fd->vieworg, sizeof(g_lastViewOrg));
         memcpy(g_lastViewAxis, fd->viewaxis, sizeof(g_lastViewAxis));
+        SetCrouchCorrection(fd->vieworg);
         UpdateRoomScale(fd);
         RenderScopeView(fd);
         FlushHeldEntities(fd);
@@ -2049,6 +2399,7 @@ static void RenderBothEyes(cod_refdef_t *fd)
     saved[0] = MEM(int, ADDR_r_firstSceneEntity);
     saved[1] = MEM(int, ADDR_r_firstSceneDlight);
     saved[2] = MEM(int, ADDR_r_firstScenePoly);
+    saved[3] = MEM(int, ADDR_r_firstSceneList6);
 
     {
         // Both eyes cull with the same frustum, the union of the two plus a margin. With
@@ -2060,24 +2411,34 @@ static void RenderBothEyes(cod_refdef_t *fd)
             tx = max(tx, max(fabsf(g_eyes[k].tanLeft), fabsf(g_eyes[k].tanRight)));
             ty = max(ty, max(fabsf(g_eyes[k].tanUp), fabsf(g_eyes[k].tanDown)));
         }
-        cullFov[0] = 2.0f * DEG(atanf(tx)) + 4.0f;
-        cullFov[1] = 2.0f * DEG(atanf(ty)) + 4.0f;
+        // The headset shows each frame a little later, re-aimed at where the head is by then
+        // (reprojection): on a quick head turn its edges come from just outside the view the
+        // frame was drawn for. What the game culled there flashed in and out, so the game draws
+        // a margin around the view.
+        cullFov[0] = 2.0f * DEG(atanf(tx)) + 2.0f * cfg.cullMargin;
+        cullFov[1] = 2.0f * DEG(atanf(ty)) + 2.0f * cfg.cullMargin;
+        if (cullFov[0] > 170.0f) cullFov[0] = 170.0f;
+        if (cullFov[1] > 170.0f) cullFov[1] = 170.0f;
         // The model LOD scale grows with the fov: keep the game's own detail level.
         g_lodRatio = tanf(RAD(savedFov[0] * 0.5f)) / tanf(RAD(cullFov[0] * 0.5f));
     }
 
-    for (eye = 0; eye < 2; eye++) {
-        const vr_pose_t *e = &g_eyes[eye];
+    for (k = 0; k < 2; k++) {
+        const vr_pose_t *e;
+        eye = cfg.rightEyeFirst ? 1 - k : k;
+        e = &g_eyes[eye];
         // The eyes always fill their buffer: the game's letterbox (cinematic bars) would
         // otherwise be stretched over the headset image.
         fd->x = eye ? 2 : 0;
         fd->y = 0;
         fd->width = fb_w - fd->x;
         fd->height = fb_h;
-        if (eye == 1) {
+        if (k == 1) {
+            // the second eye draws the same scene: every list the renderer starts per scene
             MEM(int, ADDR_r_firstSceneEntity) = saved[0];
             MEM(int, ADDR_r_firstSceneDlight) = saved[1];
             MEM(int, ADDR_r_firstScenePoly) = saved[2];
+            MEM(int, ADDR_r_firstSceneList6) = saved[3];
         }
         ApplyEyePose(fd, e, fd->viewaxis, fd->vieworg);
         // Symmetric fov for the culling planes (R_SetupFrustum); the exact asymmetric frustum
@@ -2237,6 +2598,8 @@ static void __cdecl hk_SetupProjection(void)
             m[k][9] = (e->tanUp + e->tanDown) / (e->tanUp - e->tanDown);
         }
         MEM(float, ADDR_viewParms_lodScale) *= g_lodRatio;
+        g_worldProj[0] = m[0][10];   // depth to distance for the ambient occlusion
+        g_worldProj[1] = m[0][14];
     }
 }
 
@@ -2308,6 +2671,11 @@ static void __cdecl hk_BeginDrawingView(void)
     g_fxTarget = 0;
     if (g_singlePass && g_backEye == 0 && !world && (rd[0] & 3) == 3) {   // see DrawFullscreenEffects
         g_fxTarget = 1 + ((rd[0] >> 2) & 1);
+        if (cfg.ssao > 0 && g_vrFrame && !g_depthCaptured[g_fxTarget - 1]) {
+            int e = g_fxTarget - 1;   // this scene clears the depth: keep it for the SSAO first
+            PostFX_CaptureDepth(e, g_msaaOn ? fb_ms[e] : fb_fbo[e], eye_w, eye_h);
+            g_depthCaptured[e] = 1;
+        }
         BindEye(g_fxTarget - 1);
         tramp_BeginDrawingView();
         return;
@@ -2390,6 +2758,21 @@ static void EnsureHooks(void)
         PatchPointer(ADDR_IAT_SwapBuffers, (void *)hk_SwapBuffers);
         Log("hooked SwapBuffers import");
     }
+    {
+        // The eyes are two scenes of one frame: the second one must not reuse (overwrite) the
+        // animated model surfaces of the first before the backend draws them. The count is reset
+        // once per frame instead (hk_BeginFrame); the game keeps it within its 8192 items.
+        static const BYTE reset[10] = { 0xC7, 0x05, 0x98, 0x64, 0x53, 0x01, 0, 0, 0, 0 };
+        BYTE *p = (BYTE *)ADDR_RenderScene_xsurfReset;
+        if (!memcmp(p, reset, sizeof(reset))) {
+            DWORD old;
+            VirtualProtect(p, sizeof(reset), PAGE_EXECUTE_READWRITE, &old);
+            memset(p, 0x90, sizeof(reset));
+            VirtualProtect(p, sizeof(reset), old, &old);
+            FlushInstructionCache(GetCurrentProcess(), p, sizeof(reset));
+            Log("model surfaces kept across the eyes' scenes");
+        }
+    }
     callTarget = ADDR_CALL_SetupProjection + 5 + MEM(DWORD, ADDR_CALL_SetupProjection + 1);
     if (MEM(BYTE, ADDR_CALL_SetupProjection) == 0xE8 && callTarget == ADDR_R_SetupProjection) {
         PatchCall(ADDR_CALL_SetupProjection, (void *)hk_SetupProjection);
@@ -2438,6 +2821,11 @@ static void DestroyFramebuffers(void)
         gl.DeleteFramebuffers(2, fb_fbo);
         gl.DeleteRenderbuffers(2, fb_depth);
         gl.DeleteTextures(2, fb_tex);
+        if (g_msaaOn) {
+            gl.DeleteFramebuffers(2, fb_ms);
+            gl.DeleteRenderbuffers(2, fb_msColor);
+            gl.DeleteRenderbuffers(2, fb_msDepth);
+        }
         if (hud_fbo[0]) {
             gl.DeleteFramebuffers(2, hud_fbo);
             gl.DeleteRenderbuffers(1, &hud_depth);
@@ -2445,6 +2833,7 @@ static void DestroyFramebuffers(void)
         }
     }
     fb_ok = 0;
+    g_msaaOn = 0;
     hud_fbo[0] = hud_fbo[1] = 0;
 }
 
@@ -2462,6 +2851,7 @@ static int ResolveFramebufferFuncs(void)
         gl.FramebufferRenderbuffer = (void *)GetGLProc("glFramebufferRenderbuffer", "glFramebufferRenderbufferEXT");
         gl.CheckFramebufferStatus  = (void *)GetGLProc("glCheckFramebufferStatus", "glCheckFramebufferStatusEXT");
         gl.BlitFramebuffer         = (void *)GetGLProc("glBlitFramebuffer", "glBlitFramebufferEXT");
+        gl.RenderbufferStorageMultisample = (void *)GetGLProc("glRenderbufferStorageMultisample", "glRenderbufferStorageMultisampleEXT");
         gl.ActiveTexture           = (void *)GetGLProc("glActiveTexture", "glActiveTextureARB");
     }
     return gl.GenFramebuffers && gl.BindFramebuffer && gl.FramebufferTexture2D && gl.GenRenderbuffers &&
@@ -2580,6 +2970,36 @@ static int EnsureFramebuffers(void)
             return 0;
         }
     }
+    if (cfg.msaa > 1 && gl.RenderbufferStorageMultisample) {
+        GLint maxSamples = 0;
+        int samples = cfg.msaa, ok = 1;
+        gl.GetIntegerv(0x8D57, &maxSamples);   // GL_MAX_SAMPLES
+        if (maxSamples > 0 && samples > maxSamples) samples = maxSamples;
+        gl.GenFramebuffers(2, fb_ms);
+        gl.GenRenderbuffers(2, fb_msColor);
+        gl.GenRenderbuffers(2, fb_msDepth);
+        for (i = 0; i < 2 && ok; i++) {
+            gl.BindRenderbuffer(GL_RENDERBUFFER, fb_msColor[i]);
+            gl.RenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, ew, eh);
+            gl.BindRenderbuffer(GL_RENDERBUFFER, fb_msDepth[i]);
+            gl.RenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, ew, eh);
+            gl.BindFramebuffer(GL_FRAMEBUFFER, fb_ms[i]);
+            gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, fb_msColor[i]);
+            gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fb_msDepth[i]);
+            gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb_msDepth[i]);
+            if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) ok = 0;
+        }
+        if (ok) {
+            g_msaaOn = samples;
+            Log("eye antialiasing: %dx MSAA", samples);
+        } else {
+            gl.DeleteFramebuffers(2, fb_ms);
+            gl.DeleteRenderbuffers(2, fb_msColor);
+            gl.DeleteRenderbuffers(2, fb_msDepth);
+            fb_ms[0] = fb_ms[1] = 0;
+            Log("eye antialiasing: %dx MSAA unavailable, off", samples);
+        }
+    }
     if (!CreateHudBuffers(w, h)) Log("HUD buffer incomplete: HUD stays in the eyes");
     gl.BindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
     gl.BindRenderbuffer(GL_RENDERBUFFER, 0);
@@ -2644,7 +3064,7 @@ static void BindTarget(GLuint fbo)
     gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
     gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
     g_boundFbo = 1;
-    SetEyeBound(fbo && (fbo == fb_fbo[0] || fbo == fb_fbo[1]));
+    SetEyeBound(fbo && (fbo == fb_fbo[0] || fbo == fb_fbo[1] || fbo == fb_ms[0] || fbo == fb_ms[1]));
 }
 
 // 2D and world-less 3D of the current eye go to the HUD (left) or are discarded (right).
@@ -2667,7 +3087,7 @@ static void ClearHud(void)
 
 static void BindEye(int eye)
 {
-    gl.BindFramebuffer(GL_FRAMEBUFFER, fb_fbo[eye]);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, g_msaaOn ? fb_ms[eye] : fb_fbo[eye]);
     gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
     gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
     g_boundFbo = 1;
@@ -2679,6 +3099,64 @@ static void BindWindow(GLenum mode)
     if (g_boundFbo) { gl.BindFramebuffer(GL_FRAMEBUFFER, 0); g_boundFbo = 0; }
     gl.DrawBuffer(mode);
     SetEyeBound(0);
+}
+
+// MSAA: the eyes' multisampled images into their textures, before anything reads them.
+static void ResolveEyes(void)
+{
+    GLboolean scissor;
+    int i;
+    if (!g_msaaOn) return;
+    scissor = gl.IsEnabled(GL_SCISSOR_TEST);
+    if (scissor) gl.Disable(GL_SCISSOR_TEST);
+    for (i = 0; i < 2; i++) {
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, fb_ms[i]);
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, fb_fbo[i]);
+        gl.BlitFramebuffer(0, 0, eye_w, eye_h, 0, 0, eye_w, eye_h, GL_COLOR_BUFFER_BIT, 0x2600);   // GL_NEAREST
+    }
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (scissor) gl.Enable(GL_SCISSOR_TEST);
+}
+
+// Anisotropic filtering: when the game gives a texture a mipmapped filter, the texture also gets
+// the configured anisotropy (clamped to the driver's), and a lower level the game asks for itself
+// is raised to it. Surfaces seen at an angle (floors, walls) stay sharp.
+static float MaxAnisotropy(void)
+{
+    static float level = -1;
+    if (level < 0) {
+        float maxA = 0;
+        if (gl.GetFloatv) gl.GetFloatv(0x84FF, &maxA);   // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+        if (gl.GetError) gl.GetError();
+        level = cfg.anisotropy > maxA ? maxA : cfg.anisotropy;
+        if (level > 1) Log("anisotropic filtering %.0fx (driver max %.0f)", level, maxA);
+    }
+    return level;
+}
+
+static void ForceAnisotropy(GLenum target, GLenum pname, float value)
+{
+    if (!cfg.enabled || cfg.anisotropy <= 1 || target != GL_TEXTURE_2D || !gl.TexParameterf) return;
+    if (pname == GL_TEXTURE_MIN_FILTER && value >= 0x2700 && value <= 0x2703) {   // *_MIPMAP_*
+        float a = MaxAnisotropy();
+        if (a > 1) gl.TexParameterf(GL_TEXTURE_2D, 0x84FE, a);                    // GL_TEXTURE_MAX_ANISOTROPY_EXT
+    }
+}
+
+void WINAPI hook_glTexParameterf(GLenum target, GLenum pname, GLfloat param)
+{
+    if (pname == 0x84FE && cfg.enabled && cfg.anisotropy > 1) {
+        float a = MaxAnisotropy();
+        if (a > param) param = a;
+    }
+    gl.TexParameterf(target, pname, param);
+    ForceAnisotropy(target, pname, param);
+}
+
+void WINAPI hook_glTexParameteri(GLenum target, GLenum pname, GLint param)
+{
+    gl.TexParameteri(target, pname, param);
+    ForceAnisotropy(target, pname, (float)param);
 }
 
 void WINAPI hook_glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
@@ -2791,8 +3269,26 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
                 }
             }
         }
+        if (drawn && g_vrFrame && hud.world && cfg.ssao > 0) {
+            int e;
+            for (e = 0; e < 2; e++)
+                if (!g_depthCaptured[e]) PostFX_CaptureDepth(e, g_msaaOn ? fb_ms[e] : fb_fbo[e], eye_w, eye_h);
+        }
+        g_depthCaptured[0] = g_depthCaptured[1] = 0;
         if (g_boundFbo) BindWindow(GL_BACK);
+        if (drawn) ResolveEyes();
+        if (drawn && g_vrFrame && hud.world && cfg.ssao > 0) {
+            float tans[2][4];
+            int e;
+            for (e = 0; e < 2; e++) {
+                tans[e][0] = g_eyes[e].tanLeft; tans[e][1] = g_eyes[e].tanRight;
+                tans[e][2] = g_eyes[e].tanDown; tans[e][3] = g_eyes[e].tanUp;
+            }
+            PostFX_SSAO(fb_fbo, eye_w, eye_h, (const float (*)[4])tans, g_worldProj, cfg.ssao, cfg.ssaoRadius);
+        }
+        if (drawn && g_vrFrame && hud.world) PostFX_Apply(fb_fbo, fb_tex, eye_w, eye_h, &cfg.postfx);
         if (drawn && g_vrFrame && hud.world && !g_scopeActive) DrawVignette();
+        if (drawn && g_vrFrame && hud.posed && hud.world && g_objOnHand) DrawObjectivesPanel(hud.fbo, fb_w, fb_h);
         XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, NULL);
         // Monitor: the left eye while playing, the HUD buffer (menus) otherwise.
         if (drawn) {
@@ -2803,6 +3299,7 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
     } else if (g_stereoFrameDrawn && fb_ok) {
         int i;
         if (g_boundFbo) BindWindow(GL_BACK);
+        ResolveEyes();
         gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         for (i = 0; i < 2; i++) {
             // half-width side by side
@@ -2909,6 +3406,57 @@ static void LoadConfig(void)
     cfg.mirrorLeft    = CfgInt("Controllers", "MirrorLeftHand", 1, ini);
     cfg.emptyPointer  = CfgInt("Controllers", "EmptyHandPointer", 1, ini);
     cfg.renderScale   = IniFloat("VR", "RenderScale", 1.0f, ini);
+    cfg.cullMargin    = IniFloat("VR", "CullMargin", 10.0f, ini);
+    cfg.rightEyeFirst = CfgInt("Debug", "RightEyeFirst", 0, ini);
+    if (cfg.rightEyeFirst) Log("debug: the right eye is drawn first");
+    if (cfg.cullMargin < 0) cfg.cullMargin = 0;
+    if (cfg.cullMargin > 30) cfg.cullMargin = 30;
+    cfg.msaa          = CfgInt("VR", "MSAA", 4, ini);
+    cfg.anisotropy    = IniFloat("VR", "Anisotropy", 16.0f, ini);
+    {
+        // colour styles: contrast, saturation, tint (Original leaves the game's colours alone)
+        static const struct { const char *name; float contrast, sat, tint[3]; } styles[] = {
+            { "original", 1.00f, 1.00f, { 1.00f, 1.00f, 1.00f } },
+            { "natural",  1.05f, 1.08f, { 1.00f, 1.00f, 1.00f } },
+            { "cinema",   1.10f, 0.82f, { 1.04f, 1.00f, 0.93f } },   // a muted, warm war film
+            { "vivid",    1.08f, 1.25f, { 1.00f, 1.00f, 1.00f } },
+        };
+        char style[32];
+        int k;
+        cfg.ssao = IniFloat("PostFX", "AmbientOcclusion", 0.0f, ini);
+        cfg.ssaoRadius = IniFloat("PostFX", "AmbientOcclusionRadius", 20.0f, ini);
+        if (cfg.ssaoRadius < 2) cfg.ssaoRadius = 2;
+        cfg.postfx.sharpen = IniFloat("PostFX", "Sharpen", 0.0f, ini);
+        cfg.postfx.bloom = IniFloat("PostFX", "Bloom", 0.0f, ini);
+        cfg.postfx.bloomThreshold = IniFloat("PostFX", "BloomThreshold", 0.7f, ini);
+        CfgStr("PostFX", "Color", "original", style, sizeof(style), ini);
+        cfg.postfx.contrast = 1; cfg.postfx.saturation = 1;
+        cfg.postfx.tint[0] = cfg.postfx.tint[1] = cfg.postfx.tint[2] = 1;
+        for (k = 0; k < (int)(sizeof(styles) / sizeof(styles[0])); k++)
+            if (!_stricmp(style, styles[k].name)) {
+                cfg.postfx.contrast = styles[k].contrast;
+                cfg.postfx.saturation = styles[k].sat;
+                memcpy(cfg.postfx.tint, styles[k].tint, sizeof(cfg.postfx.tint));
+            }
+        if (cfg.postfx.sharpen < 0) cfg.postfx.sharpen = 0;
+        if (cfg.postfx.sharpen > 1) cfg.postfx.sharpen = 1;
+        if (cfg.postfx.bloomThreshold > 0.95f) cfg.postfx.bloomThreshold = 0.95f;
+    }
+    if (cfg.msaa < 1) cfg.msaa = 1;
+    cfg.haptics          = IniFloat("Controllers", "Haptics", 0.6f, ini);
+    cfg.hapShots         = IniFloat("Controllers", "HapticsShots", cfg.haptics, ini);
+    cfg.hapDamage        = IniFloat("Controllers", "HapticsDamage", cfg.haptics, ini);
+    cfg.hapHolster       = IniFloat("Controllers", "HapticsHolsters", cfg.haptics, ini);
+    cfg.physCrouch       = CfgInt("Controllers", "PhysicalCrouch", 1, ini);
+    cfg.crouchDepth      = IniFloat("Controllers", "CrouchDepth", 0.32f, ini);
+    cfg.heightOffset     = IniFloat("VR", "HeightOffset", 0.0f, ini);
+    cfg.twoHandStab      = IniFloat("Controllers", "TwoHandStabilization", 0.75f, ini);
+    cfg.twoHandKick      = IniFloat("Controllers", "TwoHandRecoilReduction", 0.8f, ini);
+    if (cfg.twoHandStab < 0) cfg.twoHandStab = 0;
+    if (cfg.twoHandStab > 1) cfg.twoHandStab = 1;
+    if (cfg.twoHandKick < 0) cfg.twoHandKick = 0;
+    if (cfg.twoHandKick > 1) cfg.twoHandKick = 1;
+    if (cfg.crouchDepth < 0.12f) cfg.crouchDepth = 0.12f;
     cfg.vignette         = CfgInt("Comfort", "Vignette", 1, ini);
     cfg.vignetteStrength = IniFloat("Comfort", "VignetteStrength", 0.6f, ini);
     cfg.vignetteSpeed    = IniFloat("Comfort", "VignetteSpeed", 40.0f, ini);
@@ -2920,8 +3468,12 @@ static void LoadConfig(void)
     XR_SetRenderScale(cfg.renderScale);
     cfg.menuFollowsHead = CfgInt("HUD", "MenuFollowsHead", 0, ini);
     cfg.objOnHand     = CfgInt("HUD", "ObjectivesOnHand", 1, ini);
-    cfg.objWidth      = IniFloat("HUD", "ObjectivesWidth", 0.5f, ini);
+    cfg.objWidth      = IniFloat("HUD", "ObjectivesWidth", 0.52f, ini);
     cfg.objHeight     = IniFloat("HUD", "ObjectivesHeight", 0.15f, ini);
+    cfg.objBackground = IniFloat("HUD", "ObjectivesBackground", 0.72f, ini);
+    cfg.objMargin     = IniFloat("HUD", "ObjectivesMargin", 0.02f, ini);
+    if (cfg.objMargin < 0) cfg.objMargin = 0;
+    if (cfg.objMargin > 0.2f) cfg.objMargin = 0.2f;
     // [Holsters] (v1.2.0 called the section [Realistic]: still read as the default)
     cfg.dropOnRelease = CfgInt("Holsters", "DropOnRelease", CfgInt("Realistic", "DropOnRelease", 1, ini), ini);
     cfg.drawTime      = CfgInt("Holsters", "DrawTime", CfgInt("Realistic", "DrawTime", 50, ini), ini);
@@ -3001,6 +3553,7 @@ static BOOL LoadRealOpenGL(void)
     RESOLVE(Viewport, "glViewport");
     RESOLVE(DepthRange, "glDepthRange");         RESOLVE(FrontFace, "glFrontFace");
     RESOLVE(Scissor, "glScissor");              RESOLVE(BlendFunc, "glBlendFunc");
+    RESOLVE(TexParameterf, "glTexParameterf");  RESOLVE(GetFloatv, "glGetFloatv");
     return TRUE;
 }
 
