@@ -34,7 +34,8 @@ wanted to experience it again in VR.
 - Call of Duty (2003) for PC, single player, **version 1.5** (`CoDSP.exe`).
 - A PC VR headset with controllers (tested with a Quest through Virtual Desktop; Air Link and other PC VR headsets
   should work too).
-- A **32-bit** OpenXR runtime: Virtual Desktop (VDXR) or Oculus/Meta. The game is a 32-bit program.
+- A **32-bit** OpenXR runtime: Virtual Desktop (VDXR), Oculus/Meta, or SteamVR (its 32-bit OpenXR runtime comes
+  with the **SteamVR beta**: Steam > SteamVR > Properties > Betas). The game is a 32-bit program.
 
 > [!NOTE]
 > **Tested with the Quest 3, where it works perfectly.** If you have a problem with another headset, please
@@ -112,9 +113,14 @@ The launcher has the settings most players want, saved as soon as you change the
   (MSAA), texture filtering (anisotropic), texture quality, brightness, and post-processing test options (ambient
   occlusion, sharpening, colour style, bloom: leave them off if the image looks worse).
 - **VR:** comfort vignette, snap or smooth turning, dominant hand, roomscale, physical crouch, menus fixed or
-  following the head, grenade trajectory, dropping the weapon on release, two-hand steadiness and recoil, objectives
-  on the hand, and vibration strength for shots, hits and holsters.
+  following the head, what of the HUD stays on screen, grenade trajectory, crosshair style, melee by swinging the
+  gun, dropping the weapon on release, two-hand steadiness and recoil, objectives on the hand, and vibration
+  strength for shots, hits and holsters.
+- **MODS:** things the original game does not have: custom difficulty (*Real life*: one shot kills, for you and
+  for them; *Perma death*: dying ends the run; both; *God mode*), infinite ammo, and blood (off, on, or *Gore*).
 - **CONTROLS:** the controller layout.
+
+With the Steam version of the game, PLAY starts it through Steam (its `CoDSP.exe` only runs when Steam starts it).
 
 Its choices go to `%APPDATA%\CoD-VR\settings.ini` and take precedence over `cod_vr.ini`.
 
@@ -141,8 +147,28 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 - `[VR]` `MSAA`, `Anisotropy`, `CullMargin`, `HeightOffset`; `[PostFX]`: image quality and effects.
 - `[Controllers]` `HapticsShots`, `HapticsDamage`, `HapticsHolsters`, `PhysicalCrouch`, `CrouchDepth`,
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
+- `[Controllers]` `Crosshair`, `CrosshairSize`, `SwingMelee`, `MeleeSpeed`; `[HUD]` `HudMode`.
+- `[Mods]` `Difficulty`, `InfiniteAmmo`, `Gore`.
 
 ## Releases
+
+### v1.5.0
+
+- **SteamVR and other runtimes:** the view in the headset was stretched and zoomed in (fine on the monitor), and
+  black at low resolutions, with SteamVR's 32-bit runtime and others. The eyes are now handed over at the size the
+  headset asks for, whatever resolution you choose.
+- **Steam version:** PLAY starts the game through Steam, which its `CoDSP.exe` needs.
+- **Melee by swinging the gun:** hit someone with any part of it, stock to muzzle. Only a real swing counts (its
+  speed is set in the launcher), not resting the gun on them.
+- **HUD modes:** full, immersive (none), subtitles only, compass only, or health and ammo only. Holding the
+  Objectives button shows all of it.
+- **Crosshair** (off by default), in six styles shown in the launcher: cross, dot, circle, circle + dot,
+  cross + dot.
+- **Walking and running** follow the stick's tilt, and are no longer slower when the gun points away from where
+  you walk.
+- **MODS tab:** custom difficulty (Real life, Perma death, both, God mode), infinite ammo, and blood (off, on, or
+  Gore: more blood that sprays and falls, made by the installer from your game's own effect).
+- The lines over the world (menu pointer, grenade trajectory, crosshair) are sharper.
 
 ### v1.4.0
 

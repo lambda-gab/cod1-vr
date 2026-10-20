@@ -100,6 +100,11 @@ static struct {
     int   shoulderSlot[2];  // Realistic: weapon slot over the left [0] and right [1] shoulder
     int   menuFollowsHead;  // 1 = menus and loading screens follow the head, 0 = fixed in front of you
     int   objOnHand;        // 1 = the objectives screen shows above the left hand while it is held
+    int   hudMode;          // HUD_* : what of the game's HUD stays on screen (all of it while Objectives is held)
+    int   infiniteAmmo;     // MODS: 1 = the reserve stays full, 2 = the clip too (no reloading)
+    int   difficulty;       // MODS: 0 normal, 1 real life (one hit kills), 2 perma death, 3 both, 4 god mode
+    int   gore;             // MODS: 0 no blood, 1 the game's blood, 2 gore (Main\pakz_vr_gore.pk3)
+    int   logHud;           // diagnostics: log the HUD's pictures
     float objWidth;         // metres
     float objHeight;        // metres above the hand
     int   emptyPointer;     // 1 = with empty hands the right hand aims, with a line to where it points
@@ -125,7 +130,12 @@ static struct {
     float ssao;             // ambient occlusion strength, 0 = off
     float ssaoRadius;       // game units
     float cullMargin;       // degrees added on each side of the view for what the game draws
+    int   swingMelee;       // 1 = swinging the gun into someone is a melee hit (the game's own)
+    float meleeSpeed;       // m/s the moving part of the gun needs
+    int   crosshair;        // crosshair style where the gun is aimed (RETICLE_*, 0 = none)
+    float crosshairSize;    // degrees across
     int   rightEyeFirst;    // diagnostics: render the right eye's scene before the left one
+    int   dumpEyes;         // diagnostics: save the left eye (rendered and sent) 15 s into a level
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -267,6 +277,7 @@ static const char *WeaponName(const BYTE *def);
 static void InitColorTexture(GLuint tex, int w, int h);
 static void UpdateAutoAds(void);
 static void UpdateGrenadeArc(void);
+static void UpdateHudMode(int objectivesHeld);
 static void QueueEvent(int type, int value, int value2);
 static void HookKeyBindingText(void);
 static void BindHud(void);
@@ -1589,6 +1600,140 @@ static void DrawPointer(int h)
     XR_SetLine((const float (*)[3])pts, 2, color, 0);
 }
 
+// Optional crosshair (off by default: in VR you aim with the sights): the game's own is drawn at
+// the centre of the head-locked HUD, not where the gun points, so this one is put in the world
+// where the shot goes (the map along the aim, at most 30 m away), facing the eyes, the same size
+// whatever the distance. Not with a scope or a grenade.
+static void UpdateCrosshair(void)
+{
+    static const float color[4] = { 1.0f, 1.0f, 1.0f, 0.8f };
+    float body, dir[3], end[3], hit[3], c[3], f[3], l[3], u[3], up[3] = { 0, 0, 1 }, d, frac, len;
+    const BYTE *def;
+    int i;
+    if (!cfg.crosshair || !g_gunValid || g_pointerOn || g_scopeActive || !MapLoaded() || !g_lastHudWorld) return;
+    def = CurrentWeaponDef();
+    __try {
+        if (def && *(const int *)(def + WEAPDEF_OFS_weaponType) == WEAPTYPE_GRENADE) return;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    body = YawOf(g_lastViewAxis[0]) - g_headYawCmd;
+    RotateZ(g_aimDir, body, dir);
+    for (i = 0; i < 3; i++) end[i] = g_lastViewOrg[i] + dir[i] * 30.0f * cfg.worldScale;
+    frac = WorldTrace(g_lastViewOrg, end);
+    for (i = 0; i < 3; i++) hit[i] = g_lastViewOrg[i] + (end[i] - g_lastViewOrg[i]) * frac * 0.98f;
+    WorldToTracking(hit, body, c);
+    for (i = 0; i < 3; i++) f[i] = c[i] - g_head.pos[i];
+    d = Normalize(f);
+    if (d < 0.3f) return;
+    Cross(up, f, l);
+    if (Normalize(l) < 1e-3f) return;
+    Cross(f, l, u);
+    len = d * tanf(RAD(cfg.crosshairSize * 0.5f));
+    for (i = 0; i < 3; i++) { l[i] *= -len; u[i] *= len; }   // right = -left
+    XR_SetReticle(cfg.crosshair, c, l, u, color);
+}
+
+// Melee by swinging the gun: any part of it (stock to muzzle) moving fast enough into someone
+// starts the game's own melee (damage, sound, blood, the enemy's reaction), aimed at whoever was
+// hit until the blow lands. Only real hand motion counts (tracking space: walking does not), and
+// only the part of the motion going into the target, so resting the gun on someone does nothing.
+#define SWING_POINTS 6
+static float g_swingPrev[SWING_POINTS][3];
+static int   g_swingPrevValid, g_meleeTarget = -1, g_meleeRelease;
+static DWORD g_meleeUntil, g_meleeNext;
+
+// Feet and head of entity i in tracking space (a standing soldier), 0 if it is not someone to hit.
+static int MeleeCandidate(BYTE *gm, int i, float body, float feet[3], float top[3])
+{
+    BYTE *e = gm + G_OFS_entities + i * G_ENTITY_SIZE;
+    float w[3];
+    const float *org;
+    if (!e[GENT_OFS_inuse] || *(int *)(e + GENT_OFS_health) <= 0) return 0;
+    org = (const float *)(e + GENT_OFS_currentOrigin);
+    WorldToTracking(org, body, feet);
+    w[0] = org[0]; w[1] = org[1]; w[2] = org[2] + 64.0f;
+    WorldToTracking(w, body, top);
+    return 1;
+}
+
+static int SwingMelee(float dt, float *aimYaw, float *aimPitch)
+{
+    BYTE *gm;
+    float body, pts[SWING_POINTS][3];
+    DWORD now = GetTickCount();
+    int i, k, n, hand;
+    if (g_meleeRelease) { Cbuf("-melee\n"); g_meleeRelease = 0; }
+    if (!cfg.swingMelee || !g_gunValid || g_pointerOn || !MapLoaded() || dt <= 0) { g_swingPrevValid = 0; return 0; }
+    gm = (BYTE *)GetModuleHandleA("gamex86.dll");
+    if (!gm) return 0;
+    body = YawOf(g_lastViewAxis[0]) - g_headYawCmd;
+    hand = cfg.realistic ? g_gunHand : (cfg.rightHanded ? 1 : 0);
+
+    // the blow on its way: keep aiming at the one who was hit until it lands
+    if (g_meleeTarget > 0 && now < g_meleeUntil) {
+        float feet[3], top[3], t[3];
+        __try {
+            if (MeleeCandidate(gm, g_meleeTarget, body, feet, top)) {
+                for (k = 0; k < 3; k++) t[k] = feet[k] + (top[k] - feet[k]) * 0.75f - g_head.pos[k];
+                *aimYaw = YawOf(t);
+                *aimPitch = PitchOf(t);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        return 1;
+    }
+    g_meleeTarget = -1;
+
+    // the gun from the stock to the muzzle, now and in the last frame
+    for (k = 0; k < SWING_POINTS; k++) {
+        float s = -0.3f + 0.8f * k / (SWING_POINTS - 1);
+        for (i = 0; i < 3; i++) pts[k][i] = g_gun.pos[i] + g_gun.axis[0][i] * s;
+    }
+    if (!g_swingPrevValid || now < g_meleeNext) {
+        memcpy(g_swingPrev, pts, sizeof(pts));
+        g_swingPrevValid = 1;
+        return 0;
+    }
+    __try {
+        n = *(int *)(gm + G_OFS_numEntities);
+        if (n > 1024) n = 1024;
+        for (i = 1; i < n; i++) {
+            float feet[3], top[3], dx, dy;
+            if (!MeleeCandidate(gm, i, body, feet, top)) continue;
+            dx = feet[0] - g_head.pos[0]; dy = feet[1] - g_head.pos[1];
+            if (dx * dx + dy * dy > 3.0f * 3.0f) continue;
+            for (k = 0; k < SWING_POINTS; k++) {
+                // inside the body (a 35 cm upright capsule), moving into it fast enough
+                float *p = pts[k], v[3], h[2], d, into;
+                if (p[2] < feet[2] + 0.1f || p[2] > top[2] + 0.15f) continue;
+                h[0] = feet[0] + (top[0] - feet[0]) * 0.5f - p[0];
+                h[1] = feet[1] + (top[1] - feet[1]) * 0.5f - p[1];
+                d = sqrtf(h[0] * h[0] + h[1] * h[1]);
+                if (d > 0.35f || d < 1e-3f) continue;
+                v[0] = (p[0] - g_swingPrev[k][0]) / dt;
+                v[1] = (p[1] - g_swingPrev[k][1]) / dt;
+                v[2] = (p[2] - g_swingPrev[k][2]) / dt;
+                into = (v[0] * h[0] + v[1] * h[1]) / d;
+                if (sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) < cfg.meleeSpeed || into < cfg.meleeSpeed * 0.5f) continue;
+                Log("swing melee: entity %d (type %d), %.1f m/s, %.1f into it, point %d",
+                    i, *(int *)(gm + G_OFS_entities + i * G_ENTITY_SIZE + GENT_OFS_eType),
+                    sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), into, k);
+                g_meleeTarget = i;
+                g_meleeUntil = now + 450;
+                g_meleeNext = now + 700;
+                g_meleeRelease = 1;
+                Cbuf("+melee\n");
+                if (hand >= 0) Buzz(hand, 1.0f, 70, cfg.hapShots);
+                memcpy(g_swingPrev, pts, sizeof(pts));
+                return 1;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    memcpy(g_swingPrev, pts, sizeof(pts));
+    return 0;
+}
+
 // Builds a screen pose at pos facing away from the viewer along f, its up as close to vertical as f allows.
 static void ScreenPose(vr_pose_t *p, const float pos[3], const float f[3])
 {
@@ -1876,6 +2021,135 @@ static void UpdateTwoHandKick(void)
     if (cg && CurrentWeaponDef()) ScaleKick(cg, CG_OFS_weaponDefs, CG_OFS_numWeaponDefs, g_kickSave[1], factor);
 }
 
+// MODS (things the game itself does not offer): god mode is the game's own flag, set while it is
+// chosen; infinite ammo fills the reserve (and the clip) of the weapons carried.
+//
+// Real life: every weapon's damage (bullets and melee, the player's and the soldiers') times 20,
+// so one hit kills. The originals are kept per weapon definition (they are loaded again per map).
+#define REAL_LIFE_DAMAGE 20
+static void RealLifeDamage(BYTE *gm, int on)
+{
+    static const BYTE *seen[256];
+    static int orig[256][2], applied[256];
+    BYTE **defs = *(BYTE ***)(gm + G_OFS_weaponDefs);
+    int n = *(int *)(gm + G_OFS_numWeaponDefs), w, f = on ? REAL_LIFE_DAMAGE : 1;
+    if (!defs) return;
+    if (n > 255) n = 255;
+    for (w = 1; w <= n; w++) {
+        BYTE *def = defs[w];
+        if (!def) continue;
+        if (seen[w] != def) {
+            seen[w] = def;
+            orig[w][0] = *(int *)(def + WEAPDEF_OFS_damage);
+            orig[w][1] = *(int *)(def + WEAPDEF_OFS_meleeDamage);
+            applied[w] = 1;
+        }
+        if (applied[w] != f) {
+            *(int *)(def + WEAPDEF_OFS_damage) = orig[w][0] * f;
+            *(int *)(def + WEAPDEF_OFS_meleeDamage) = orig[w][1] * f;
+            applied[w] = f;
+        }
+    }
+}
+
+// Perma death: dying ends the run. The checkpoints (save\autosave, save\internal) are erased, the
+// saves made by hand are moved to save\permadeath_backup\<date> (nothing of the player is lost), and
+// the game goes back to the main menu: a new run starts from New Game.
+static void MoveDir(const char *from, const char *to, int keep)
+{
+    char pattern[MAX_PATH], a[MAX_PATH], b[MAX_PATH];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    _snprintf(pattern, sizeof(pattern), "%s\\*", from);
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        _snprintf(a, sizeof(a), "%s\\%s", from, fd.cFileName);
+        if (keep) {
+            _snprintf(b, sizeof(b), "%s\\%s", to, fd.cFileName);
+            MoveFileExA(a, b, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+        } else {
+            DeleteFileA(a);
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void PermaDeath(void)
+{
+    char save[MAX_PATH], dir[MAX_PATH], backup[MAX_PATH];
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    _snprintf(save, sizeof(save), "%s\\main\\save", g_dir);
+    _snprintf(dir, sizeof(dir), "%s\\autosave", save);
+    MoveDir(dir, NULL, 0);
+    _snprintf(dir, sizeof(dir), "%s\\internal", save);
+    MoveDir(dir, NULL, 0);
+    _snprintf(backup, sizeof(backup), "%s\\permadeath_backup", save);
+    CreateDirectoryA(backup, NULL);
+    _snprintf(backup, sizeof(backup), "%s\\permadeath_backup\\%04d-%02d-%02d_%02d-%02d-%02d", save,
+              t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    CreateDirectoryA(backup, NULL);
+    MoveDir(save, backup, 1);
+    Log("perma death: checkpoints erased, saves moved to %s", backup);
+}
+
+static void UpdateMods(void)
+{
+    static int godSet, wasAlive, deathHandled;
+    static DWORD deathTime;
+    static int bloodSet;
+    BYTE *gm = (BYTE *)GetModuleHandleA("gamex86.dll"), *cl = PlayerClient(), *player;
+    if (!bloodSet) {   // after the game's config (which may have it off)
+        Cbuf(cfg.gore ? "set cg_blood 1\n" : "set cg_blood 0\n");
+        bloodSet = 1;
+    }
+    if (deathHandled && GetTickCount() - deathTime > 2500) {   // after the death has been seen
+        Cbuf("disconnect\n");
+        deathHandled = 0;
+    }
+    if (!gm || !cl) { godSet = wasAlive = 0; return; }
+    player = gm + G_OFS_entities;
+    __try {
+        int health = *(int *)(player + GENT_OFS_health);
+        RealLifeDamage(gm, cfg.difficulty == 1 || cfg.difficulty == 3);
+        if (cfg.difficulty >= 2) {
+            if (wasAlive && health <= 0 && !deathHandled) {
+                PermaDeath();
+                deathHandled = 1;
+                deathTime = GetTickCount();
+            }
+            wasAlive = health > 0;
+        }
+        int *flags = (int *)(player + GENT_OFS_flags);
+        if (cfg.difficulty == 4 && health > 0) {
+            *flags |= 1;
+            godSet = 1;
+        } else if (godSet) {
+            *flags &= ~1;
+            godSet = 0;
+        }
+        if (cfg.infiniteAmmo) {
+            BYTE **defs = *(BYTE ***)(gm + G_OFS_weaponDefs);
+            int numDefs = *(int *)(gm + G_OFS_numWeaponDefs), s;
+            for (s = 0; s <= 5 && defs; s++) {
+                int w = s ? SlotWeapon(cl, s) : GameWeapon(cl);
+                const BYTE *def;
+                int *reserve, *clip, grenade;
+                if (w <= 0 || w > numDefs || !(def = defs[w])) continue;
+                reserve = (int *)(cl + GCL_OFS_ammo + *(const int *)(def + WEAPDEF_OFS_ammoIndex) * 4);
+                clip = (int *)(cl + GCL_OFS_ammoclip + *(const int *)(def + WEAPDEF_OFS_clipIndex) * 4);
+                grenade = *(const int *)(def + WEAPDEF_OFS_weaponType) == WEAPTYPE_GRENADE;
+                if (*reserve < *(const int *)(def + WEAPDEF_OFS_maxAmmo)) *reserve = *(const int *)(def + WEAPDEF_OFS_maxAmmo);
+                if ((cfg.infiniteAmmo == 2 || grenade) && *clip < *(const int *)(def + WEAPDEF_OFS_clipSize))
+                    *clip = *(const int *)(def + WEAPDEF_OFS_clipSize);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
 static void ProcessControllers(void)
 {
@@ -1893,6 +2167,7 @@ static void ProcessControllers(void)
     dt = g_lastInputTick.QuadPart ? (float)((double)(now.QuadPart - g_lastInputTick.QuadPart) / (double)freq.QuadPart) : 0.0f;
     if (dt > 0.1f) dt = 0.1f;
     g_lastInputTick = now;
+    UpdateMods();   // also with a menu open (the death screen)
 
     if (cfg.controllers) XR_GetInput(&g_in);
     else memset(&g_in, 0, sizeof(g_in));
@@ -1996,15 +2271,29 @@ static void ProcessControllers(void)
         }
 
         // Move stick, relative to where the head looks. The game moves relative to its view
-        // (the aim), so rotate the stick by the angle between head and aim.
+        // (the aim), so rotate the stick by the angle between head and aim. Its speed comes from
+        // the larger of the two axes and it is slower sideways (0.8) and backwards (0.7) of the
+        // view: aiming off to one side would slow a walk straight ahead. So its own scales are 1
+        // and the stick's tilt sets the speed, slower sideways and backwards of the head instead.
         if (mx * mx + my * my > 0.15f * 0.15f) {
             float d = RAD(AngleNormalize180(headYaw - aimYaw));
-            float f = my, l = -mx;
+            float f = my, l = -mx, len = sqrtf(f * f + l * l);
+            float tilt = ((len > 1 ? 1 : len) - 0.15f) / 0.85f;
+            float fa = fabsf(f) / len, la = fabsf(l) / len;
+            float slow = (fa * (f < 0 ? 0.7f : 1.0f) > la * 0.8f ? fa * (f < 0 ? 0.7f : 1.0f) : la * 0.8f) / (fa > la ? fa : la);
             float f2 = f * cosf(d) - l * sinf(d), l2 = f * sinf(d) + l * cosf(d);
-            g_moveForward = ClampMove(f2);
-            g_moveRight = ClampMove(-l2);
+            float big = fabsf(f2) > fabsf(l2) ? fabsf(f2) : fabsf(l2);
+            g_moveForward = ClampMove(f2 / big * tilt * slow);
+            g_moveRight = ClampMove(-l2 / big * tilt * slow);
         } else {
             g_moveForward = g_moveRight = 0;
+        }
+        {
+            BYTE *pc = PlayerClient();
+            __try {
+                if (pc) *(float *)(pc + GCL_OFS_strafeSpeedScale) = *(float *)(pc + GCL_OFS_backSpeedScale) = 1.0f;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
         }
 
         if (fromHand && !g_crosshairOff) { Cbuf("cg_drawCrosshair 0\n"); g_crosshairOff = 1; }
@@ -2014,11 +2303,14 @@ static void ProcessControllers(void)
         UpdateTwoHandKick();
         if (fromHand && !g_pointerOn) UpdateGrenadeArc();
         if (g_pointerOn) DrawPointer(dom);
+        else if (fromHand) UpdateCrosshair();
+        if (fromHand) SwingMelee(dt, &aimYaw, &aimPitch);
         {
             // objectives held up: the HUD screen goes above the left hand
             int b, held = 0;
             for (b = 0; b < BT_COUNT; b++) if (g_btnDown[b] && !strcmp(cfg.bind[b], "+scores")) held = 1;
             g_objOnHand = cfg.objOnHand && held && g_in.handValid[0];
+            UpdateHudMode(held);
         }
     }
     UpdateViewAngles(aimYaw, aimPitch, fromHand);
@@ -2510,10 +2802,68 @@ static void __cdecl hk_SetColor(const float *rgba)
     orig_SetColor(rgba);
 }
 
+// HUD modes. The compass and the subtitles have their own dvars; health, ammo, the weapon name
+// and the stance come from ui/hud.menu, so their pictures (and text) are left out by where that
+// file puts them on the 640x480 screen. Holding Objectives shows everything.
+// cg_drawStatus also draws the compass, so it stays on when the compass is shown; what it
+// would add then (the grenade icons by the ammo) is left out with the rest of the bottom right.
+enum { HUD_FULL, HUD_NONE, HUD_SUBTITLES, HUD_COMPASS, HUD_STATUS };
+enum { HIDE_NOTHING, HIDE_STATUS, HIDE_STATUS_CORNER, HIDE_STANCE };
+static int g_hudShown = -1;    // the mode the dvars were last set for
+static int g_hudHide;          // HIDE_*: which of the hud.menu pictures are left out
+
+static void UpdateHudMode(int objectivesHeld)
+{
+    static const int hide[] = { HIDE_NOTHING, HIDE_STATUS, HIDE_STATUS, HIDE_STATUS_CORNER, HIDE_STANCE };
+    int mode = objectivesHeld ? HUD_FULL : cfg.hudMode;
+    char line[160];
+    if (mode < HUD_FULL || mode > HUD_STATUS) mode = HUD_FULL;
+    g_hudHide = hide[mode];
+    if (mode == g_hudShown) return;
+    _snprintf(line, sizeof(line), "set cg_hudCompassSize %s; set cg_subtitles %d; set cg_drawStatus %d\n",
+              mode == HUD_FULL || mode == HUD_COMPASS ? "1" : "0",
+              mode == HUD_FULL || mode == HUD_SUBTITLES,
+              mode == HUD_FULL || mode == HUD_STATUS || mode == HUD_COMPASS);
+    Cbuf(line);
+    g_hudShown = mode;
+    Log("HUD mode %d", mode);
+}
+
+static int HiddenPicture(float x, float y, float w, float h)
+{
+    float cx = (x + w * 0.5f) * 640.0f / fb_w, cy = (y + h * 0.5f) * 480.0f / fb_h;
+    // the stance icon: 40x40 at the bottom (hud.menu says x 100; on a wide screen it ends up elsewhere)
+    int stance = w * 640.0f / fb_w >= 36 && w * 640.0f / fb_w <= 44 && h * 480.0f / fb_h >= 36 &&
+                 h * 480.0f / fb_h <= 44 && cy >= 425;
+    if (g_hudHide == HIDE_STANCE) return stance;
+    return stance ||
+           (cx >= 242 && cx <= 563 && cy >= 430 && cy <= 477) ||   // weapon name
+           (cx >= 537 && cy >= 420 && cy <= 486) ||                // fire mode, ammo
+           (cx >= 495 && cx <= 636 && cy >= 455 && cy <= 476) ||   // health bar
+           (g_hudHide == HIDE_STATUS_CORNER && cx >= 440 && cy >= 380);   // grenade icons
+}
+
+// [Debug] LogHud: the HUD's pictures (640x480), a frame every few seconds, to find what is where.
+static void LogHudPicture(float x, float y, float w, float h, int shader)
+{
+    static DWORD next;
+    static int frameLines;
+    DWORD now = GetTickCount();
+    if (now >= next) { next = now + 3000; frameLines = 60; Log("---- HUD pictures (mode %d) ----", g_hudShown); }
+    if (frameLines <= 0) return;
+    frameLines--;
+    Log("  pic shader %d at %.0f,%.0f size %.0fx%.0f", shader, x * 640.0f / fb_w, y * 480.0f / fb_h,
+        w * 640.0f / fb_w, h * 480.0f / fb_h);
+}
+
 // A picture over the whole screen during play (damage tint, fade, flash) would be a small
 // rectangle on the HUD screen: keep it for DrawFullscreenEffects.
 static void __cdecl hk_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, int shader)
 {
+    if (g_hudActive && !(MEM(int, ADDR_cls_keyCatchers) & 2)) {
+        if (cfg.logHud) LogHudPicture(x, y, w, h, shader);
+        if (g_hudHide && HiddenPicture(x, y, w, h)) return;
+    }
     if (g_singlePass && g_hudActive && !g_scopeActive && g_fsCount < MAX_FULLSCREEN &&
         !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
         x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1) {
@@ -2777,6 +3127,14 @@ static void EnsureHooks(void)
     if (MEM(BYTE, ADDR_CALL_SetupProjection) == 0xE8 && callTarget == ADDR_R_SetupProjection) {
         PatchCall(ADDR_CALL_SetupProjection, (void *)hk_SetupProjection);
         Log("hooked R_SetupProjection call");
+    } else if (callTarget != (DWORD)hk_SetupProjection) {
+        static int warned;
+        if (!warned) {
+            warned = 1;
+            Log("R_SetupProjection call NOT hooked (byte %02x, target %08x, expected %08x): the eyes keep the game's"
+                " own projection, so the headset view is stretched", MEM(BYTE, ADDR_CALL_SetupProjection), callTarget,
+                ADDR_R_SetupProjection);
+        }
     }
     if (cfg.vr && cfg.hud) {
         cur = MEM(void *, ADDR_re_client + RE_OFS_SetColor);
@@ -3289,6 +3647,15 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
         if (drawn && g_vrFrame && hud.world) PostFX_Apply(fb_fbo, fb_tex, eye_w, eye_h, &cfg.postfx);
         if (drawn && g_vrFrame && hud.world && !g_scopeActive) DrawVignette();
         if (drawn && g_vrFrame && hud.posed && hud.world && g_objOnHand) DrawObjectivesPanel(hud.fbo, fb_w, fb_h);
+        if (cfg.dumpEyes && drawn && g_vrFrame && hud.world) {
+            static DWORD since;
+            static int done;
+            if (!since) since = GetTickCount();
+            else if (!done && GetTickCount() - since > 15000) {
+                XR_RequestDump(g_dir);   // next to the log
+                done = 1;
+            }
+        }
         XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, NULL);
         // Monitor: the left eye while playing, the HUD buffer (menus) otherwise.
         if (drawn) {
@@ -3405,9 +3772,14 @@ static void LoadConfig(void)
     cfg.hipAccuracy   = CfgInt("Controllers", "HipFireAccuracy", 1, ini);
     cfg.mirrorLeft    = CfgInt("Controllers", "MirrorLeftHand", 1, ini);
     cfg.emptyPointer  = CfgInt("Controllers", "EmptyHandPointer", 1, ini);
+    cfg.crosshair     = CfgInt("Controllers", "Crosshair", 0, ini);
+    cfg.crosshairSize = IniFloat("Controllers", "CrosshairSize", 1.5f, ini);
+    cfg.swingMelee    = CfgInt("Controllers", "SwingMelee", 1, ini);
+    cfg.meleeSpeed    = IniFloat("Controllers", "MeleeSpeed", 2.2f, ini);
     cfg.renderScale   = IniFloat("VR", "RenderScale", 1.0f, ini);
     cfg.cullMargin    = IniFloat("VR", "CullMargin", 10.0f, ini);
     cfg.rightEyeFirst = CfgInt("Debug", "RightEyeFirst", 0, ini);
+    cfg.dumpEyes      = CfgInt("Debug", "DumpEyes", 0, ini);
     if (cfg.rightEyeFirst) Log("debug: the right eye is drawn first");
     if (cfg.cullMargin < 0) cfg.cullMargin = 0;
     if (cfg.cullMargin > 30) cfg.cullMargin = 30;
@@ -3468,6 +3840,11 @@ static void LoadConfig(void)
     XR_SetRenderScale(cfg.renderScale);
     cfg.menuFollowsHead = CfgInt("HUD", "MenuFollowsHead", 0, ini);
     cfg.objOnHand     = CfgInt("HUD", "ObjectivesOnHand", 1, ini);
+    cfg.hudMode       = CfgInt("HUD", "HudMode", 0, ini);
+    cfg.infiniteAmmo  = CfgInt("Mods", "InfiniteAmmo", 0, ini);
+    cfg.difficulty    = CfgInt("Mods", "Difficulty", 0, ini);
+    cfg.gore          = CfgInt("Mods", "Gore", 1, ini);
+    cfg.logHud        = CfgInt("Debug", "LogHud", 0, ini);
     cfg.objWidth      = IniFloat("HUD", "ObjectivesWidth", 0.52f, ini);
     cfg.objHeight     = IniFloat("HUD", "ObjectivesHeight", 0.15f, ini);
     cfg.objBackground = IniFloat("HUD", "ObjectivesBackground", 0.72f, ini);
@@ -3554,7 +3931,64 @@ static BOOL LoadRealOpenGL(void)
     RESOLVE(DepthRange, "glDepthRange");         RESOLVE(FrontFace, "glFrontFace");
     RESOLVE(Scissor, "glScissor");              RESOLVE(BlendFunc, "glBlendFunc");
     RESOLVE(TexParameterf, "glTexParameterf");  RESOLVE(GetFloatv, "glGetFloatv");
+    RESOLVE(ReadPixels, "glReadPixels");
     return TRUE;
+}
+
+// Packs the mod builds that are optional (Main\pakz_vr_gore.pk3): the game loads every pk3 in
+// Main, so while an option is off the game's file listing does not see its pack (its kernel32
+// FindFirstFileA / FindNextFileA imports skip the name).
+typedef HANDLE (WINAPI *PFN_FindFirstFileA)(LPCSTR, LPWIN32_FIND_DATAA);
+typedef BOOL (WINAPI *PFN_FindNextFileA)(HANDLE, LPWIN32_FIND_DATAA);
+static PFN_FindFirstFileA orig_FindFirstFileA;
+static PFN_FindNextFileA orig_FindNextFileA;
+
+static int HiddenPack(const char *name) { return cfg.gore != 2 && !_stricmp(name, "pakz_vr_gore.pk3"); }
+
+static BOOL WINAPI hk_FindNextFileA(HANDLE h, LPWIN32_FIND_DATAA fd)
+{
+    BOOL ok;
+    while ((ok = orig_FindNextFileA(h, fd)) && HiddenPack(fd->cFileName)) {}
+    return ok;
+}
+
+static HANDLE WINAPI hk_FindFirstFileA(LPCSTR pattern, LPWIN32_FIND_DATAA fd)
+{
+    HANDLE h = orig_FindFirstFileA(pattern, fd);
+    if (h != INVALID_HANDLE_VALUE && HiddenPack(fd->cFileName) && !hk_FindNextFileA(h, fd)) {
+        FindClose(h);
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    return h;
+}
+
+// Points CoDSP.exe's import of module!func at hook; returns what was there (NULL = not found).
+static void *HookImport(const char *module, const char *func, void *hook)
+{
+    BYTE *base = (BYTE *)GetModuleHandleA(NULL);
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)(base + dir->VirtualAddress);
+    void *real = (void *)GetProcAddress(GetModuleHandleA(module), func);
+    if (!dir->VirtualAddress || !real) return NULL;
+    for (; imp->Name; imp++) {
+        void **slot = (void **)(base + imp->FirstThunk);
+        if (_stricmp((const char *)(base + imp->Name), module)) continue;
+        for (; *slot; slot++)
+            if (*slot == real) {
+                PatchPointer((DWORD)slot, hook);
+                return real;
+            }
+    }
+    return NULL;
+}
+
+static void HideOptionalPacks(void)
+{
+    orig_FindFirstFileA = (PFN_FindFirstFileA)HookImport("kernel32.dll", "FindFirstFileA", (void *)hk_FindFirstFileA);
+    orig_FindNextFileA = (PFN_FindNextFileA)HookImport("kernel32.dll", "FindNextFileA", (void *)hk_FindNextFileA);
+    if (!orig_FindFirstFileA || !orig_FindNextFileA) Log("optional packs: file listing imports not found");
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
@@ -3578,6 +4012,17 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     }
 
     LoadConfig();
+    {
+        // which CoDSP.exe this is (the mod is made for 1.5: other builds put things elsewhere)
+        BYTE *exe = (BYTE *)GetModuleHandleA(NULL);
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew);
+        char exePath[MAX_PATH];
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        GetModuleFileNameA(NULL, exePath, sizeof(exePath));
+        GetFileAttributesExA(exePath, GetFileExInfoStandard, &fa);
+        Log("game: %s, timestamp %08lx (1.5 is %08x), %lu bytes%s", exePath, nt->FileHeader.TimeDateStamp,
+            CODSP_TIMESTAMP, fa.nFileSizeLow, nt->FileHeader.TimeDateStamp == CODSP_TIMESTAMP ? "" : " - NOT 1.5");
+    }
     Log("cod_vr phase 4 loaded: enabled=%d vr=%d separation=%.2f worldScale=%.2f positional=%d headAim=%d "
         "hud=%d (distance %.2f, width %.2f, menu %.2f, headLocked %d)",
         cfg.enabled, cfg.vr, cfg.separation, cfg.worldScale, cfg.positional, cfg.headAim,
@@ -3589,6 +4034,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         cfg.controllers, cfg.rightHanded, cfg.snapTurn, cfg.converge, cfg.weaponInHand,
         cfg.weaponOffset[0], cfg.weaponOffset[1], cfg.weaponOffset[2]);
     if (!LoadRealOpenGL()) return FALSE;
+    if (cfg.gore != 2) HideOptionalPacks();
+    Log("blood: %s", cfg.gore == 2 ? "gore" : cfg.gore ? "on" : "off");
     EnsureHooks();
     return TRUE;
 }

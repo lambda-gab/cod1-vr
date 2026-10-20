@@ -20,6 +20,7 @@
 #define BACKUP_SUFFIX     L".cod_vr_backup"
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
 #define TEXT_PACK         L"main\\pakz_vr_text.pk3"
+#define GORE_PACK         L"main\\pakz_vr_gore.pk3"   // loaded only with MODS > Gore: Gore (the mod hides it otherwise)
 #define LAUNCHER_EXE      L"CoD-VR-Launcher.exe"
 #define SHORTCUT_NAME     L"Call of Duty VR.lnk"
 #define INVISIBLE_SKIN    "cloth_masked@vr_invisible.tga"   // alpha-tested skin type, alpha 0
@@ -392,6 +393,162 @@ static int BuildTextPack(const wchar_t *game)
 }
 
 // ---------------------------------------------------------------------------
+// Gore pack: the game's blood hit effect (fx/impacts/flesh_hit.efx) made stronger, plus a spray
+// of drops of our own. The blood particles (those drawn with the flesh_hit pictures) get more
+// particles, live longer, fly faster, fall harder and grow bigger.
+// ---------------------------------------------------------------------------
+static const char g_goreDrops[] =
+    "\r\nParticle\r\n{\r\n"
+    "\tname\t\t\t\tvr_drops\r\n\r\n"
+    "\tflags\t\t\t\tuseAlpha\r\n\r\n"
+    "\tspawnFlags\t\t\torgOnCylinder axisFromSphere\r\n\r\n"
+    "\tcount\t\t\t\t16 12\r\n\r\n"
+    "\tlife\t\t\t\t700 400\r\n\r\n"
+    "\tradius\t\t\t\t4 2\r\n\r\n"
+    "\tvelocity\t\t\t160 0 0 200 0 0\r\n\r\n"
+    "\tgravity\t\t\t\t-900\r\n\r\n"
+    "\trgb\r\n\t{\r\n\t\tstart\t\t\t0.38 0.02 0.02\r\n\t\tend\t\t\t\t0.22 0.01 0.01\r\n\t\tflags\t\t\trandom linear\r\n\t}\r\n\r\n"
+    "\talpha\r\n\t{\r\n\t\tstart\t\t\t0.95\r\n\t\tend\t\t\t\t0\r\n\t\tflags\t\t\tlinear\r\n\t}\r\n\r\n"
+    "\tsize\r\n\t{\r\n\t\tstart\t\t\t2 2\r\n\t\tend\t\t\t\t5 6\r\n\t\tflags\t\t\tlinear\r\n\t}\r\n\r\n"
+    "\tshaders\r\n\t[\r\n\t\tgfx/impact/flesh_hit1\r\n\t]\r\n}\r\n";
+
+// One line of a blood particle, its numbers scaled: key and factor by where the line is.
+static void GoreLine(const char *line, size_t len, int depth, const char *sub, char **out, size_t *outLen)
+{
+    static const struct { const char *key, *sub; double f; } k[] = {
+        { "count", "", 3.0 }, { "life", "", 2.5 }, { "velocity", "", 1.8 }, { "gravity", "", 3.0 },
+        { "start", "size", 1.6 }, { "end", "size", 1.6 },
+    };
+    char buf[512], key[64] = "";
+    const char *p = line;
+    double f = 1.0;
+    int i, n;
+    while (p < line + len && (*p == ' ' || *p == '\t')) p++;
+    for (i = 0; p + i < line + len && i < 63 && p[i] > ' '; i++) key[i] = p[i];
+    key[i] = 0;
+    for (i = 0; i < (int)(sizeof(k) / sizeof(k[0])); i++)
+        if (!strcmp(key, k[i].key) && !strcmp(sub, k[i].sub) && (k[i].sub[0] ? depth == 2 : depth == 1)) f = k[i].f;
+    if (f == 1.0 || len >= sizeof(buf) - 64) {
+        memcpy(*out + *outLen, line, len);
+        *outLen += len;
+        return;
+    }
+    // the indent and key as they are, then each number times f
+    n = (int)(p - line) + (int)strlen(key);
+    memcpy(buf, line, n);
+    p = line + n;
+    while (p < line + len) {
+        char *end;
+        double v;
+        if (*p == ' ' || *p == '\t') { buf[n++] = *p++; continue; }
+        v = strtod(p, &end);
+        if (end == p || end > line + len) { while (p < line + len) buf[n++] = *p++; break; }
+        n += sprintf(buf + n, "%g", v * f);
+        p = end;
+    }
+    memcpy(*out + *outLen, buf, n);
+    *outLen += n;
+}
+
+static char *GoreEffect(const char *d, size_t n, size_t *outLen)
+{
+    char *out = malloc(n * 2 + sizeof(g_goreDrops) + 64), sub[32] = "", prev[32] = "";
+    size_t i = 0, len = 0;
+    int depth = 0, blood = 0;
+    if (!out) return NULL;
+    while (i < n) {
+        size_t j = i, e;
+        const char *t;
+        while (j < n && d[j] != '\n') j++;
+        e = j < n ? j + 1 : j;   // with its newline
+        t = d + i;
+        while (t < d + j && (*t == ' ' || *t == '\t')) t++;
+        if (depth == 0 && !strncmp(t, "Particle", 8)) {
+            // a new particle: is it blood? (drawn with the flesh_hit pictures)
+            const char *next = strstr(d + j, "Particle");
+            const char *hit = strstr(d + j, "flesh_hit");
+            blood = hit && (!next || hit < next);
+        }
+        if (*t == '{') {
+            depth++;
+            if (depth == 2) strcpy(sub, prev);
+        } else if (*t == '}') {
+            depth--;
+            if (depth < 2) sub[0] = 0;
+        }
+        if (blood && depth >= 1) GoreLine(d + i, e - i, depth, sub, &out, &len);
+        else { memcpy(out + len, d + i, e - i); len += e - i; }
+        if (t < d + j && *t != '{' && *t != '}') {
+            int k;
+            for (k = 0; k < 31 && t + k < d + j && t[k] > ' '; k++) prev[k] = t[k];
+            prev[k] = 0;
+        }
+        i = e;
+    }
+    memcpy(out + len, g_goreDrops, sizeof(g_goreDrops) - 1);
+    len += sizeof(g_goreDrops) - 1;
+    *outLen = len;
+    return out;
+}
+
+static int BuildGorePack(const wchar_t *game)
+{
+    static const char *file = "fx/impacts/flesh_hit.efx";
+    wchar_t pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int count = 0, cap = 0, i, ok;
+    char utf8[MAX_PATH * 3], *gore;
+    void *data = NULL;
+    size_t size = 0, goreSize;
+    mz_zip_archive zw;
+
+    _snwprintf(pattern, MAX_PATH, L"%s\\main\\pak*.pk3", game);
+    h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!_wcsnicmp(fd.cFileName, L"pakz_vr", 7)) continue;   // our own packs
+        if (count == cap) { cap = cap ? cap * 2 : 32; paks = realloc(paks, cap * sizeof(*paks)); }
+        _snwprintf(paks[count++], MAX_PATH, L"%s", fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(paks, count, sizeof(*paks), CmpW);
+    for (i = 0; i < count; i++) {   // the last pak that has the file wins
+        mz_zip_archive z;
+        int e;
+        wchar_t path[MAX_PATH];
+        memset(&z, 0, sizeof(z));
+        _snwprintf(path, MAX_PATH, L"%s\\main\\%s", game, paks[i]);
+        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
+        if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
+        e = mz_zip_reader_locate_file(&z, file, NULL, 0);
+        if (e >= 0) {
+            void *d = mz_zip_reader_extract_to_heap(&z, e, &size, 0);
+            if (d) { free(data); data = d; }
+        }
+        mz_zip_reader_end(&z);
+    }
+    free(paks);
+    if (!data || !(data = realloc(data, size + 1))) return 0;
+    ((char *)data)[size] = 0;   // searched as a string
+    gore = GoreEffect(data, size, &goreSize);
+    free(data);
+    if (!gore) return 0;
+
+    Join(out, game, GORE_PACK);
+    _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
+    WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, utf8, 0)) { free(gore); return 0; }
+    ok = mz_zip_writer_add_mem(&zw, file, gore, goreSize, MZ_DEFAULT_COMPRESSION);
+    ok = ok && mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    free(gore);
+    if (!ok) { DeleteFileW(tmp); return 0; }
+    return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
+}
+
+// ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
 // The desktop shortcut to the launcher.
@@ -459,6 +616,7 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, L"cod_vr.ini.default");  DeleteFileW(p);
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
     Join(p, game, TEXT_PACK);              DeleteFileW(p);
+    Join(p, game, GORE_PACK);              DeleteFileW(p);
     Join(p, game, LAUNCHER_EXE);           DeleteFileW(p);
     if (ShortcutPath(p)) DeleteFileW(p);
 }
@@ -482,8 +640,10 @@ static int Silent(const wchar_t *cmd)
     }
     if (!HasGame(game)) return 2;
     if (wcsstr(cmd, L"/uninstall")) { Uninstall(game); return 0; }
+    if (wcsstr(cmd, L"/gorepack")) return BuildGorePack(game) ? 0 : 1;   // only the gore pack
     if (!Install(game, &keptIni)) return 1;
     BuildTextPack(game);
+    BuildGorePack(game);
     if (wcsstr(cmd, L"/shortcut")) CreateShortcut(game);
     Join(pack, game, HANDS_PACK);
     if (wcsstr(cmd, L"/hands")) return BuildHandsPack(game, &models) ? 0 : 1;
@@ -540,6 +700,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     }
 
     BuildTextPack(game);   // English game only; the mod works without it
+    BuildGorePack(game);   // used only when MODS > Gore is set to Gore
     Join(pack, game, HANDS_PACK);
     r = Ask(MB_YESNO | MB_ICONQUESTION,
             T(L"Hide the player's hands and show only the gun?\n\n(The models are made from your own game files.)",

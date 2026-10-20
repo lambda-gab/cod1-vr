@@ -61,6 +61,7 @@ typedef struct {
     void      (WINAPI *TexParameteri)(GLenum, GLenum, GLint);
     void      (WINAPI *TexParameterf)(GLenum, GLenum, GLfloat);
     void      (WINAPI *GetFloatv)(GLenum, GLfloat *);
+    void      (WINAPI *ReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
     void      (WINAPI *GetIntegerv)(GLenum, GLint *);
     GLenum    (WINAPI *GetError)(void);
     void      (WINAPI *Clear)(GLbitfield);
@@ -189,4 +190,8 @@ void XR_SetLaser(const float from[3], const float to[3]);
 // metres lying flat around the last point. Used for the grenade trajectory.
 void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring);
 void XR_Haptic(int hand, float amplitude, int ms);   // 0 = left, 1 = right
+// crosshair styles: 1 cross, 2 dot, 3 circle, 4 circle + dot, 5 cross + dot
+enum { RETICLE_NONE, RETICLE_CROSS, RETICLE_DOT, RETICLE_CIRCLE, RETICLE_CIRCLE_DOT, RETICLE_CROSS_DOT, RETICLE_COUNT };
+void XR_RequestDump(const char *dir);   // diagnostics: save the left eye as rendered and as sent, once
+void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4]);
 

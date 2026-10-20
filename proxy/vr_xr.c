@@ -49,6 +49,9 @@ static struct {
     uint32_t   imageCount[6];
     XrSwapchainImageOpenGLKHR images[6][MAX_IMAGES];
     int        laserOn;
+    int        renderW, renderH;   // eye buffers (the swapchains are the recommended size)
+    int        reticleOn;       // crosshair style (0 = none): centre, half-size vectors (XR coordinates), colour
+    float      reticle[3], reticleR[3], reticleU[3], reticleColor[4];
     float      laser[64][3];    // polyline in XR coordinates
     int        laserCount;
     float      laserColor[4];
@@ -295,23 +298,28 @@ static int CreateSession(void)
     Log("OpenXR: swapchain format 0x%llx", format);
 
     for (i = 0; i < 2; i++) {
-        // the eyes are rendered at this size (not the game window's): the runtime's recommended
-        // resolution, scaled by RenderScale, within what it accepts
+        // The eyes are rendered at the runtime's recommended resolution scaled by RenderScale
+        // (within what it accepts), but handed over at the recommended size: SteamVR's 32-bit
+        // runtime shows an eye image of any other size wrong (a part of it zoomed in, or black),
+        // whatever the image rectangle says. The copy into the swapchain scales it.
         int ew = (int)(vcv[i].recommendedImageRectWidth * xr_renderScale + 0.5f);
+        int eh = (int)(vcv[i].recommendedImageRectHeight * xr_renderScale + 0.5f);
         if (i == 0) {
             xr_recW = vcv[0].recommendedImageRectWidth; xr_recH = vcv[0].recommendedImageRectHeight;
             xr_maxW = vcv[0].maxImageRectWidth; xr_maxH = vcv[0].maxImageRectHeight;
         }
-        int eh = (int)(vcv[i].recommendedImageRectHeight * xr_renderScale + 0.5f);
         if (ew > (int)vcv[i].maxImageRectWidth) ew = vcv[i].maxImageRectWidth;
         if (eh > (int)vcv[i].maxImageRectHeight) eh = vcv[i].maxImageRectHeight;
-        if (!CreateSwapchain(i, format, ew, eh)) return 0;
+        if (i == 0) { xr.renderW = ew; xr.renderH = eh; }
+        if (!CreateSwapchain(i, format, vcv[i].recommendedImageRectWidth, vcv[i].recommendedImageRectHeight)) return 0;
     }
+    Log("OpenXR: eyes rendered at %dx%d (RenderScale %.2f), sent at %ux%u", xr.renderW, xr.renderH, xr_renderScale,
+        vcv[0].recommendedImageRectWidth, vcv[0].recommendedImageRectHeight);
     if (xr.hudW > 0 && xr.hudH > 0 && !CreateSwapchain(2, format, xr.hudW, xr.hudH)) return 0;
     if (xr.scopeSize > 0 && !CreateSwapchain(3, format, xr.scopeSize, xr.scopeSize)) return 0;
-    // the beam only needs a light buffer: half resolution
+    // lines over the world (menu beam, grenade line, crosshair): full resolution, so thin lines stay crisp
     for (i = 0; i < 2; i++)
-        if (!CreateSwapchain(4 + i, format, vcv[i].recommendedImageRectWidth / 2, vcv[i].recommendedImageRectHeight / 2)) return 0;
+        if (!CreateSwapchain(4 + i, format, vcv[i].recommendedImageRectWidth, vcv[i].recommendedImageRectHeight)) return 0;
     gl.GenFramebuffers(1, &xr.dstFbo);
     return 1;
 }
@@ -325,9 +333,9 @@ void XR_RecommendedSize(int *w, int *h, int *maxW, int *maxH)
 
 int XR_EyeSize(int *w, int *h)
 {
-    if (!xr.swapchain[0]) return 0;
-    *w = xr.scW[0];
-    *h = xr.scH[0];
+    if (!xr.swapchain[0] || !xr.renderW) return 0;
+    *w = xr.renderW;
+    *h = xr.renderH;
     return 1;
 }
 
@@ -451,6 +459,7 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     if (!xr.session) return 0;
     if (xr.frameOpen) XR_EndFrame(NULL, 0, 0, 0, 0, NULL, NULL);   // previous frame never reached SwapBuffers
     xr.laserOn = 0;
+    xr.reticleOn = 0;
     PollEvents();
     if (!xr.running) return 0;
 
@@ -470,6 +479,17 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
         return 0;   // frame is still open; XR_EndFrame submits nothing
     }
     xr.viewsValid = 1;
+    {
+        // once: what the runtime asks for (a wrong-looking headset view starts here)
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            for (i = 0; i < 2; i++)
+                Log("OpenXR: %s eye fov left %.1f right %.1f up %.1f down %.1f deg, swapchain %dx%d",
+                    i ? "right" : "left", xr.views[i].fov.angleLeft * 57.29578f, xr.views[i].fov.angleRight * 57.29578f,
+                    xr.views[i].fov.angleUp * 57.29578f, xr.views[i].fov.angleDown * 57.29578f, xr.scW[i], xr.scH[i]);
+        }
+    }
 
     for (i = 0; i < 2; i++) {
         PoseToQ3(&xr.views[i].pose, &eyes[i]);
@@ -488,6 +508,39 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     return xr.frameState.shouldRender ? 1 : 0;
 }
 
+// Diagnostics ([Debug] DumpEyes): the left eye's buffer and the swapchain image made from it,
+// a quarter of the size, as TGA files next to the log.
+static char g_dumpDir[MAX_PATH];
+void XR_RequestDump(const char *dir) { strncpy(g_dumpDir, dir, MAX_PATH - 1); }
+
+static void DumpFramebuffer(GLuint fbo, int w, int h, const char *name)
+{
+    char path[MAX_PATH];
+    unsigned char *px, hdr[18] = { 0 };
+    int ow = w / 4, oh = h / 4, x, y;
+    FILE *f;
+    if (!gl.ReadPixels || w < 4 || h < 4 || !(px = malloc((size_t)w * h * 4))) return;
+    gl.BindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    gl.ReadPixels(0, 0, w, h, 0x1908, 0x1401, px);   // GL_RGBA, GL_UNSIGNED_BYTE
+    _snprintf(path, sizeof(path), "%s\\%s", g_dumpDir, name);
+    if ((f = fopen(path, "wb"))) {
+        hdr[2] = 2;
+        hdr[12] = (unsigned char)ow; hdr[13] = (unsigned char)(ow >> 8);
+        hdr[14] = (unsigned char)oh; hdr[15] = (unsigned char)(oh >> 8);
+        hdr[16] = 24;
+        fwrite(hdr, 1, 18, f);
+        for (y = 0; y < oh; y++)
+            for (x = 0; x < ow; x++) {
+                const unsigned char *p = px + ((size_t)(y * 4) * w + x * 4) * 4;
+                unsigned char bgr[3] = { p[2], p[1], p[0] };
+                fwrite(bgr, 1, 3, f);
+            }
+        fclose(f);
+        Log("dump: %s (%dx%d of %dx%d)", path, ow, oh, w, h);
+    }
+    free(px);
+}
+
 static int CopySwapchainImage(int eye, GLuint srcFbo, int sx, int sy, int w, int h)
 {
     XrSwapchainImageAcquireInfo ai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -504,6 +557,12 @@ static int CopySwapchainImage(int eye, GLuint srcFbo, int sx, int sy, int w, int
     // An eye was drawn with the eye's projection into a window-sized buffer: stretching it to
     // the swapchain keeps the geometry right (projection maps the frustum to the whole target).
     GL_BlitRect(srcFbo, sx, sy, w, h, xr.dstFbo, xr.scW[eye], xr.scH[eye]);
+    if (g_dumpDir[0] && eye == 0) {
+        DumpFramebuffer(srcFbo, w, h, "dump_eye_rendered.tga");
+        DumpFramebuffer(xr.dstFbo, xr.scW[eye], xr.scH[eye], "dump_eye_sent.tga");
+        Log("dump: eye buffer %dx%d from (%d,%d), swapchain %dx%d", w, h, sx, sy, xr.scW[eye], xr.scH[eye]);
+        g_dumpDir[0] = 0;
+    }
     gl.BindFramebuffer(GL_FRAMEBUFFER, xr.dstFbo);
     gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -525,6 +584,17 @@ void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring)
     memcpy(xr.laserColor, rgba, sizeof(xr.laserColor));
     xr.laserRing = ring;
     xr.laserOn = 1;
+}
+
+// A crosshair in the world: four arms from gap to the end of right / up (tracking space, Quake axes).
+void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4])
+{
+    if (style <= RETICLE_NONE || style >= RETICLE_COUNT) return;
+    FromQ3(center, xr.reticle);
+    FromQ3(right, xr.reticleR);
+    FromQ3(up, xr.reticleU);
+    memcpy(xr.reticleColor, rgba, sizeof(xr.reticleColor));
+    xr.reticleOn = style;
 }
 
 void XR_SetLaser(const float from[3], const float to[3])
@@ -593,12 +663,59 @@ static int DrawLaser(int eye)
     gl.MatrixMode(0x1701); gl.PushMatrix(); gl.LoadMatrixf(proj);   // GL_PROJECTION
     gl.MatrixMode(0x1700); gl.PushMatrix(); gl.LoadMatrixf(view);   // GL_MODELVIEW
     gl.LineWidth(3.0f);
+    if (xr.reticleOn) {
+        // the crosshair, thin and smooth like the game's own: arms around a gap, a dot, a ring
+        static const float dirs[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        const float *c = xr.reticle, *r = xr.reticleR, *u = xr.reticleU, a = xr.reticleColor[3];
+        int style = xr.reticleOn, k, j;
+        int cross = style == RETICLE_CROSS || style == RETICLE_CROSS_DOT;
+        int dot = style == RETICLE_DOT || style == RETICLE_CIRCLE_DOT || style == RETICLE_CROSS_DOT;
+        int ring = style == RETICLE_CIRCLE || style == RETICLE_CIRCLE_DOT;
+        gl.Enable(0x0B20);                         // GL_LINE_SMOOTH
+        gl.Enable(0x0BE2);                         // GL_BLEND, premultiplied
+        if (gl.BlendFunc) gl.BlendFunc(1, 0x0303); // ONE, ONE_MINUS_SRC_ALPHA
+        gl.LineWidth(1.6f);
+        gl.Color4f(xr.reticleColor[0] * a, xr.reticleColor[1] * a, xr.reticleColor[2] * a, a);
+        if (cross) {
+            gl.Begin(0x0001);   // GL_LINES
+            for (k = 0; k < 4; k++)
+                for (j = 0; j < 2; j++) {
+                    float t = j ? 1.0f : 0.45f;   // from the gap to the tip
+                    gl.Vertex3f(c[0] + (r[0] * dirs[k][0] + u[0] * dirs[k][1]) * t,
+                                c[1] + (r[1] * dirs[k][0] + u[1] * dirs[k][1]) * t,
+                                c[2] + (r[2] * dirs[k][0] + u[2] * dirs[k][1]) * t);
+                }
+            gl.End();
+        }
+        if (ring) {
+            gl.Begin(0x0002);   // GL_LINE_LOOP
+            for (k = 0; k < 40; k++) {
+                float t = k * (6.2831853f / 40), cs = cosf(t) * 0.7f, sn = sinf(t) * 0.7f;
+                gl.Vertex3f(c[0] + r[0] * cs + u[0] * sn, c[1] + r[1] * cs + u[1] * sn, c[2] + r[2] * cs + u[2] * sn);
+            }
+            gl.End();
+        }
+        if (dot) {
+            gl.Begin(0x0006);   // GL_TRIANGLE_FAN
+            gl.Vertex3f(c[0], c[1], c[2]);
+            for (k = 0; k <= 16; k++) {
+                float t = k * (6.2831853f / 16), cs = cosf(t) * 0.12f, sn = sinf(t) * 0.12f;
+                gl.Vertex3f(c[0] + r[0] * cs + u[0] * sn, c[1] + r[1] * cs + u[1] * sn, c[2] + r[2] * cs + u[2] * sn);
+            }
+            gl.End();
+        }
+        gl.Disable(0x0BE2);
+        gl.Disable(0x0B20);
+    }
+    gl.LineWidth(5.0f);   // the beam and the grenade line (the layer is full resolution)
+    if (xr.laserOn) {
     gl.Begin(0x0003);   // GL_LINE_STRIP
     gl.Color4f(xr.laserColor[0] * xr.laserColor[3], xr.laserColor[1] * xr.laserColor[3],
                xr.laserColor[2] * xr.laserColor[3], xr.laserColor[3]);   // premultiplied
     for (i = 0; i < xr.laserCount; i++) gl.Vertex3f(xr.laser[i][0], xr.laser[i][1], xr.laser[i][2]);
     gl.End();
-    {
+    }
+    if (xr.laserOn) {
         const float *e = xr.laser[xr.laserCount - 1];
         if (xr.laserRing > 0) {
             // landing marker: a ring lying on the ground (XR y is up)
@@ -609,7 +726,7 @@ static int DrawLaser(int eye)
             }
             gl.End();
         } else {
-            gl.PointSize(10.0f);
+            gl.PointSize(16.0f);   // full-resolution layer
             gl.Begin(0x0000);   // GL_POINTS: the spot where it hits the menu
             gl.Color4f(1.0f, 1.0f, 1.0f, 1.0f);
             gl.Vertex3f(e[0], e[1], e[2]);
@@ -727,7 +844,7 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
     }
 
     // Menu pointer beam, above the menu screen
-    if (render && xr.laserOn && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
+    if (render && (xr.laserOn || xr.reticleOn) && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
         for (i = 0; i < 2; i++) {
             bv[i].pose = xr.views[i].pose;
             bv[i].fov = xr.views[i].fov;

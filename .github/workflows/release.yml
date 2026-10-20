@@ -56,7 +56,8 @@ jobs:
 
             **Manual install:** extract `cod-vr-manual-install.zip` into the game folder (where `CoDSP.exe` is).
 
-            Needs a 32-bit OpenXR runtime (Virtual Desktop or Quest Link). See the README for controls and settings.
+            Needs a 32-bit OpenXR runtime (Virtual Desktop, Quest Link or the SteamVR beta). See the README for
+            controls and settings.
 
             ---
 

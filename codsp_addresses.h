@@ -155,6 +155,10 @@
 #define WEAPDEF_OFS_adsOverlayShader 0x224      // char*: set for scoped weapons
 #define WEAPDEF_OFS_ammoIndex       0x1a0       // int: index into ps.ammo (the reserve)
 #define WEAPDEF_OFS_clipIndex       0x1a8       // int: index into ps.ammoclip (Drop / pickup of weapons, 0x2001bca0)
+#define WEAPDEF_OFS_maxAmmo         0x1ac       // int (game field table "maxAmmo")
+#define WEAPDEF_OFS_damage          0x1c0       // int (game field table "damage"; "meleeDamage" at 0x1c4)
+#define WEAPDEF_OFS_meleeDamage     0x1c4
+#define WEAPDEF_OFS_clipSize        0x1b0       // int (game field table "clipSize")
 #define ADDR_cl_cgameUserCmdValue   0x0142f2d8  // selected weapon index (cgame trap 0x57), copied to usercmd + 6
 #define CG_ADDR_vmMain              0x30018cd0
 
@@ -172,8 +176,14 @@
 #define GENT_OFS_posDelta           0x2c        // s.pos.trDelta
 #define GENT_OFS_currentOrigin      0xe0        // r.currentOrigin
 #define GENT_OFS_health             0x1d8       // int (spawn field table "health"; "maxhealth" at 0x1dc)
-#define GENT_OFS_health             0x1d8       // int (spawn field table "health"; "maxhealth" at 0x1dc)
+#define GENT_OFS_inuse              0x118       // char r.inuse (the AI debug walk 0x1e940 tests it)
+#define GENT_OFS_flags              0x134       // int: bit 1 = god mode (the "god" command, 0x17550)
+#define GENT_OFS_eType              0x4         // int s.eType
+#define G_ENTITY_SIZE               0x2c8       // sizeof(gentity_t)
+#define G_OFS_numEntities           0x002db22c  // module offset: int level.num_entities
 #define GCL_OFS_weapon              0xa0        // ps.weapon: the weapon in use
+#define GCL_OFS_strafeSpeedScale    0x344       // float ps: sideways speed (0.8, set at spawn 0x14ad3; PM_CmdScale 0x3760)
+#define GCL_OFS_backSpeedScale      0x348       // float ps: backwards speed (0.7)
 #define GCL_OFS_slots               0x2fc       // BYTE[6]: weapon in slot 1 primary, 2 primaryb, 3 pistol,
                                                 // 4 grenade, 5 smokegrenade (0 = empty)
 #define G_OFS_DropWeapon            0x0001bca0  // gentity_t *(int weapon, const char *tag): player gentity in EAX,

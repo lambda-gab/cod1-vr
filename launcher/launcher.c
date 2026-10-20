@@ -11,13 +11,15 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <olectl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.4.0"
+#define VERSION_TEXT L"v1.5.0"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 
@@ -52,7 +54,17 @@ typedef struct {
     int def;
     int cur;      // -1 = what is set matches no choice ("Custom")
     int showRes;  // RenderScale choices: show the eye resolution each one gives
+    int reticle;  // crosshair styles: a small picture of each one beside its name
+    const wchar_t *const *choiceHints;   // a hint for each choice (instead of hint), or NULL
 } option_t;
+
+static const wchar_t *const g_hudHints[] = {
+    L"Everything on screen, as in the original game.",
+    L"Nothing on screen. Hold the Objectives button to see health, ammo, compass and objectives.",
+    L"Only the dialogue subtitles. Hold the Objectives button to see health, ammo and compass.",
+    L"Only the compass. Hold the Objectives button to see health, ammo and subtitles.",
+    L"Only health and ammo. Hold the Objectives button to see the compass, stance and subtitles.",
+};
 
 // VR page, two columns: comfort and movement on the left (VR_COL2 first on the right)
 static option_t g_vrOpts[] = {
@@ -76,9 +88,17 @@ static option_t g_vrOpts[] = {
       { "CrouchDepth=0.25", "CrouchDepth=0.32", "CrouchDepth=0.45" }, 1 },
     { L"Menus", L"Menus and loading screens: fixed in front of you, or following your head.",
       "HUD", 2, { L"Fixed", L"Follow head" }, { "MenuFollowsHead=0", "MenuFollowsHead=1" }, 0 },
+    { L"HUD", NULL, "HUD", 5, { L"Full", L"Immersive (none)", L"Subtitles only", L"Compass only", L"Health and ammo" },
+      { "HudMode=0", "HudMode=1", "HudMode=2", "HudMode=3", "HudMode=4" }, 0, 0, 0, 0, g_hudHints },
     // right column
     { L"Grenade line", L"A line that shows where a grenade will fly and land.",
       "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
+    { L"Crosshair", L"A crosshair where the gun is aimed, for playing without aiming down the sights.",
+      "Controllers", 6, { L"None", L"Cross", L"Dot", L"Circle", L"Circle + dot", L"Cross + dot" },
+      { "Crosshair=0", "Crosshair=1", "Crosshair=2", "Crosshair=3", "Crosshair=4", "Crosshair=5" }, 0, 0, 0, 1 },
+    { L"Swing melee", L"Hit someone by swinging the gun at them, any part of it. Hard needs a faster swing.",
+      "Controllers", 4, { L"Off", L"Light", L"Normal", L"Hard" },
+      { "SwingMelee=0", "SwingMelee=1|MeleeSpeed=1.6", "SwingMelee=1|MeleeSpeed=2.2", "SwingMelee=1|MeleeSpeed=3" }, 2 },
     { L"Drop on release", L"Letting go of the grip away from its holster drops the weapon on the floor.",
       "Holsters", 2, { L"On", L"Off" }, { "DropOnRelease=1", "DropOnRelease=0" }, 0 },
     { L"Two-hand steadiness", L"With both hands on the gun, hand tremor is damped; deliberate swings still follow quickly.",
@@ -99,7 +119,7 @@ static option_t g_vrOpts[] = {
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
       { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
 };
-#define VR_COL2 8
+#define VR_COL2 9
 
 static option_t g_gfxOpts[] = {
     { L"Headset resolution", L"Sharpness in the headset, per eye. Lower it if the game stutters; above Ultra needs a strong GPU.",
@@ -133,6 +153,25 @@ static option_t g_gfxOpts[] = {
 
 #define NUM_VR  (int)(sizeof(g_vrOpts) / sizeof(g_vrOpts[0]))
 #define NUM_GFX (int)(sizeof(g_gfxOpts) / sizeof(g_gfxOpts[0]))
+
+// MODS: things the original game does not have
+static const wchar_t *const g_difficultyHints[] = {
+    L"The game's own difficulty (chosen when you start a new game).",
+    L"Real life: one shot, one kill. For you and for them.",
+    L"Perma death: if you die, the run is over. The checkpoints are erased and you start a new game (your own saves go to a backup folder).",
+    L"Real life with perma death: one shot kills, and dying ends the run.",
+    L"God mode: you never die.",
+};
+static option_t g_modOpts[] = {
+    { L"Custom difficulty", NULL, "Mods", 5, { L"Normal", L"Real life", L"Perma death", L"Real life + perma death", L"God mode" },
+      { "Difficulty=0", "Difficulty=1", "Difficulty=2", "Difficulty=3", "Difficulty=4" }, 0, 0, 0, 0, g_difficultyHints },
+    { L"Blood", L"Off: no blood. On: the game's own blood. Gore: much more blood, spraying and falling from every hit.",
+      "Mods", 3, { L"Off", L"On", L"Gore" }, { "Gore=0", "Gore=1", "Gore=2" }, 1 },
+    { L"Infinite ammo", L"Full ammo: the reserve stays full (you still reload), or the clip too (no reloading).",
+      "Mods", 3, { L"Off", L"Full reserve", L"No reloading" }, { "InfiniteAmmo=0", "InfiniteAmmo=1", "InfiniteAmmo=2" }, 0 },
+};
+#define NUM_MOD (int)(sizeof(g_modOpts) / sizeof(g_modOpts[0]))
+#define MOD_DIFFICULTY 0
 
 static char g_dir[MAX_PATH], g_gameIni[MAX_PATH], g_userIni[MAX_PATH];
 static int  g_haveGame, g_haveMod;
@@ -209,6 +248,14 @@ static void LoadAll(void)
     }
     for (i = 0; i < NUM_VR; i++) LoadOption(&g_vrOpts[i]);
     for (i = 0; i < NUM_GFX; i++) LoadOption(&g_gfxOpts[i]);
+    {
+        // the first MODS had "Infinite health": now the God mode difficulty
+        if (GetPrivateProfileIntA("Mods", "InfiniteHealth", 0, g_userIni) == 1 &&
+            GetPrivateProfileIntA("Mods", "Difficulty", 0, g_userIni) == 0)
+            WritePrivateProfileStringA("Mods", "Difficulty", "4", g_userIni);
+        WritePrivateProfileStringA("Mods", "InfiniteHealth", NULL, g_userIni);
+    }
+    for (i = 0; i < NUM_MOD; i++) LoadOption(&g_modOpts[i]);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,16 +264,88 @@ static void LoadAll(void)
 // The game started from here, while it runs (the launcher stays open to try settings).
 static HANDLE g_game;
 
+// A CoDSP.exe from this folder is running (also when Steam started it). Looked up at most once a second.
+static int GameProcessRunning(void)
+{
+    static DWORD last;
+    static int running;
+    PROCESSENTRY32W pe;
+    HANDLE snap;
+    BOOL ok;
+    if (last && GetTickCount() - last < 1000) return running;
+    last = GetTickCount();
+    running = 0;
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    pe.dwSize = sizeof(pe);
+    for (ok = Process32FirstW(snap, &pe); ok && !running; ok = Process32NextW(snap, &pe)) {
+        HANDLE h;
+        wchar_t path[MAX_PATH], dir[MAX_PATH];
+        DWORD len = MAX_PATH;
+        if (_wcsicmp(pe.szExeFile, L"CoDSP.exe")) continue;
+        h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+        if (!h) { running = 1; break; }   // cannot tell where it is from: take it as ours
+        if (QueryFullProcessImageNameW(h, 0, path, &len)) {
+            wchar_t *slash = wcsrchr(path, L'\\');
+            if (slash) *slash = 0;
+            MultiByteToWideChar(CP_ACP, 0, g_dir, -1, dir, MAX_PATH);
+            running = !_wcsicmp(path, dir);
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return running;
+}
+
 static int GameRunning(void)
 {
     if (g_game && WaitForSingleObject(g_game, 0) == WAIT_TIMEOUT) return 1;
     if (g_game) { CloseHandle(g_game); g_game = NULL; }
-    return 0;
+    return GameProcessRunning();
+}
+
+// The Steam version's CoDSP.exe only runs when Steam starts it (it reopens itself through Steam,
+// or asks for Steam when it is not there): it is started with a steam:// link, which keeps the
+// command line. Any other copy (CD, other stores) is started directly.
+#define STEAM_APP_ID "2620"
+static int SteamCopy(void)
+{
+    char p[MAX_PATH], lower[MAX_PATH];
+    int i;
+    for (i = 0; g_dir[i] && i < MAX_PATH - 1; i++) lower[i] = (char)tolower((unsigned char)g_dir[i]);
+    lower[i] = 0;
+    if (strstr(lower, "\\steamapps\\")) return 1;
+    _snprintf(p, sizeof(p), "%s\\steam_api.dll", g_dir);
+    if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return 1;
+    _snprintf(p, sizeof(p), "%s\\steam_appid.txt", g_dir);
+    return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+}
+
+static int SteamInstalled(void)
+{
+    HKEY k;
+    if (RegOpenKeyExA(HKEY_CLASSES_ROOT, "steam\\Shell\\Open\\Command", 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+    RegCloseKey(k);
+    return 1;
+}
+
+// steam://run/<app>//<arguments>/, spaces as %20
+static int StartThroughSteam(HWND wnd, const char *args)
+{
+    char url[1024];
+    int n = _snprintf(url, sizeof(url), "steam://run/" STEAM_APP_ID "//");
+    for (; *args && n < (int)sizeof(url) - 5; args++) {
+        if (*args == ' ') { memcpy(url + n, "%20", 3); n += 3; }
+        else url[n++] = *args;
+    }
+    url[n++] = '/';
+    url[n] = 0;
+    return (INT_PTR)ShellExecuteA(wnd, "open", url, NULL, NULL, SW_SHOWNORMAL) > 32;
 }
 
 static int StartGame(HWND wnd)
 {
-    char exe[MAX_PATH], cmd[512], picmip[16], gamma[16];
+    char exe[MAX_PATH], cmd[512], args[400], picmip[16], gamma[16];
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     if (GameRunning()) {
@@ -240,8 +359,15 @@ static int StartGame(HWND wnd)
     // r_ignorehwgamma: the game's own brightness is a ramp on the monitor, which the headset never
     // sees; with it ignored, r_gamma brightens the textures themselves
     // full colour depth and trilinear filtering for the textures as well
-    _snprintf(cmd, sizeof(cmd), "\"%s\" +set r_picmip %d +set r_texturebits 32 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR"
-              " +set r_ignorehwgamma 1 +set r_gamma %.2f", exe, atoi(picmip), atof(gamma));
+    _snprintf(args, sizeof(args), "+set r_picmip %d +set r_texturebits 32 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR"
+              " +set r_ignorehwgamma 1 +set r_gamma %.2f", atoi(picmip), atof(gamma));
+    if (SteamCopy() && SteamInstalled()) {
+        if (StartThroughSteam(wnd, args)) return 1;
+        MessageBoxW(wnd, L"Could not start the game through Steam. Is Steam installed and logged in?",
+                    L"Call of Duty VR", MB_ICONERROR);
+        return 0;
+    }
+    _snprintf(cmd, sizeof(cmd), "\"%s\" %s", exe, args);
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
     if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, g_dir, &si, &pi)) {
@@ -256,7 +382,7 @@ static int StartGame(HWND wnd)
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
-enum { PAGE_HOME, PAGE_CONTROLS, PAGE_GRAPHICS, PAGE_VR, PAGE_ABOUT };
+enum { PAGE_HOME, PAGE_CONTROLS, PAGE_GRAPHICS, PAGE_VR, PAGE_MODS, PAGE_ABOUT };
 enum { HIT_NONE, HIT_PLAY, HIT_NAV, HIT_PREV, HIT_NEXT, HIT_ROW, HIT_LINK };
 
 typedef struct { RECT r; int type, arg; } hit_t;
@@ -389,6 +515,42 @@ static int DrawRows(HDC dc, option_t *opts, int first, int n, int rowH, int top)
     return hint;
 }
 
+// A crosshair style (as the mod draws it: arms around a gap, a ring, a dot) in a dark square.
+static void DrawReticle(HDC dc, int style, int x0, int y0, int sz)
+{
+    int cx = x0 + sz / 2, cy = y0 + sz / 2, r = sz * 7 / 16, k;
+    int cross = style == 1 || style == 5, dot = style == 2 || style == 4 || style == 5, ring = style == 3 || style == 4;
+    HPEN pen = CreatePen(PS_SOLID, P(1) > 1 ? P(1) : 1, RGB(235, 235, 235));
+    HBRUSH white = CreateSolidBrush(RGB(235, 235, 235));
+    HGDIOBJ oldPen, oldBrush;
+    Fill(dc, x0, y0, x0 + sz, y0 + sz, RGB(52, 56, 50));
+    oldPen = SelectObject(dc, pen);
+    oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    if (style == 0) {   // none: a struck-through square
+        MoveToEx(dc, x0 + sz / 4, y0 + sz * 3 / 4, NULL);
+        LineTo(dc, x0 + sz * 3 / 4, y0 + sz / 4);
+    }
+    if (cross)
+        for (k = 0; k < 4; k++) {
+            int dx = k == 0 ? 1 : k == 1 ? -1 : 0, dy = k == 2 ? 1 : k == 3 ? -1 : 0;
+            MoveToEx(dc, cx + dx * r * 45 / 100, cy + dy * r * 45 / 100, NULL);
+            LineTo(dc, cx + dx * (r + 1), cy + dy * (r + 1));
+        }
+    if (ring) {
+        int rr = r * 7 / 10;
+        Ellipse(dc, cx - rr, cy - rr, cx + rr + 1, cy + rr + 1);
+    }
+    if (dot) {
+        int d = r / 4 > 1 ? r / 4 : 1;
+        SelectObject(dc, white);
+        Ellipse(dc, cx - d, cy - d, cx + d + 1, cy + d + 1);
+    }
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(white);
+    DeleteObject(pen);
+}
+
 // Rows in a column from x0 to x1 (label, then the value with its arrows); returns the hovered one.
 static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int top, int x0, int x1)
 {
@@ -402,6 +564,11 @@ static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int to
         if (hot) { Fill(dc, P(x0), y0, P(x1), y1, RGB(34, 30, 20)); hint = i; }
         Text(dc, g_fText, COL_TEXT, P(x0 + 12), y0, vx0, y1, o->label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         Text(dc, g_fBold, Hovered(HIT_PREV, i) ? COL_GOLD : COL_DIM, vx0, y0, vx0 + P(26), y1, L"\x25C0", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        if (o->reticle && o->cur >= 0) {   // the picture, then the name
+            int sz = y1 - y0 - P(6);
+            DrawReticle(dc, o->cur, vx0 + P(34), y0 + P(3), sz);
+            Text(dc, g_fBold, COL_STEEL, vx0 + P(42) + sz, y0, vx1 - P(26), y1, val, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS);
+        } else
         Text(dc, g_fBold, COL_STEEL, vx0 + P(26), y0, vx1 - P(26), y1, val, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_END_ELLIPSIS);
         Text(dc, g_fBold, Hovered(HIT_NEXT, i) ? COL_GOLD : COL_DIM, vx1 - P(26), y0, vx1, y1, L"\x25B6", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         AddHit(vx0, y0, vx0 + P(26), y1, HIT_PREV, i);
@@ -414,7 +581,9 @@ static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int to
 static void DrawHint(HDC dc, option_t *opts, int hint)
 {
     if (hint >= 0)
-        Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476), opts[hint].hint, DT_SINGLELINE | DT_END_ELLIPSIS);
+        Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476),
+             opts[hint].choiceHints && opts[hint].cur >= 0 ? opts[hint].choiceHints[opts[hint].cur] : opts[hint].hint,
+             DT_SINGLELINE | DT_END_ELLIPSIS);
     else
         Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476),
              L"Click a setting to change it. Changes are saved at once and used the next time the game starts.", DT_SINGLELINE);
@@ -504,8 +673,9 @@ static void DrawAbout(HDC dc)
 
 static void DrawBar(HDC dc)
 {
-    static const wchar_t *names[] = { L"CONTROLS", L"GRAPHICS", L"VR", L"ABOUT" };
-    int i, x = P(250);
+    static const wchar_t *names[] = { L"CONTROLS", L"GRAPHICS", L"VR", L"MODS", L"ABOUT" };
+    static const int widths[] = { 130, 130, 60, 90, 100 };
+    int i, x = P(240);
     Fill(dc, 0, P(BAR_Y), P(BASE_W), P(BASE_H), COL_BAR);
     Fill(dc, 0, P(BAR_Y), P(BASE_W), P(BAR_Y) + P(2), COL_GOLD_DARK);
     // PLAY
@@ -517,16 +687,16 @@ static void DrawBar(HDC dc)
              DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         AddHit(x0, y0, x1, y1, HIT_PLAY, 0);
     }
-    for (i = 0; i < 4; i++) {
-        int page = PAGE_CONTROLS + i, w = P(i == 2 ? 80 : 160);
+    for (i = 0; i < 5; i++) {
+        int page = PAGE_CONTROLS + i, w = P(widths[i]);
         int on = g_page == page, hot = Hovered(HIT_NAV, page);
         int y0 = P(BAR_Y + 14), y1 = P(BASE_H - 14);
         Text(dc, g_fNav, on || hot ? COL_GOLD : COL_TEXT, x, y0, x + w, y1, names[i], DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if (on) Fill(dc, x + P(16), y1 - P(4), x + w - P(16), y1 - P(1), COL_GOLD);
         AddHit(x, y0, x + w, y1, HIT_NAV, page);
-        x += w + P(20);
+        x += w + P(12);
     }
-    Text(dc, g_fSmall, COL_DIM, P(860), P(BAR_Y + 14), P(980), P(BASE_H - 14), VERSION_TEXT, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+    Text(dc, g_fSmall, COL_DIM, P(900), P(BAR_Y + 14), P(980), P(BASE_H - 14), VERSION_TEXT, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
 }
 
 static void Paint(HWND wnd, HDC wdc)
@@ -555,9 +725,15 @@ static void Paint(HWND wnd, HDC wdc)
             DrawPageTitle(dc, L"VR", NULL);
             Text(dc, g_fBold, COL_GOLD, P(40), P(66), P(480), P(90), L"COMFORT AND MOVEMENT", DT_SINGLELINE | DT_VCENTER);
             Text(dc, g_fBold, COL_GOLD, P(510), P(66), P(960), P(90), L"WEAPONS AND VIBRATION", DT_SINGLELINE | DT_VCENTER);
-            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 42, 94, 40, 480);
-            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 42, 94, 510, 960);
+            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 38, 94, 40, 480);
+            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 34, 94, 510, 960);
             DrawHint(dc, g_vrOpts, h1 >= 0 ? h1 : h2);
+        } else if (g_page == PAGE_MODS) {
+            DrawPageTitle(dc, L"MODS", L"Things the original game does not have. Used the next time the game starts.");
+            DrawOptions(dc, g_modOpts, NUM_MOD, 40, 100);
+            if (g_modOpts[MOD_DIFFICULTY].cur >= 0)   // what the chosen difficulty does, always in view
+                Text(dc, g_fSmall, COL_STEEL, P(60), P(100 + NUM_MOD * 40 + 12), P(950), P(100 + NUM_MOD * 40 + 60),
+                     g_difficultyHints[g_modOpts[MOD_DIFFICULTY].cur], DT_WORDBREAK);
         } else if (g_page == PAGE_ABOUT) DrawAbout(dc);
     }
     DrawBar(dc);
@@ -583,6 +759,7 @@ static option_t *PageOption(int i)
 {
     if (g_page == PAGE_VR && i < NUM_VR) return &g_vrOpts[i];
     if (g_page == PAGE_GRAPHICS && i < NUM_GFX) return &g_gfxOpts[i];
+    if (g_page == PAGE_MODS && i < NUM_MOD) return &g_modOpts[i];
     return NULL;
 }
 

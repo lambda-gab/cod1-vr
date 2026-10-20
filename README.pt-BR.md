@@ -34,7 +34,8 @@ quis vivê-lo de novo em VR.
 - Call of Duty (2003) para PC, single player, **versão 1.5** (`CoDSP.exe`).
 - Headset de PC VR com controles (testado com Quest pelo Virtual Desktop; Air Link e outros headsets de PC VR devem
   funcionar).
-- Um runtime OpenXR **de 32 bits**: Virtual Desktop (VDXR) ou Oculus/Meta. O jogo é um programa de 32 bits.
+- Um runtime OpenXR **de 32 bits**: Virtual Desktop (VDXR), Oculus/Meta ou SteamVR (o runtime OpenXR de 32 bits
+  dela vem no **beta da SteamVR**: Steam > SteamVR > Propriedades > Betas). O jogo é um programa de 32 bits.
 
 > [!NOTE]
 > **Testado com o Quest 3, onde funciona perfeitamente.** Se você tiver algum problema com outro headset,
@@ -112,9 +113,15 @@ O launcher tem as opções que a maioria quer mexer, salvas assim que você muda
   (MSAA), filtro de texturas (anisotrópico), qualidade das texturas, brilho, e opções de teste de pós-processamento
   (oclusão de ambiente, nitidez, estilo de cor, bloom: deixe desligadas se a imagem piorar).
 - **VR:** vinheta de conforto, giro em passos ou suave, mão dominante, roomscale, agachar de verdade, menus fixos ou
-  seguindo a cabeça, trajetória da granada, soltar a arma no chão, firmeza e coice com as duas mãos, objetivos na mão
-  e intensidade da vibração para tiros, dano e coldres.
+  seguindo a cabeça, o que do HUD fica na tela, trajetória da granada, estilo da mira, golpe balançando a arma,
+  soltar a arma no chão, firmeza e coice com as duas mãos, objetivos na mão e intensidade da vibração para tiros,
+  dano e coldres.
+- **MODS:** coisas que o jogo original não tem: dificuldade personalizada (*Real life*: um tiro mata, você e eles;
+  *Perma death*: morreu, acabou a campanha; as duas; *God mode*), munição infinita e sangue (desligado, ligado ou
+  *Gore*).
 - **CONTROLS:** o mapa dos controles.
+
+Com a versão Steam do jogo, o PLAY abre o jogo pela Steam (o `CoDSP.exe` dela só roda quando a Steam o abre).
 
 As escolhas vão para `%APPDATA%\CoD-VR\settings.ini` e têm prioridade sobre o `cod_vr.ini`.
 
@@ -143,6 +150,23 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.5.0
+
+- **SteamVR e outros runtimes:** a imagem no headset ficava esticada e com zoom (na tela do PC estava certa), e
+  preta em resoluções baixas, com o runtime de 32 bits da SteamVR e outros. Agora os olhos são entregues no tamanho
+  que o headset pede, seja qual for a resolução escolhida.
+- **Versão Steam:** o PLAY abre o jogo pela Steam, que o `CoDSP.exe` dela exige.
+- **Golpe corpo a corpo balançando a arma:** acerte com qualquer parte dela, da coronha ao cano. Só conta um golpe de
+  verdade (a velocidade se ajusta no launcher), não encostar a arma em alguém.
+- **Modos de HUD:** completo, imersivo (nada), só legendas, só bússola ou só vida e munição. Segurar o botão de
+  Objetivos mostra tudo.
+- **Mira** (desligada por padrão), em seis estilos mostrados no launcher: cruz, ponto, círculo, círculo + ponto,
+  cruz + ponto.
+- **Andar e correr** seguem a inclinação do analógico, e não ficam mais lentos quando a arma aponta para outro lado.
+- **Aba MODS:** dificuldade personalizada (Real life, Perma death, as duas, God mode), munição infinita e sangue
+  (desligado, ligado ou Gore: mais sangue que espirra e cai, gerado pelo instalador a partir do efeito do seu jogo).
+- As linhas sobre o mundo (apontador dos menus, trajetória da granada, mira) estão mais nítidas.
 
 ### v1.4.0
 
