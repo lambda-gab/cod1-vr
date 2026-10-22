@@ -2,7 +2,7 @@
 
 **English** | [Português](TROUBLESHOOTING.pt-BR.md)
 
-Something does not work? Start here. If nothing below fixes it, [send a diagnostic report](#4-still-not-working-send-a-diagnostic-report):
+Something does not work? Start here. If nothing below fixes it, [send a diagnostic report](#5-still-not-working-send-a-diagnostic-report):
 it tells me what is wrong with your VR set-up.
 
 ## The game opens as two flat images side by side (VR does not start)
@@ -32,7 +32,19 @@ Then start the game with the **Call of Duty VR launcher** (`CoD-VR-Launcher.exe`
 - **SteamVR:** its 32-bit OpenXR runtime only comes with the **SteamVR beta** (Steam > SteamVR > Properties >
   Betas). After installing it, set SteamVR as the OpenXR runtime in the SteamVR settings.
 
-### 4. Still not working? Send a diagnostic report
+### 4. One runtime must be set as the *active* OpenXR runtime
+
+Having a runtime installed is not enough: Windows needs one marked as the active one. If none is, the game cannot
+find the headset (`XR_ERROR_RUNTIME_UNAVAILABLE`, and the diagnostic report says "no ActiveRuntime"). Set it in the
+program you use for VR (the exact wording changes between versions):
+
+- **SteamVR:** Settings (turn on advanced settings) > **Developer** > **Set SteamVR as OpenXR runtime**.
+- **Meta Quest Link / Oculus app:** Settings > General > set it as the active OpenXR runtime.
+- **Virtual Desktop streamer:** its settings have an option to set it as the active OpenXR runtime.
+
+Then connect the headset and start the game again.
+
+### 5. Still not working? Send a diagnostic report
 
 1. Open the launcher (`CoD-VR-Launcher.exe`) and go to **ABOUT**.
 2. Click **"Problem starting in VR?"**. It saves `CoD-VR-diagnostic.txt` to your desktop and shows where.
