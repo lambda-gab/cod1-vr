@@ -43,6 +43,11 @@ wanted to experience it again in VR.
 
 ## Installation
 
+> [!IMPORTANT]
+> **VR does not start, or the game opens as two flat images side by side?** Read the
+> **[Troubleshooting guide](TROUBLESHOOTING.md)**. It also explains how to save a **diagnostic report** (launcher >
+> ABOUT > "Problem starting in VR?") to send to me.
+
 ### Easiest: the installer (recommended)
 
 1. Download `CoD-VR-Setup.exe` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
