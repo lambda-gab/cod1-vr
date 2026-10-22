@@ -152,6 +152,25 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.0
+
+- **Vehicles** (car, truck, Flak 88, tank, the Dawnville car): your head is free inside them, the view follows the
+  vehicle without its jolts, and the shots go where you aim, so you can hit enemies from a car or truck. A separate
+  vignette strength for vehicles (launcher), and a hint to skip the mission if you feel sick (hold both triggers for
+  4 seconds). The Flak 88 is aimed with the head, and held or let go with the grips.
+- **Tank:** the left stick drives it, gently (heavy, slow to start and stop); the gun follows where your head looks.
+- **MG42 turrets:** both grips to mount (the hands then hold it and aim it), let go of a grip to get off.
+- **Ladders:** push the stick into the ladder and point your gun hand up to climb. Training signs count when you
+  just look at them.
+- **Modern font** (GRAPHICS tab): the game's text in Segoe UI, made by the installer from the one in Windows.
+- **Controllers:** "Sticks: Swapped" in the launcher (move with the gun hand's stick, for left-handers who keep
+  moving on the left), and the game's hints name your controller buttons.
+- **No view shake** from explosions and shell shock (made by the installer), and the Panzerfaust always shows a
+  reticle; the gun no longer goes through the floor when you go prone.
+- **Launcher:** it tells you when a new release is out, and ABOUT has **"Problem starting in VR?"**: it saves a
+  diagnostic report (the OpenXR runtimes registered for 32-bit programs, what the game's loader reports, your
+  headset software, the game's settings and log) to the Desktop, to send on Discord.
+
 ### v1.5.0
 
 - **SteamVR and other runtimes:** the view in the headset was stretched and zoomed in (fine on the monitor), and
@@ -226,17 +245,6 @@ resolution ideas.
 
 - First release: the game is playable in VR (stereo with head tracking and roomscale, gun in the hand, controller
   aiming, HUD and menus on a floating screen, scope view, installer).
-
-## Next steps
-
-- Melee by swinging the gun, and reloading by hand (magazines and clips).
-- Fix the visual glitches that are still reported.
-- **United Offensive** (`CoDUOSP.exe`) support.
-
-## Notes
-
-- **Tutorial, the signs at the start:** point your right hand (a line shows where) at each sign and move the hand
-  up and down until the game marks the objective as done.
 
 ## Technical information
 

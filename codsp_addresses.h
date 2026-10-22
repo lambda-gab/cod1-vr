@@ -110,6 +110,10 @@
 #define ADDR_currentVM              0x013f9db4  // vm_t*
 #define ADDR_VM_DllSyscall          0x0044f040  // int (int cmd, ...): currentVM->systemCall(&cmd)
 #define G_TRAP_GetConfigstring      0x2e        // (index, char *buf, int size); 0x2d sets one
+#define G_OFS_syscall               0x000a4834  // module offset: the game's engine call pointer (set by dllEntry)
+#define G_TRAP_KeyBinding           0x98        // (const char *cmd, char **key1, char **key2) -> keys: the
+                                                // script's getKeyBinding (0x30f10), for its "Press &&1" hints
+#define G_TRAP_SendServerCommand    0x2c        // (clientNum or -1, const char *cmd): "gmb \"text\"" = iprintlnbold (0x305e0)
 #define CS_SERVERINFO               0           // \\key\\value... with mapname
 #define CS_OBJECTIVES               15          // 16 objectives: \\state\\N... (objective_state 0x200341e0)
 #define OBJST_DONE                  3           // empty, active, invisible, done, current, failed
@@ -178,10 +182,26 @@
 #define GENT_OFS_health             0x1d8       // int (spawn field table "health"; "maxhealth" at 0x1dc)
 #define GENT_OFS_inuse              0x118       // char r.inuse (the AI debug walk 0x1e940 tests it)
 #define GENT_OFS_flags              0x134       // int: bit 1 = god mode (the "god" command, 0x17550)
+#define GENT_OFS_tagInfo            0x294       // tagInfo_t*: set while linked (G_EntLinkTo 0x44b90); +0 = parent gentity
+#define GENT_OFS_currentAngles      0xec        // r.currentAngles (pitch, yaw, roll)
+#define GENT_OFS_ownerNum           0xf8        // int r.ownerNum: who uses a turret (getturretowner 0x334c0)
+#define GENT_OFS_turretInfo         0x114       // turret data, set on turrets (MG42, 30 cal, ...)
+#define GENT_OFS_vehicle            0x110       // vehicle data, set on vehicles (fireturret 0x40750)
+#define GENT_OFS_weapon             0x3         // byte s.weapon: a vehicle's gun (the Flak 88's), 0 = none
+#define GENT_OFS_turretInUse        0x12a       // byte: someone is on the turret
+#define G_OFS_TurretStartUse        0x000231f0  // void (gentity_t *turret, gentity_t *player), cdecl: puts the
+                                                // player on it (the use check before it, 0x23180, also wants him
+                                                // in the arc behind it and on the ground)
 #define GENT_OFS_eType              0x4         // int s.eType
 #define G_ENTITY_SIZE               0x2c8       // sizeof(gentity_t)
 #define G_OFS_numEntities           0x002db22c  // module offset: int level.num_entities
 #define GCL_OFS_weapon              0xa0        // ps.weapon: the weapon in use
+#define GCL_OFS_origin              0x14        // float[3] ps.origin (velocity at 0x20, as in Quake 3)
+#define GCL_OFS_viewangles          0xb0        // float[3] ps.viewangles: pitch, yaw, roll (what the shots follow)
+#define GCL_OFS_pmFlags             0x0c        // int ps.pm_flags: 0x10 = on a ladder (PM_CheckLadder 0x7b30)
+#define PMF_LADDER                  0x10
+#define TRACE_OFS_surfaceFlags      0x1c        // int in trace_t (after fraction +0 and the normal +0x10)
+#define SURF_LADDER                 0x8
 #define GCL_OFS_strafeSpeedScale    0x344       // float ps: sideways speed (0.8, set at spawn 0x14ad3; PM_CmdScale 0x3760)
 #define GCL_OFS_backSpeedScale      0x348       // float ps: backwards speed (0.7)
 #define GCL_OFS_slots               0x2fc       // BYTE[6]: weapon in slot 1 primary, 2 primaryb, 3 pistol,

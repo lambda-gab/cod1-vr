@@ -10,4 +10,4 @@ if not exist ..\proxy\out\opengl32.dll ( echo Build the proxy first: ..\proxy\bu
 if not exist ..\launcher\out\CoD-VR-Launcher.exe ( echo Build the launcher first: ..\launcher\build_launcher.bat & exit /b 1 )
 if not exist out mkdir out
 rc /nologo /fo out\setup.res setup.rc || exit /b 1
-cl /nologo /O2 /MT /W3 /DMINIZ_NO_TIME setup.c ..\third_party\miniz\miniz.c out\setup.res /Foout\ /Feout\CoD-VR-Setup.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:NO /MANIFESTINPUT:setup.manifest user32.lib shell32.lib ole32.lib advapi32.lib uuid.lib || exit /b 1
+cl /nologo /O2 /MT /W3 /DMINIZ_NO_TIME setup.c ..\third_party\miniz\miniz.c out\setup.res /Foout\ /Feout\CoD-VR-Setup.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:NO /MANIFESTINPUT:setup.manifest user32.lib shell32.lib ole32.lib advapi32.lib uuid.lib gdi32.lib || exit /b 1

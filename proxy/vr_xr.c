@@ -50,6 +50,8 @@ static struct {
     XrSwapchainImageOpenGLKHR images[6][MAX_IMAGES];
     int        laserOn;
     int        renderW, renderH;   // eye buffers (the swapchains are the recommended size)
+    int        progressOn;       // a progress bar: centre, half-size vectors (XR coordinates), 0..1
+    float      progress[3], progressR[3], progressU[3], progressFrac;
     int        reticleOn;       // crosshair style (0 = none): centre, half-size vectors (XR coordinates), colour
     float      reticle[3], reticleR[3], reticleU[3], reticleColor[4];
     float      laser[64][3];    // polyline in XR coordinates
@@ -460,6 +462,7 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     if (xr.frameOpen) XR_EndFrame(NULL, 0, 0, 0, 0, NULL, NULL);   // previous frame never reached SwapBuffers
     xr.laserOn = 0;
     xr.reticleOn = 0;
+    xr.progressOn = 0;
     PollEvents();
     if (!xr.running) return 0;
 
@@ -587,6 +590,15 @@ void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring)
 }
 
 // A crosshair in the world: four arms from gap to the end of right / up (tracking space, Quake axes).
+void XR_SetProgress(const float center[3], const float right[3], const float up[3], float fraction)
+{
+    FromQ3(center, xr.progress);
+    FromQ3(right, xr.progressR);
+    FromQ3(up, xr.progressU);
+    xr.progressFrac = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
+    xr.progressOn = 1;
+}
+
 void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4])
 {
     if (style <= RETICLE_NONE || style >= RETICLE_COUNT) return;
@@ -706,6 +718,34 @@ static int DrawLaser(int eye)
         }
         gl.Disable(0x0BE2);
         gl.Disable(0x0B20);
+    }
+    if (xr.progressOn) {
+        // a dark frame, filled from the left in the game's gold as the time goes by
+        const float *c = xr.progress, *r = xr.progressR, *u = xr.progressU;
+        float f = xr.progressFrac * 2.0f - 1.0f;   // the fill's right end, -1..1 along r
+        static const float corner[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+        int k;
+        gl.Enable(0x0BE2);                          // GL_BLEND, premultiplied
+        if (gl.BlendFunc) gl.BlendFunc(1, 0x0303);
+        gl.Begin(0x0007);   // GL_QUADS: background
+        gl.Color4f(0.0f, 0.0f, 0.0f, 0.55f);
+        for (k = 0; k < 4; k++)
+            gl.Vertex3f(c[0] + r[0] * corner[k][0] + u[0] * corner[k][1], c[1] + r[1] * corner[k][0] + u[1] * corner[k][1],
+                        c[2] + r[2] * corner[k][0] + u[2] * corner[k][1]);
+        gl.Color4f(0.85f, 0.65f, 0.25f, 1.0f);       // fill
+        for (k = 0; k < 4; k++) {
+            float x = corner[k][0] > 0 ? f : -1.0f, y = corner[k][1] * 0.7f;
+            gl.Vertex3f(c[0] + r[0] * x + u[0] * y, c[1] + r[1] * x + u[1] * y, c[2] + r[2] * x + u[2] * y);
+        }
+        gl.End();
+        gl.LineWidth(2.0f);
+        gl.Begin(0x0002);   // GL_LINE_LOOP: frame
+        gl.Color4f(0.9f, 0.9f, 0.9f, 0.9f);
+        for (k = 0; k < 4; k++)
+            gl.Vertex3f(c[0] + r[0] * corner[k][0] + u[0] * corner[k][1], c[1] + r[1] * corner[k][0] + u[1] * corner[k][1],
+                        c[2] + r[2] * corner[k][0] + u[2] * corner[k][1]);
+        gl.End();
+        gl.Disable(0x0BE2);
     }
     gl.LineWidth(5.0f);   // the beam and the grenade line (the layer is full resolution)
     if (xr.laserOn) {
@@ -844,7 +884,7 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
     }
 
     // Menu pointer beam, above the menu screen
-    if (render && (xr.laserOn || xr.reticleOn) && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
+    if (render && (xr.laserOn || xr.reticleOn || xr.progressOn) && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
         for (i = 0; i < 2; i++) {
             bv[i].pose = xr.views[i].pose;
             bv[i].fov = xr.views[i].fov;

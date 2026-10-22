@@ -8,4 +8,4 @@ call "%VSDIR%\VC\Auxiliary\Build\vcvarsamd64_x86.bat" >nul 2>nul
 cd /d "%~dp0"
 if not exist out mkdir out
 rc /nologo /fo out\launcher.res launcher.rc || exit /b 1
-cl /nologo /O2 /MT /W3 /DUNICODE /D_UNICODE launcher.c out\launcher.res /Foout\ /Feout\CoD-VR-Launcher.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:NO /MANIFESTINPUT:launcher.manifest user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib msimg32.lib advapi32.lib || exit /b 1
+cl /nologo /O2 /MT /W3 /DUNICODE /D_UNICODE /I..\deps\openxr\include launcher.c diag.c out\launcher.res /Foout\ /Feout\CoD-VR-Launcher.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:NO /MANIFESTINPUT:launcher.manifest user32.lib gdi32.lib shell32.lib ole32.lib oleaut32.lib msimg32.lib advapi32.lib winhttp.lib || exit /b 1

@@ -12,6 +12,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <winhttp.h>
 #include <olectl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,9 +20,10 @@
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.5.0"
+#define VERSION_TEXT L"v1.6.0"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
+#define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
 
 // ---------------------------------------------------------------------------
 // Layout, in pixels at 96 dpi (scaled by P())
@@ -71,6 +73,11 @@ static option_t g_vrOpts[] = {
     { L"Comfort vignette", L"Narrows the view while you move with the stick or turn smoothly. Helps if you feel sick.",
       "Comfort", 4, { L"Off", L"Low", L"Medium", L"High" },
       { "Vignette=0", "Vignette=1|VignetteStrength=0.35", "Vignette=1|VignetteStrength=0.6", "Vignette=1|VignetteStrength=0.9" }, 2 },
+    { L"Vehicle vignette", L"Narrows the view while a vehicle carries you (truck, car, plane) and turns or speeds up.",
+      "Comfort", 4, { L"Off", L"Low", L"Medium", L"High" },
+      { "VehicleVignette=0", "VehicleVignette=0.35", "VehicleVignette=0.6", "VehicleVignette=0.9" }, 2 },
+    { L"Sticks", L"Swapped: move with the gun hand's stick, turn with the other (some left-handers prefer it).",
+      "Controllers", 2, { L"Default", L"Swapped" }, { "SwapSticks=0", "SwapSticks=1" }, 0 },
     { L"Turning", L"Right stick: turn in steps (gentler) or smoothly.",
       "Controllers", 4, { L"Snap 30\x00b0", L"Snap 45\x00b0", L"Snap 90\x00b0", L"Smooth" },
       { "SnapTurn=30", "SnapTurn=45", "SnapTurn=90", "SnapTurn=0" }, 1 },
@@ -119,7 +126,7 @@ static option_t g_vrOpts[] = {
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
       { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
 };
-#define VR_COL2 9
+#define VR_COL2 11
 
 static option_t g_gfxOpts[] = {
     { L"Headset resolution", L"Sharpness in the headset, per eye. Lower it if the game stutters; above Ultra needs a strong GPU.",
@@ -134,6 +141,8 @@ static option_t g_gfxOpts[] = {
       { "Anisotropy=1", "Anisotropy=4", "Anisotropy=8", "Anisotropy=16" }, 3 },
     { L"Texture quality", L"Detail of the game's textures. Maximum suits any recent PC.",
       "Launcher", 3, { L"Maximum", L"High", L"Medium" }, { "Picmip=0", "Picmip=1", "Picmip=2" }, 0 },
+    { L"Text font", L"Modern: the game's text in a cleaner font that is easier to read in the headset.",
+      "HUD", 2, { L"Original", L"Modern" }, { "ModernFont=0", "ModernFont=1" }, 1 },
     { L"Brightness", L"Makes the game brighter in the headset (applied when the game starts).",
       "Launcher", 4, { L"Normal", L"Brighter", L"Bright", L"Brightest" },
       { "Gamma=1", "Gamma=1.2", "Gamma=1.4", "Gamma=1.6" }, 0 },
@@ -149,7 +158,7 @@ static option_t g_gfxOpts[] = {
     { L"Bloom", L"A soft glow around bright light: fire, explosions, the sky.",
       "PostFX", 3, { L"Off", L"Low", L"Medium" }, { "Bloom=0", "Bloom=0.15", "Bloom=0.3" }, 0 },
 };
-#define GFX_POST_FIRST 5
+#define GFX_POST_FIRST 6
 
 #define NUM_VR  (int)(sizeof(g_vrOpts) / sizeof(g_vrOpts[0]))
 #define NUM_GFX (int)(sizeof(g_gfxOpts) / sizeof(g_gfxOpts[0]))
@@ -453,6 +462,60 @@ static void DrawBanner(HDC dc)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Update check: once at start, in the background, the latest release on GitHub. A newer one
+// is shown on the home page (a link to its download page); nothing is downloaded.
+// ---------------------------------------------------------------------------
+#define WM_UPDATE_FOUND (WM_APP + 1)
+static wchar_t g_newVersion[32];
+
+// "v1.10.2" -> 1 10 2; a > b
+static int NewerVersion(const char *a, const wchar_t *b)
+{
+    int x[3] = { 0 }, y[3] = { 0 }, i;
+    if (*a == 'v' || *a == 'V') a++;
+    if (*b == L'v' || *b == L'V') b++;
+    sscanf(a, "%d.%d.%d", &x[0], &x[1], &x[2]);
+    swscanf(b, L"%d.%d.%d", &y[0], &y[1], &y[2]);
+    for (i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] > y[i];
+    return 0;
+}
+
+static DWORD WINAPI UpdateCheckThread(LPVOID param)
+{
+    HWND wnd = (HWND)param;
+    HINTERNET s = NULL, c = NULL, r = NULL;
+    char body[65536], *tag;
+    DWORD got, total = 0;
+    s = WinHttpOpen(L"CoD-VR-Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (s) WinHttpSetTimeouts(s, 5000, 5000, 5000, 5000);
+    if (s) c = WinHttpConnect(s, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (c) r = WinHttpOpenRequest(c, L"GET", L"/repos/lambda-gab/cod1-vr/releases/latest", NULL,
+                                  WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (r && WinHttpSendRequest(r, L"Accept: application/vnd.github+json\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(r, NULL)) {
+        while (total < sizeof(body) - 1 && WinHttpReadData(r, body + total, sizeof(body) - 1 - total, &got) && got) total += got;
+    }
+    body[total] = 0;
+    if (r) WinHttpCloseHandle(r);
+    if (c) WinHttpCloseHandle(c);
+    if (s) WinHttpCloseHandle(s);
+    if ((tag = strstr(body, "\"tag_name\"")) && (tag = strchr(tag + 10, '"'))) {
+        char v[32];
+        int i;
+        tag++;
+        for (i = 0; i < 31 && tag[i] && tag[i] != '"'; i++) v[i] = tag[i];
+        v[i] = 0;
+        if (v[0] && NewerVersion(v, VERSION_TEXT)) {
+            MultiByteToWideChar(CP_UTF8, 0, v, -1, g_newVersion, 32);
+            PostMessageW(wnd, WM_UPDATE_FOUND, 0, 0);
+        }
+    }
+    return 0;
+}
+
+int WriteDiagnostics(const char *gameDir, const wchar_t *version, char *outPath, int outLen);
+
 static void DrawHome(HDC dc)
 {
     Text(dc, g_fText, COL_TEXT, P(40), P(384), P(960), P(414),
@@ -464,9 +527,17 @@ static void DrawHome(HDC dc)
         Text(dc, g_fSmall, RGB(230, 110, 90), P(40), P(420), P(960), P(470),
              L"The VR mod is not installed in this folder: run CoD-VR-Setup.exe first.", DT_CENTER | DT_WORDBREAK);
     else
-        Text(dc, g_fSmall, COL_DIM, P(40), P(420), P(960), P(470),
+        Text(dc, g_fSmall, COL_DIM, P(40), P(420), P(960), P(446),
              L"Connect your headset (Virtual Desktop, Air Link or SteamVR with a 32-bit OpenXR runtime), then press PLAY.",
              DT_CENTER | DT_WORDBREAK);
+    if (g_newVersion[0]) {
+        wchar_t line[128];
+        int hot = Hovered(HIT_LINK, 2);
+        _snwprintf(line, 128, L"A new version (%s) is available: click here to download it.", g_newVersion);
+        line[127] = 0;
+        Text(dc, g_fBold, hot ? RGB(255, 220, 120) : COL_GOLD, P(40), P(448), P(960), P(474), line, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        AddHit(P(250), P(448), P(750), P(474), HIT_LINK, 2);
+    }
 }
 
 static void DrawPageTitle(HDC dc, const wchar_t *title, const wchar_t *sub)
@@ -599,7 +670,7 @@ static void DrawGraphics(HDC dc)
 {
     int h1, h2;
     DrawPageTitle(dc, L"GRAPHICS", L"The game's own options (Options in the game menu) still apply on top of these.");
-    h1 = DrawRows(dc, g_gfxOpts, 0, GFX_POST_FIRST, 36, 94);
+    h1 = DrawRows(dc, g_gfxOpts, 0, GFX_POST_FIRST, 30, 94);
     Text(dc, g_fBold, COL_GOLD, P(50), P(278), P(950), P(300), L"POST-PROCESSING", DT_SINGLELINE | DT_VCENTER);
     Text(dc, g_fSmall, COL_DIM, P(50), P(300), P(950), P(318),
          L"Test options: if the image looks worse, leave them off.", DT_SINGLELINE | DT_VCENTER);
@@ -665,6 +736,9 @@ static void DrawAbout(HDC dc)
     Text(dc, g_fBold, Hovered(HIT_LINK, 1) ? COL_GOLD : COL_STEEL, P(50), P(290), P(600), P(320),
          L"Discord: bugs, suggestions and news", DT_SINGLELINE);
     AddHit(P(50), P(290), P(600), P(320), HIT_LINK, 1);
+    Text(dc, g_fBold, Hovered(HIT_LINK, 3) ? COL_GOLD : COL_STEEL, P(50), P(330), P(900), P(360),
+         L"Problem starting in VR? Save a diagnostic report to send on Discord", DT_SINGLELINE);
+    AddHit(P(50), P(330), P(900), P(360), HIT_LINK, 3);
     Text(dc, g_fSmall, COL_DIM, P(50), P(380), P(950), P(470),
          L"Unofficial fan project, not affiliated with or endorsed by Activision. Call of Duty is a trademark of "
          L"Activision Publishing, Inc. A legitimate copy of the game is required; no game files are included.",
@@ -725,7 +799,7 @@ static void Paint(HWND wnd, HDC wdc)
             DrawPageTitle(dc, L"VR", NULL);
             Text(dc, g_fBold, COL_GOLD, P(40), P(66), P(480), P(90), L"COMFORT AND MOVEMENT", DT_SINGLELINE | DT_VCENTER);
             Text(dc, g_fBold, COL_GOLD, P(510), P(66), P(960), P(90), L"WEAPONS AND VIBRATION", DT_SINGLELINE | DT_VCENTER);
-            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 38, 94, 40, 480);
+            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 31, 94, 40, 480);
             h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 34, 94, 510, 960);
             DrawHint(dc, g_vrOpts, h1 >= 0 ? h1 : h2);
         } else if (g_page == PAGE_MODS) {
@@ -787,7 +861,21 @@ static void Click(HWND wnd, int idx)
         SaveOption(o);
         break;
     case HIT_LINK:
-        ShellExecuteA(wnd, "open", h->arg ? URL_DISCORD : URL_GITHUB, NULL, NULL, SW_SHOWNORMAL);
+        if (h->arg == 3) {
+            char out[MAX_PATH], arg[MAX_PATH + 16];
+            wchar_t msg[MAX_PATH + 200], wout[MAX_PATH];
+            if (!WriteDiagnostics(g_dir, VERSION_TEXT, out, MAX_PATH)) {
+                MessageBoxW(wnd, L"The report could not be written.", L"CoD VR", MB_OK | MB_ICONWARNING);
+                break;
+            }
+            MultiByteToWideChar(CP_ACP, 0, out, -1, wout, MAX_PATH);
+            _snwprintf(msg, MAX_PATH + 200, L"The report was saved here:\n\n%s\n\nSend this file on Discord.", wout);
+            MessageBoxW(wnd, msg, L"CoD VR", MB_OK | MB_ICONINFORMATION);
+            _snprintf(arg, sizeof(arg), "/select,\"%s\"", out);
+            ShellExecuteA(wnd, "open", "explorer.exe", arg, NULL, SW_SHOWNORMAL);
+            break;
+        }
+        ShellExecuteA(wnd, "open", h->arg == 2 ? URL_RELEASES : h->arg ? URL_DISCORD : URL_GITHUB, NULL, NULL, SW_SHOWNORMAL);
         break;
     }
     InvalidateRect(wnd, NULL, FALSE);
@@ -838,6 +926,9 @@ static LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             StartGame(wnd);
             InvalidateRect(wnd, NULL, FALSE);
         }
+        return 0;
+    case WM_UPDATE_FOUND:
+        InvalidateRect(wnd, NULL, FALSE);
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -939,6 +1030,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     ShowWindow(wnd, show);
     UpdateWindow(wnd);
     SetTimer(wnd, 1, 1000, NULL);   // PLAY comes back when the game is closed
+    CloseHandle(CreateThread(NULL, 0, UpdateCheckThread, wnd, 0, NULL));
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

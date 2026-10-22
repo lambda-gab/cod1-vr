@@ -151,6 +151,27 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.0
+
+- **Veículos** (carro, caminhão, Flak 88, tanque, o carro de Dawnville): a cabeça fica livre dentro deles, a visão
+  acompanha o veículo sem os solavancos e os tiros vão para onde você mira, então dá para acertar inimigos do
+  carro e do caminhão. Intensidade de vinheta própria para veículos (launcher) e um aviso para pular a missão se
+  você passar mal (segure os dois gatilhos por 4 segundos). A Flak 88 é mirada com a cabeça e se segura ou solta
+  com as empunhaduras.
+- **Tanque:** o analógico esquerdo dirige, de forma suave (pesado, demora para arrancar e parar); o canhão segue
+  para onde sua cabeça olha.
+- **Metralhadoras MG42:** as duas empunhaduras para montar (as mãos seguram e miram), solte uma para descer.
+- **Escadas:** empurre o analógico contra a escada e aponte a mão da arma para cima para subir. As placas do
+  treinamento contam só de olhar para elas.
+- **Fonte moderna** (aba GRAPHICS): o texto do jogo em Segoe UI, gerada pelo instalador a partir da do Windows.
+- **Controles:** "Sticks: Swapped" no launcher (andar com o analógico da mão da arma, para canhotos que
+  continuam andando pela esquerda), e as dicas do jogo mostram os botões do seu controle.
+- **Sem tremor de tela** em explosões e shell shock (gerado pelo instalador), a Panzerfaust sempre mostra mira e a
+  arma não atravessa mais o chão ao deitar.
+- **Launcher:** avisa quando há uma versão nova, e o ABOUT tem **"Problem starting in VR?"**: salva na Área de
+  Trabalho um relatório de diagnóstico (os runtimes OpenXR registrados para programas de 32 bits, o que o loader
+  do jogo informa, o software do seu headset, as configurações e o log do jogo) para mandar no Discord.
+
 ### v1.5.0
 
 - **SteamVR e outros runtimes:** a imagem no headset ficava esticada e com zoom (na tela do PC estava certa), e
@@ -226,17 +247,6 @@ resolução do headset.
 
 - Primeira versão: o jogo fica jogável em VR (estéreo com rastreamento de cabeça e roomscale, arma na mão, mira pelo
   controle, HUD e menus numa tela flutuante, luneta, instalador).
-
-## Próximos passos
-
-- Coronhada com o movimento da arma e recarga manual (pentes e clipes).
-- Corrigir as falhas visuais que ainda forem relatadas.
-- Suporte ao **United Offensive** (`CoDUOSP.exe`).
-
-## Observações
-
-- **Treinamento, as placas do início:** aponte a mão direita (uma linha mostra para onde) para cada placa e mova a
-  mão para cima e para baixo até o jogo marcar o objetivo como concluído.
 
 ## Informações técnicas
 

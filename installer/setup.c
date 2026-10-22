@@ -14,6 +14,8 @@
 #include <string.h>
 #include <wchar.h>
 #include "../third_party/miniz/miniz.h"
+#define STB_DXT_IMPLEMENTATION
+#include "../third_party/stb/stb_dxt.h"
 #include "setup_res.h"
 
 #define CODSP_TIMESTAMP   0x40443fda              // CoDSP.exe 1.5
@@ -21,6 +23,8 @@
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
 #define TEXT_PACK         L"main\\pakz_vr_text.pk3"
 #define GORE_PACK         L"main\\pakz_vr_gore.pk3"   // loaded only with MODS > Gore: Gore (the mod hides it otherwise)
+#define FONT_PACK         L"main\\pakz_vr_font.pk3"   // loaded only with GRAPHICS > Text font: Modern
+#define SHOCK_PACK        L"main\\pakz_vr_noshake.pk3" // shell shock without its view shake (always on)
 #define LAUNCHER_EXE      L"CoD-VR-Launcher.exe"
 #define SHORTCUT_NAME     L"Call of Duty VR.lnk"
 #define INVISIBLE_SKIN    "cloth_masked@vr_invisible.tga"   // alpha-tested skin type, alpha 0
@@ -297,6 +301,8 @@ static const struct { const char *file, *ref, *text; } g_vrTexts[] = {
     { "localizedstrings/english/training.str", "FIVESIGNS", "Point your gun hand at the five large signs." },
     { "localizedstrings/english/training.str", "CLIMBLADDER",
       "To climb a ladder, push the move stick into the ladder and point your gun hand up." },
+    // the tank hint about lining the hull up with the turret (a mouse move: the stick drives the tank here)
+    { "localizedstrings/english/tankdrivecountry.str", "PRESSTHEJUMPBUTTON", " " },
 };
 
 static int IsSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
@@ -337,12 +343,10 @@ static int BuildTextPack(const wchar_t *game)
     wchar_t pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH];
     WIN32_FIND_DATAW fd;
     HANDLE h;
-    int count = 0, cap = 0, i, t, written = 0, ok = 1;
+    int count = 0, cap = 0, i, t, f, written = 0, ok = 1, zipOpen = 0;
     char utf8[MAX_PATH * 3];
-    const char *file = g_vrTexts[0].file;   // all texts live in one file today
-    void *data = NULL;
-    size_t size = 0;
     mz_zip_archive zw;
+    const int nTexts = (int)(sizeof(g_vrTexts) / sizeof(g_vrTexts[0]));
 
     _snwprintf(pattern, MAX_PATH, L"%s\\main\\localized_english_pak*.pk3", game);
     h = FindFirstFileW(pattern, &fd);
@@ -354,41 +358,54 @@ static int BuildTextPack(const wchar_t *game)
     FindClose(h);
     qsort(paks, count, sizeof(*paks), CmpW);
 
-    for (i = 0; i < count; i++) {   // the last pak that has the file wins
-        mz_zip_archive z;
-        int e;
-        wchar_t path[MAX_PATH];
-        memset(&z, 0, sizeof(z));
-        _snwprintf(path, MAX_PATH, L"%s\\main\\%s", game, paks[i]);
-        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
-        if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
-        e = mz_zip_reader_locate_file(&z, file, NULL, 0);
-        if (e >= 0) {
-            void *d = mz_zip_reader_extract_to_heap(&z, e, &size, 0);
-            if (d) { free(data); data = d; }
-        }
-        mz_zip_reader_end(&z);
-    }
-    free(paks);
-    if (!data) return 0;
-
-    for (t = 0; t < (int)(sizeof(g_vrTexts) / sizeof(g_vrTexts[0])); t++) {
-        size_t newSize;
-        char *changed = ReplaceString(data, size, g_vrTexts[t].ref, g_vrTexts[t].text, &newSize);
-        if (changed) { free(data); data = changed; size = newSize; written++; }
-    }
-    if (!written) { free(data); return 0; }
-
     Join(out, game, TEXT_PACK);
     _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
     WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
     memset(&zw, 0, sizeof(zw));
-    if (!mz_zip_writer_init_file(&zw, utf8, 0)) { free(data); return 0; }
-    ok = mz_zip_writer_add_mem(&zw, file, data, size, MZ_DEFAULT_COMPRESSION);
-    ok = ok && mz_zip_writer_finalize_archive(&zw);
-    mz_zip_writer_end(&zw);
-    free(data);
-    if (!ok) { DeleteFileW(tmp); return 0; }
+    if (mz_zip_writer_init_file(&zw, utf8, 0)) zipOpen = 1; else ok = 0;
+
+    for (f = 0; ok && f < nTexts; f++) {   // one file at a time (its texts follow each other)
+        const char *file = g_vrTexts[f].file;
+        void *data = NULL;
+        size_t size = 0;
+        int changedAny = 0;
+        if (f > 0 && !strcmp(file, g_vrTexts[f - 1].file)) continue;
+        for (i = 0; i < count; i++) {   // the last pak that has the file wins
+            mz_zip_archive z;
+            int e;
+            wchar_t path[MAX_PATH];
+            memset(&z, 0, sizeof(z));
+            _snwprintf(path, MAX_PATH, L"%s\\main\\%s", game, paks[i]);
+            WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
+            if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
+            e = mz_zip_reader_locate_file(&z, file, NULL, 0);
+            if (e >= 0) {
+                size_t sz = 0;
+                void *d = mz_zip_reader_extract_to_heap(&z, e, &sz, 0);
+                if (d) { free(data); data = d; size = sz; }
+            }
+            mz_zip_reader_end(&z);
+        }
+        if (!data) continue;
+        for (t = 0; t < nTexts; t++) {
+            size_t newSize;
+            char *changed;
+            if (strcmp(g_vrTexts[t].file, file)) continue;
+            changed = ReplaceString(data, size, g_vrTexts[t].ref, g_vrTexts[t].text, &newSize);
+            if (changed) { free(data); data = changed; size = newSize; changedAny = 1; }
+        }
+        if (changedAny) {
+            ok = mz_zip_writer_add_mem(&zw, file, data, size, MZ_DEFAULT_COMPRESSION);
+            written++;
+        }
+        free(data);
+    }
+    free(paks);
+    if (zipOpen) {
+        if (ok && written) ok = mz_zip_writer_finalize_archive(&zw);
+        mz_zip_writer_end(&zw);
+    }
+    if (!ok || !written) { DeleteFileW(tmp); return 0; }
     return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
 }
 
@@ -549,6 +566,251 @@ static int BuildGorePack(const wchar_t *game)
 }
 
 // ---------------------------------------------------------------------------
+// Font pack: the game's text fonts (fonts/fontImage_<size>.dat, the glyph metrics, and its
+// 256x256 pages fontImage_<page>_<size>.dds) drawn again from Segoe UI Semibold, which comes with
+// Windows, on this PC. Same names, sizes and pages as the game's, so every text uses it.
+// ---------------------------------------------------------------------------
+#define FONT_TEX 256
+static const int g_fontSizes[] = { 12, 16, 18, 24, 30, 32 };
+static const int g_fontPages[] = { 1, 1, 1, 2, 3, 3 };
+
+typedef struct {                // the game's glyph (80 bytes)
+    int height, width;          // the picture's size in pixels (width again below)
+    float top, left, xSkip;     // above the baseline, from the pen, the advance
+    int imageWidth, imageHeight;
+    float s, t, s2, t2;
+    int glyph;
+    char shaderName[32];
+} fontGlyph_t;
+
+// One DXT5 page (white, coverage in alpha), no mipmaps, as the game's.
+static void *FontPageDDS(const unsigned char *alpha, size_t *len)
+{
+    unsigned char *out = calloc(1, 128 + FONT_TEX * FONT_TEX), block[64];
+    int bx, by, x, y;
+    memcpy(out, "DDS ", 4);
+    ((int *)out)[1] = 124;
+    ((int *)out)[2] = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000;
+    ((int *)out)[3] = FONT_TEX;
+    ((int *)out)[4] = FONT_TEX;
+    ((int *)out)[5] = FONT_TEX * FONT_TEX;
+    ((int *)out)[19] = 32;
+    ((int *)out)[20] = 0x4;
+    memcpy(out + 84, "DXT5", 4);
+    ((int *)out)[27] = 0x1000;
+    for (by = 0; by < FONT_TEX / 4; by++)
+        for (bx = 0; bx < FONT_TEX / 4; bx++) {
+            for (y = 0; y < 4; y++)
+                for (x = 0; x < 4; x++) {
+                    unsigned char *p = block + (y * 4 + x) * 4;
+                    p[0] = p[1] = p[2] = 255;
+                    p[3] = alpha[(by * 4 + y) * FONT_TEX + bx * 4 + x];
+                }
+            stb_compress_dxt_block(out + 128 + (by * (FONT_TEX / 4) + bx) * 16, block, 1, STB_DXT_HIGHQUAL);
+        }
+    *len = 128 + FONT_TEX * FONT_TEX;
+    return out;
+}
+
+static int AddFile(mz_zip_archive *zw, const char *name, const void *d, size_t n)
+{
+    return mz_zip_writer_add_mem(zw, name, d, n, MZ_DEFAULT_COMPRESSION);
+}
+
+// One size: its .dat and pages, drawn with GDI.
+static int BuildFontSize(mz_zip_archive *zw, int size, int pages)
+{
+    HDC dc = CreateCompatibleDC(NULL);
+    HFONT font = CreateFontW(-size, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    static const MAT2 ident = { { 0, 1 }, { 0, 0 }, { 0, 0 }, { 0, 1 } };
+    unsigned char *alpha = calloc(pages, FONT_TEX * FONT_TEX), *buf = malloc(256 * 256);
+    unsigned char dat[256 * 80 + 72];
+    fontGlyph_t *g = (fontGlyph_t *)dat;
+    int c, page = 0, x = 1, y = 1, rowH = 0, maxH = 0, ok = 1;
+    float scale = 48.0f / size;
+    char name[64];
+    memset(dat, 0, sizeof(dat));
+    SelectObject(dc, font);
+    for (c = 32; c < 256 && ok; c++) {
+        GLYPHMETRICS gm;
+        DWORD n;
+        int w, h, pitchBytes, r, k;
+        if (c >= 127 && c < 160) continue;   // controls: none in the game's fonts either
+        n = GetGlyphOutlineW(dc, (WCHAR)c, GGO_GRAY8_BITMAP, &gm, 256 * 256, buf, &ident);
+        if (n == GDI_ERROR) {   // nothing to draw (the space): only its advance
+            if (GetGlyphOutlineW(dc, (WCHAR)c, GGO_METRICS, &gm, 0, NULL, &ident) == GDI_ERROR) continue;
+            n = 0;
+        }
+        w = n ? (int)gm.gmBlackBoxX : 0;
+        h = n ? (int)gm.gmBlackBoxY : 0;
+        if (x + w + 1 > FONT_TEX) { x = 1; y += rowH + 1; rowH = 0; }
+        if (y + h + 1 > FONT_TEX) {
+            if (++page >= pages) { if (c > 127) break; ok = 0; break; }   // no room: the accents are left out
+            x = 1; y = 1; rowH = 0;
+        }
+        pitchBytes = (w + 3) & ~3;
+        for (r = 0; r < h; r++)
+            for (k = 0; k < w; k++) {
+                int v = buf[r * pitchBytes + k] * 255 / 64;
+                alpha[page * FONT_TEX * FONT_TEX + (y + r) * FONT_TEX + x + k] = (unsigned char)(v > 255 ? 255 : v);
+            }
+        g[c].height = h;
+        g[c].width = w;
+        g[c].top = n ? (float)gm.gmptGlyphOrigin.y : 1.0f;
+        g[c].left = (float)gm.gmptGlyphOrigin.x;
+        g[c].xSkip = (float)gm.gmCellIncX;
+        g[c].imageWidth = w;
+        g[c].imageHeight = h;
+        g[c].s = (float)x / FONT_TEX;
+        g[c].t = (float)y / FONT_TEX;
+        g[c].s2 = (float)(x + w) / FONT_TEX;
+        g[c].t2 = (float)(y + h) / FONT_TEX;
+        sprintf(g[c].shaderName, "fonts/fontImage_%d_%d.tga", page, size);
+        if (h > maxH) maxH = h;
+        x += w + 1;
+        if (h > rowH) rowH = h;
+    }
+    // after the glyphs: glyphScale (48 / size) and the tallest glyph, scaled
+    ((float *)(dat + 256 * 80))[0] = scale;
+    ((float *)(dat + 256 * 80))[1] = maxH * scale;
+    DeleteObject(font);
+    DeleteDC(dc);
+    free(buf);
+    if (ok) {
+        sprintf(name, "fonts/fontImage_%d.dat", size);
+        ok = AddFile(zw, name, dat, sizeof(dat) - 0);
+    }
+    for (c = 0; ok && c < pages; c++) {
+        size_t len;
+        void *dds = FontPageDDS(alpha + c * FONT_TEX * FONT_TEX, &len);
+        sprintf(name, "fonts/fontImage_%d_%d.dds", c, size);
+        ok = AddFile(zw, name, dds, len);
+        free(dds);
+    }
+    free(alpha);
+    return ok;
+}
+
+static int BuildFontPack(const wchar_t *game)
+{
+    wchar_t out[MAX_PATH], tmp[MAX_PATH];
+    char utf8[MAX_PATH * 3];
+    mz_zip_archive zw;
+    int i, ok = 1;
+    Join(out, game, FONT_PACK);
+    _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
+    WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, utf8, 0)) return 0;
+    for (i = 0; ok && i < (int)(sizeof(g_fontSizes) / sizeof(g_fontSizes[0])); i++)
+        ok = BuildFontSize(&zw, g_fontSizes[i], g_fontPages[i]);
+    ok = ok && mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    if (!ok) { DeleteFileW(tmp); return 0; }
+    return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
+}
+
+// ---------------------------------------------------------------------------
+// No-shake pack: the game's shell shock settings (scripts/*.shock, after explosions and hits) with
+// the view shake (cg_shock_viewKickRadius) at 0: in VR the world wobbling around the head makes
+// people sick. The blur, the muffled sound and the rest stay.
+// ---------------------------------------------------------------------------
+static char *NoShake(const char *d, size_t n, size_t *outLen)
+{
+    static const char key[] = "cg_shock_viewKickRadius";
+    char *out = malloc(n + 64);
+    size_t i = 0, len = 0;
+    if (!out) return NULL;
+    while (i < n) {
+        size_t j = i;
+        while (j < n && d[j] != '\n') j++;
+        if (j < n) j++;
+        // a line that starts with the key (a commented one starts with //): its value becomes 0
+        if (j - i > sizeof(key) && !memcmp(d + i, key, sizeof(key) - 1)) {
+            const char *q = memchr(d + i, '"', j - i);
+            const char *q2 = q ? memchr(q + 1, '"', j - i - (q + 1 - (d + i))) : NULL;
+            if (q && q2) {
+                memcpy(out + len, d + i, q - (d + i) + 1); len += q - (d + i) + 1;
+                out[len++] = '0';
+                memcpy(out + len, q2, j - (q2 - d)); len += j - (q2 - d);
+                i = j;
+                continue;
+            }
+        }
+        memcpy(out + len, d + i, j - i); len += j - i;
+        i = j;
+    }
+    *outLen = len;
+    return out;
+}
+
+static int BuildShockPack(const wchar_t *game)
+{
+    wchar_t pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    char utf8[MAX_PATH * 3], names[16][64];
+    void *files[16] = { 0 };
+    size_t sizes[16];
+    int count = 0, cap = 0, i, e, numFiles = 0, ok = 1;
+    mz_zip_archive zw;
+
+    _snwprintf(pattern, MAX_PATH, L"%s\\main\\pak*.pk3", game);
+    h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!_wcsnicmp(fd.cFileName, L"pakz_vr", 7)) continue;
+        if (count == cap) { cap = cap ? cap * 2 : 32; paks = realloc(paks, cap * sizeof(*paks)); }
+        _snwprintf(paks[count++], MAX_PATH, L"%s", fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(paks, count, sizeof(*paks), CmpW);
+    for (i = 0; i < count; i++) {   // the last pak with each file wins
+        mz_zip_archive z;
+        memset(&z, 0, sizeof(z));
+        _snwprintf(path, MAX_PATH, L"%s\\main\\%s", game, paks[i]);
+        WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
+        if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
+        for (e = 0; e < (int)mz_zip_reader_get_num_files(&z); e++) {
+            char fn[260];
+            int k;
+            size_t len = 0, nl;
+            mz_zip_reader_get_filename(&z, e, fn, sizeof(fn));
+            nl = strlen(fn);
+            if (_strnicmp(fn, "scripts/", 8) || nl < 6 || _stricmp(fn + nl - 6, ".shock") || nl >= 64) continue;
+            for (k = 0; k < numFiles && _stricmp(names[k], fn); k++) ;
+            if (k == numFiles) { if (numFiles == 16) continue; strcpy(names[numFiles++], fn); }
+            free(files[k]);
+            files[k] = mz_zip_reader_extract_to_heap(&z, e, &len, 0);
+            sizes[k] = files[k] ? len : 0;
+        }
+        mz_zip_reader_end(&z);
+    }
+    free(paks);
+    if (!numFiles) return 0;
+
+    Join(out, game, SHOCK_PACK);
+    _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
+    WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, utf8, 0)) ok = 0;
+    for (i = 0; ok && i < numFiles; i++) {
+        size_t len;
+        char *changed;
+        if (!files[i]) continue;
+        changed = NoShake(files[i], sizes[i], &len);
+        ok = changed && mz_zip_writer_add_mem(&zw, names[i], changed, len, MZ_DEFAULT_COMPRESSION);
+        free(changed);
+    }
+    for (i = 0; i < numFiles; i++) free(files[i]);
+    if (ok) ok = mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    if (!ok) { DeleteFileW(tmp); return 0; }
+    return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
+}
+
+// ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
 // The desktop shortcut to the launcher.
@@ -617,6 +879,8 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
     Join(p, game, TEXT_PACK);              DeleteFileW(p);
     Join(p, game, GORE_PACK);              DeleteFileW(p);
+    Join(p, game, FONT_PACK);              DeleteFileW(p);
+    Join(p, game, SHOCK_PACK);             DeleteFileW(p);
     Join(p, game, LAUNCHER_EXE);           DeleteFileW(p);
     if (ShortcutPath(p)) DeleteFileW(p);
 }
@@ -641,9 +905,14 @@ static int Silent(const wchar_t *cmd)
     if (!HasGame(game)) return 2;
     if (wcsstr(cmd, L"/uninstall")) { Uninstall(game); return 0; }
     if (wcsstr(cmd, L"/gorepack")) return BuildGorePack(game) ? 0 : 1;   // only the gore pack
+    if (wcsstr(cmd, L"/textpack")) return BuildTextPack(game) ? 0 : 1;   // only the text pack
+    if (wcsstr(cmd, L"/fontpack")) return BuildFontPack(game) ? 0 : 1;   // only the font pack
+    if (wcsstr(cmd, L"/shockpack")) return BuildShockPack(game) ? 0 : 1;   // only the no-shake pack
     if (!Install(game, &keptIni)) return 1;
     BuildTextPack(game);
     BuildGorePack(game);
+    BuildFontPack(game);
+    BuildShockPack(game);
     if (wcsstr(cmd, L"/shortcut")) CreateShortcut(game);
     Join(pack, game, HANDS_PACK);
     if (wcsstr(cmd, L"/hands")) return BuildHandsPack(game, &models) ? 0 : 1;
@@ -701,6 +970,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 
     BuildTextPack(game);   // English game only; the mod works without it
     BuildGorePack(game);   // used only when MODS > Gore is set to Gore
+    BuildFontPack(game);   // used only when GRAPHICS > Text font is Modern
+    BuildShockPack(game);  // explosions without the view shake
     Join(pack, game, HANDS_PACK);
     r = Ask(MB_YESNO | MB_ICONQUESTION,
             T(L"Hide the player's hands and show only the gun?\n\n(The models are made from your own game files.)",

@@ -192,6 +192,8 @@ void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring);
 void XR_Haptic(int hand, float amplitude, int ms);   // 0 = left, 1 = right
 // crosshair styles: 1 cross, 2 dot, 3 circle, 4 circle + dot, 5 cross + dot
 enum { RETICLE_NONE, RETICLE_CROSS, RETICLE_DOT, RETICLE_CIRCLE, RETICLE_CIRCLE_DOT, RETICLE_CROSS_DOT, RETICLE_COUNT };
-void XR_RequestDump(const char *dir);   // diagnostics: save the left eye as rendered and as sent, once
+void XR_RequestDump(const char *dir);
+// a progress bar in the world (tracking space, Quake axes): centre, half-width and half-height vectors, 0..1
+void XR_SetProgress(const float center[3], const float right[3], const float up[3], float fraction);   // diagnostics: save the left eye as rendered and as sent, once
 void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4]);
 
