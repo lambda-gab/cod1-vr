@@ -151,6 +151,12 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.1
+
+- **Launcher:** corrigido: as outras abas não respondiam depois de abrir a aba VR.
+- **Sticks** agora diz o que faz: "Left: move, Right: turn" ou "Left: turn, Right: move", seja qual for a mão
+  da arma (substitui o "Swapped"). O padrão é o analógico esquerdo andando.
+
 ### v1.6.0
 
 - **Veículos** (carro, caminhão, Flak 88, tanque, o carro de Dawnville): a cabeça fica livre dentro deles, a visão

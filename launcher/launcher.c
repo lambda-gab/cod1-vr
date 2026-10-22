@@ -20,7 +20,7 @@
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.6.0"
+#define VERSION_TEXT L"v1.6.1"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -76,8 +76,8 @@ static option_t g_vrOpts[] = {
     { L"Vehicle vignette", L"Narrows the view while a vehicle carries you (truck, car, plane) and turns or speeds up.",
       "Comfort", 4, { L"Off", L"Low", L"Medium", L"High" },
       { "VehicleVignette=0", "VehicleVignette=0.35", "VehicleVignette=0.6", "VehicleVignette=0.9" }, 2 },
-    { L"Sticks", L"Swapped: move with the gun hand's stick, turn with the other (some left-handers prefer it).",
-      "Controllers", 2, { L"Default", L"Swapped" }, { "SwapSticks=0", "SwapSticks=1" }, 0 },
+    { L"Sticks", L"Which stick moves you and which one turns you, whichever hand holds the gun.",
+      "Controllers", 2, { L"Left: move, Right: turn", L"Left: turn, Right: move" }, { "MoveStick=0", "MoveStick=1" }, 0 },
     { L"Turning", L"Right stick: turn in steps (gentler) or smoothly.",
       "Controllers", 4, { L"Snap 30\x00b0", L"Snap 45\x00b0", L"Snap 90\x00b0", L"Smooth" },
       { "SnapTurn=30", "SnapTurn=45", "SnapTurn=90", "SnapTurn=0" }, 1 },
@@ -395,7 +395,7 @@ enum { PAGE_HOME, PAGE_CONTROLS, PAGE_GRAPHICS, PAGE_VR, PAGE_MODS, PAGE_ABOUT }
 enum { HIT_NONE, HIT_PLAY, HIT_NAV, HIT_PREV, HIT_NEXT, HIT_ROW, HIT_LINK };
 
 typedef struct { RECT r; int type, arg; } hit_t;
-static hit_t   g_hits[64];
+static hit_t   g_hits[256];   // a page of options has up to 3 areas each (row, left arrow, right arrow)
 static int     g_numHits, g_hover = -1, g_page = PAGE_HOME;
 static HBITMAP g_banner;
 static int     g_bannerW, g_bannerH;

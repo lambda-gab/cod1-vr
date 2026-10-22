@@ -152,6 +152,12 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.1
+
+- **Launcher:** fixed the other tabs not responding after opening the VR tab.
+- **Sticks** now says what it does: "Left: move, Right: turn" or "Left: turn, Right: move", whichever hand holds
+  the gun (it replaces "Swapped"). The default is the left stick moving.
+
 ### v1.6.0
 
 - **Vehicles** (car, truck, Flak 88, tank, the Dawnville car): your head is free inside them, the view follows the

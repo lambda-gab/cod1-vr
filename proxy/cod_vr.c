@@ -138,7 +138,8 @@ static struct {
     float crosshairSize;    // degrees across
     int   rightEyeFirst;    // diagnostics: render the right eye's scene before the left one
     int   dumpEyes;         // diagnostics: save the left eye (rendered and sent) 15 s into a level
-    int   swapSticks;       // 1 = moving on the gun hand's stick, turning on the other (left-handers' choice)
+    int   swapSticks;       // older setting: 1 = moving on the gun hand's stick, turning on the other
+    int   moveStick;        // 0 = the left stick moves and the right one turns, 1 = the other way round, -1 = by hand (swapSticks)
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -2844,6 +2845,7 @@ static void ProcessControllers(void)
         g_realSync = 1;
     } else {
         int ts = cfg.swapSticks ? off : dom, ms = cfg.swapSticks ? dom : off;   // turning and moving sticks
+        if (cfg.moveStick >= 0) { ms = cfg.moveStick ? 1 : 0; ts = 1 - ms; }
         float sx = g_in.stick[ts][0], sy = g_in.stick[ts][1];
         float mx = g_in.stick[ms][0], my = g_in.stick[ms][1];
         float turnRate = 0;
@@ -4571,6 +4573,7 @@ static void LoadConfig(void)
     cfg.controllers     = CfgInt("Controllers", "Enabled", cfg.controllers, ini);
     cfg.rightHanded     = CfgInt("Controllers", "RightHanded", cfg.rightHanded, ini);
     cfg.swapSticks      = CfgInt("Controllers", "SwapSticks", 0, ini);
+    cfg.moveStick       = CfgInt("Controllers", "MoveStick", -1, ini);
     cfg.snapTurn        = IniFloat("Controllers", "SnapTurn", cfg.snapTurn, ini);
     cfg.turnSpeed       = IniFloat("Controllers", "SmoothTurnSpeed", cfg.turnSpeed, ini);
     cfg.converge        = IniFloat("Controllers", "ConvergeDistance", cfg.converge, ini);
