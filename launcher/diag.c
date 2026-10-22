@@ -4,6 +4,8 @@
 // only a 32-bit OpenXR runtime counts), and adds the registry, the game's files, its settings and
 // its log.
 #define _CRT_SECURE_NO_WARNINGS
+#undef UNICODE   // the launcher builds with them: this file uses the ANSI APIs
+#undef _UNICODE
 #include <windows.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
@@ -209,6 +211,94 @@ static int DescribeRuntime(const char *json)
 }
 
 static int g_has32, g_ok32;
+static int g_steam64, g_steam32;       // SteamVR's OpenXR runtime registered for 64-bit / 32-bit programs
+static char g_active32[MAX_PATH];     // the active runtime for 32-bit programs
+static int g_steamRunning;            // SteamVR's server is running
+
+// ---------------------------------------------------------------------------
+// OpenXR API layers: programs registered for every OpenXR game (implicit) or asked for by name (explicit)
+// ---------------------------------------------------------------------------
+static const char *JsonString(const char *text, const char *key, char *out, int n)
+{
+    char pat[64];
+    const char *p;
+    int j = 0;
+    _snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (!(p = strstr(text, pat)) || !(p = strchr(p + strlen(pat), ':')) || !(p = strchr(p, '"'))) { out[0] = 0; return NULL; }
+    for (p++; *p && *p != '"' && j < n - 1; p++) {
+        if (*p == '\\' && (p[1] == '\\' || p[1] == '/')) p++;
+        out[j++] = *p;
+    }
+    out[j] = 0;
+    return out;
+}
+
+// Calls fn(manifest path, text, "Implicit" or "Explicit") for every layer registered for 32-bit programs.
+typedef void (*LayerFn)(const char *path, const char *text, const char *kind);
+static void EachLayer(LayerFn fn)
+{
+    static const HKEY roots[2] = { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER };
+    static const char *kinds[2] = { "Implicit", "Explicit" };
+    int r, kd;
+    for (r = 0; r < 2; r++)
+        for (kd = 0; kd < 2; kd++) {
+            char key[128];
+            HKEY k;
+            DWORD i;
+            _snprintf(key, sizeof(key), "SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\%s", kinds[kd]);
+            if (RegOpenKeyExA(roots[r], key, 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) continue;
+            for (i = 0; ; i++) {
+                char path[MAX_PATH], text[16384];
+                DWORD len = sizeof(path);
+                size_t got = 0;
+                FILE *f;
+                if (RegEnumValueA(k, i, path, &len, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+                f = fopen(path, "rb");
+                if (f) { got = fread(text, 1, sizeof(text) - 1, f); fclose(f); }
+                text[got] = 0;
+                fn(path, f ? text : NULL, kinds[kd]);
+            }
+            RegCloseKey(k);
+        }
+}
+
+static int g_layersOff;
+static void LayerOff(const char *path, const char *text, const char *kind)
+{
+    char name[128];
+    (void)path;
+    if (!text || strcmp(kind, "Implicit")) return;
+    if (JsonString(text, "disable_environment", name, sizeof(name)) && name[0] && SetEnvironmentVariableA(name, "1")) g_layersOff++;
+}
+
+static void LayerList(const char *path, const char *text, const char *kind)
+{
+    char name[128], lib[MAX_PATH], full[MAX_PATH], dir[MAX_PATH], *s;
+    int m;
+    P("  %s layer: %s", kind, path);
+    if (!text) { P("    manifest cannot be opened"); Find("An OpenXR API layer is registered (%s) but its manifest file is missing.", path); return; }
+    JsonString(text, "name", name, sizeof(name));
+    JsonString(text, "library_path", lib, sizeof(lib));
+    if (!lib[0]) { P("    %s: no library_path", name); return; }
+    if (lib[1] == ':') _snprintf(full, sizeof(full), "%s", lib);
+    else {
+        _snprintf(dir, sizeof(dir), "%s", path);
+        if ((s = strrchr(dir, '\\')) != NULL) *s = 0;
+        _snprintf(full, sizeof(full), "%s\\%s", dir, lib);
+    }
+    m = PeMachine(full);
+    P("    %s: library %s%s", name, full, !FileExists(full) ? " is MISSING" : "");
+    if (FileExists(full)) P("    library is %s", MachineName(m));
+    if (!strcmp(kind, "Implicit") && (!FileExists(full) || m != 0x14c))
+        Find("The OpenXR %s API layer '%s' points to a library that is %s: it can stop OpenXR from starting in 32-bit games.", kind, name,
+             FileExists(full) ? "not 32-bit" : "missing");
+}
+
+static void ApiLayers(void)
+{
+    P("API layers registered for 32-bit programs (the OpenXR loader loads the implicit ones into every program):");
+    EachLayer(LayerList);
+}
 
 static void OpenXRRegistry(void)
 {
@@ -226,7 +316,7 @@ static void OpenXRRegistry(void)
             int ok;
             P("  ActiveRuntime = %s", active);
             ok = DescribeRuntime(active);
-            if (v == 1) { g_has32 = 1; g_ok32 = ok; }
+            if (v == 1) { g_has32 = 1; g_ok32 = ok; _snprintf(g_active32, sizeof(g_active32), "%s", active); }
         } else {
             P("  no ActiveRuntime");
         }
@@ -237,6 +327,13 @@ static void OpenXRRegistry(void)
                 n = sizeof(name);
                 if (RegEnumValueA(k, i, name, &n, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
                 P("  available: %s", name);
+                {
+                    char low[MAX_PATH];
+                    int q;
+                    for (q = 0; name[q] && q < MAX_PATH - 1; q++) low[q] = (char)tolower((unsigned char)name[q]);
+                    low[q] = 0;
+                    if (strstr(low, "steamxr")) { if (v == 1) g_steam32 = 1; else g_steam64 = 1; }
+                }
             }
             RegCloseKey(k);
         }
@@ -246,6 +343,7 @@ static void OpenXRRegistry(void)
         DescribeRuntime(env);
     }
     if (GetEnvironmentVariableA("XR_API_LAYER_PATH", env, sizeof(env))) P("Environment variable XR_API_LAYER_PATH = %s", env);
+    ApiLayers();
     P("");
 }
 
@@ -344,8 +442,19 @@ static void OpenXRProbe(const char *gameDir)
         r = create(&ci, &inst);
         P("xrCreateInstance: %s (%d)", XrName(r), (int)r);
         if (XR_FAILED(r)) {
-            Find("xrCreateInstance failed: %s (%d). The OpenXR runtime could not start: is it the active one, and is its 32-bit side installed?", XrName(r), (int)r);
-            inst = XR_NULL_HANDLE;
+            XrResult first = r;
+            g_layersOff = 0;
+            EachLayer(LayerOff);   // the implicit API layers are the usual suspects: try again without them
+            if (g_layersOff > 0) {
+                r = create(&ci, &inst);
+                P("xrCreateInstance again, with %d implicit API layer(s) turned off: %s (%d)", g_layersOff, XrName(r), (int)r);
+            }
+            if (XR_FAILED(r)) {
+                Find("xrCreateInstance failed: %s (%d). The OpenXR runtime could not start: is it the active one, and is its 32-bit side installed?", XrName(first), (int)first);
+                inst = XR_NULL_HANDLE;
+            } else {
+                Find("OpenXR could not start (%s) until the implicit API layers were turned off, so one of them is breaking it (see the API layers above). The mod turns them off for the game from v1.6.2.", XrName(first));
+            }
         }
     }
     if (inst) {
@@ -422,7 +531,7 @@ static void Processes(void)
         for (i = 0; pe.szExeFile[i] && i < MAX_PATH - 1; i++) low[i] = (char)tolower((unsigned char)pe.szExeFile[i]);
         low[i] = 0;
         for (i = 0; i < (int)(sizeof(words) / sizeof(words[0])); i++)
-            if (strstr(low, words[i]) && !strstr(low, "webhelper")) { P("  %s", pe.szExeFile); any = 1; break; }
+            if (strstr(low, words[i]) && !strstr(low, "webhelper")) { P("  %s", pe.szExeFile); any = 1; if (!strcmp(low, "vrserver.exe")) g_steamRunning = 1; break; }
     } while (Process32Next(s, &pe));
     CloseHandle(s);
     if (!any) P("  none: no headset software is running");
@@ -481,7 +590,7 @@ static void GameLog(const char *dir)
 int WriteDiagnostics(const char *gameDir, const wchar_t *version, char *outPath, int outLen)
 {
     char desktop[MAX_PATH] = "";
-    FILE *out, *body;
+    FILE *out, *body, *logPart = NULL;
     SYSTEMTIME st;
     int i;
     char buf[4096];
@@ -498,14 +607,38 @@ int WriteDiagnostics(const char *gameDir, const wchar_t *version, char *outPath,
     g_nFind = 0;
     g_has32 = g_ok32 = 0;
 
+    {
+        // the game's log is read first: running the OpenXR runtime below could load the mod's DLL into this program
+        char tmp2[MAX_PATH];
+        GetTempPathA(sizeof(tmp2), tmp2);
+        strcat(tmp2, "cod_vr_diag_log.tmp");
+        logPart = fopen(tmp2, "w+bD");
+        if (logPart) { g_f = logPart; GameLog(gameDir); g_f = body; }
+    }
     SystemInfo();
     OpenXRRegistry();
     if (!g_has32) Find("No 32-bit OpenXR runtime is registered in Windows. The game is a 32-bit program and can only use a runtime registered for 32-bit programs.");
     else if (!g_ok32) Find("The active 32-bit OpenXR runtime points to a file that is missing or is not 32-bit.");
     OpenXRProbe(gameDir);
     Processes();
+    {
+        // SteamVR: its 32-bit OpenXR runtime only comes with the SteamVR beta, and the game must be told to use it
+        char low[MAX_PATH];
+        int q;
+        for (q = 0; g_active32[q] && q < MAX_PATH - 1; q++) low[q] = (char)tolower((unsigned char)g_active32[q]);
+        low[q] = 0;
+        if (g_steam64 && !g_steam32)
+            Find("SteamVR is installed, but only its 64-bit OpenXR runtime is registered. This game is 32-bit: it needs SteamVR's 32-bit OpenXR runtime, which comes with the SteamVR beta (Steam > SteamVR > Properties > Betas).");
+        if (g_steamRunning && g_has32 && !strstr(low, "steamxr"))
+            Find("SteamVR is running, but the active OpenXR runtime for 32-bit programs is %s, not SteamVR's: the game talks to that one. Set SteamVR as the OpenXR runtime (SteamVR settings > OpenXR) after installing the SteamVR beta.", g_active32);
+    }
     GameFiles(gameDir);
-    GameLog(gameDir);
+    if (logPart) {
+        fflush(logPart);
+        fseek(logPart, 0, SEEK_SET);
+        while ((n = fread(buf, 1, sizeof(buf), logPart)) > 0) fwrite(buf, 1, n, body);
+        fclose(logPart);
+    }
 
     if (SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop) != S_OK || !desktop[0]) strcpy(desktop, gameDir);
     _snprintf(outPath, outLen, "%s\\CoD-VR-diagnostic.txt", desktop);

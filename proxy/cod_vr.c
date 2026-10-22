@@ -4835,12 +4835,23 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 
     GetModuleFileNameA(NULL, g_dir, sizeof(g_dir));
     if ((slash = strrchr(g_dir, '\\')) != NULL) *slash = 0;
-    _snprintf(logPath, sizeof(logPath), "%s\\cod_vr.log", g_dir);
-    g_log = fopen(logPath, "w");
-    if (!g_log) {
-        GetTempPathA(sizeof(logPath), logPath);
-        strcat(logPath, "cod_vr.log");
-        g_log = fopen(logPath, "w");
+    {
+        // The launcher's diagnostic loads the headset runtime, which loads opengl32: this DLL, next to the
+        // launcher. Only the game writes cod_vr.log: the launcher must not wipe the game's last log.
+        char name[MAX_PATH];
+        const char *base;
+        GetModuleFileNameA(NULL, name, sizeof(name));
+        base = strrchr(name, '\\');
+        base = base ? base + 1 : name;
+        if (_stricmp(base, "CoD-VR-Launcher.exe")) {
+            _snprintf(logPath, sizeof(logPath), "%s\\cod_vr.log", g_dir);
+            g_log = fopen(logPath, "w");
+            if (!g_log) {
+                GetTempPathA(sizeof(logPath), logPath);
+                strcat(logPath, "cod_vr.log");
+                g_log = fopen(logPath, "w");
+            }
+        }
     }
 
     LoadConfig();

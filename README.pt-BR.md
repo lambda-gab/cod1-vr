@@ -151,6 +151,16 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.2
+
+- **O VR não iniciava para alguns jogadores** (o jogo abria como duas imagens planas lado a lado): outros programas
+  registram "API layers" do OpenXR (overlays e auxiliares de outros jogos de VR) que são carregadas em todo programa
+  OpenXR, e uma com arquivo ausente ou errado impedia o OpenXR de iniciar (`XR_ERROR_FILE_ACCESS_ERROR`). O mod agora
+  desliga essas layers para o jogo e tenta de novo.
+- **Relatório de diagnóstico** (launcher > ABOUT): lista as API layers e testa a mesma correção, não apaga mais o
+  último log do jogo, lista corretamente os programas de VR em execução e avisa quando a SteamVR não tem o runtime
+  OpenXR de 32 bits (vem com o beta da SteamVR) ou não é a que o jogo usa.
+
 ### v1.6.1
 
 - **Launcher:** corrigido: as outras abas não respondiam depois de abrir a aba VR.

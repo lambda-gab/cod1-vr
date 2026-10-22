@@ -152,6 +152,16 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.2
+
+- **VR did not start for some players** (the game opened as two flat images side by side): other programs register
+  OpenXR "API layers" (overlays and helpers of other VR games) that are loaded into every OpenXR program, and one
+  with a missing or wrong file stopped OpenXR from starting (`XR_ERROR_FILE_ACCESS_ERROR`). The mod now turns those
+  layers off for the game and tries again.
+- **Diagnostic report** (launcher > ABOUT): lists the API layers and tries the same fix, no longer wipes the game's
+  last log, lists the VR programs running correctly, and says when SteamVR has no 32-bit OpenXR runtime (it comes
+  with the SteamVR beta) or is not the one the game uses.
+
 ### v1.6.1
 
 - **Launcher:** fixed the other tabs not responding after opening the VR tab.

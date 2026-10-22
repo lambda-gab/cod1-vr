@@ -99,6 +99,45 @@ static int LoadLoader(void)
     return xrCreateInstance_ != NULL;
 }
 
+// Implicit API layers (other programs' overlays and helpers, registered for every OpenXR program) are loaded
+// into this one too. One whose files are missing, or are not 32-bit, makes xrCreateInstance fail with
+// XR_ERROR_FILE_ACCESS_ERROR. Each layer's manifest names an environment variable that turns it off for a
+// process: this sets them all, for a second try. Returns how many were turned off.
+static int DisableImplicitLayers(void)
+{
+    static const HKEY roots[2] = { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER };
+    int r, n = 0;
+    for (r = 0; r < 2; r++) {
+        HKEY k;
+        DWORD i;
+        if (RegOpenKeyExA(roots[r], "SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit", 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) continue;
+        for (i = 0; ; i++) {
+            char path[MAX_PATH], text[16384], *p;
+            DWORD len = sizeof(path);
+            size_t got;
+            FILE *f;
+            if (RegEnumValueA(k, i, path, &len, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+            f = fopen(path, "rb");
+            if (!f) continue;
+            got = fread(text, 1, sizeof(text) - 1, f);
+            fclose(f);
+            text[got] = 0;
+            if ((p = strstr(text, "\"disable_environment\"")) && (p = strchr(p + 21, ':')) && (p = strchr(p, '"'))) {
+                char name[128];
+                int j = 0;
+                for (p++; *p && *p != '"' && j < 127; p++) name[j++] = *p;
+                name[j] = 0;
+                if (name[0] && SetEnvironmentVariableA(name, "1")) {
+                    n++;
+                    Log("OpenXR: API layer %s turned off (%s)", path, name);
+                }
+            }
+        }
+        RegCloseKey(k);
+    }
+    return n;
+}
+
 static int CreateInstance(void)
 {
     const char *ext[] = { XR_KHR_OPENGL_ENABLE_EXTENSION_NAME };
@@ -110,7 +149,16 @@ static int CreateInstance(void)
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
     ci.enabledExtensionCount = 1;
     ci.enabledExtensionNames = ext;
-    CHECK(xrCreateInstance_(&ci, &xr.instance));
+    {
+        XrResult r = xrCreateInstance_(&ci, &xr.instance);
+        if (XR_FAILED(r)) {
+            Log("OpenXR: xrCreateInstance failed: %s", ResultStr(r));
+            if (!DisableImplicitLayers()) return 0;
+            r = xrCreateInstance_(&ci, &xr.instance);
+            if (XR_FAILED(r)) { Log("OpenXR: xrCreateInstance failed again, without the implicit API layers: %s", ResultStr(r)); return 0; }
+            Log("OpenXR: the instance was created without the implicit API layers");
+        }
+    }
 
 #define X(name) xrGetInstanceProcAddr(xr.instance, #name, (PFN_xrVoidFunction *)&name);
     XR_FUNCS(X)
