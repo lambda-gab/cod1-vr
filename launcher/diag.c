@@ -211,6 +211,7 @@ static int DescribeRuntime(const char *json)
 }
 
 static int g_has32, g_ok32;
+static int g_avail32;                 // runtimes registered as available for 32-bit programs
 static int g_steam64, g_steam32;       // SteamVR's OpenXR runtime registered for 64-bit / 32-bit programs
 static char g_active32[MAX_PATH];     // the active runtime for 32-bit programs
 static int g_steamRunning;            // SteamVR's server is running
@@ -333,6 +334,7 @@ static void OpenXRRegistry(void)
                     for (q = 0; name[q] && q < MAX_PATH - 1; q++) low[q] = (char)tolower((unsigned char)name[q]);
                     low[q] = 0;
                     if (strstr(low, "steamxr")) { if (v == 1) g_steam32 = 1; else g_steam64 = 1; }
+                    if (v == 1) g_avail32++;
                 }
             }
             RegCloseKey(k);
@@ -617,7 +619,9 @@ int WriteDiagnostics(const char *gameDir, const wchar_t *version, char *outPath,
     }
     SystemInfo();
     OpenXRRegistry();
-    if (!g_has32) Find("No 32-bit OpenXR runtime is registered in Windows. The game is a 32-bit program and can only use a runtime registered for 32-bit programs.");
+    if (!g_has32 && g_avail32 > 0)
+        Find("No OpenXR runtime is set as the ACTIVE one for 32-bit programs, although %d are installed (listed below). Choose one: SteamVR > Settings > Developer > \"Set SteamVR as OpenXR runtime\" (SteamVR beta), or the Meta/Oculus app > Settings > General > \"Set Oculus as active OpenXR runtime\", or the Virtual Desktop streamer settings. Then start the game again.", g_avail32);
+    else if (!g_has32) Find("No 32-bit OpenXR runtime is registered in Windows. The game is a 32-bit program and can only use a runtime registered for 32-bit programs.");
     else if (!g_ok32) Find("The active 32-bit OpenXR runtime points to a file that is missing or is not 32-bit.");
     OpenXRProbe(gameDir);
     Processes();

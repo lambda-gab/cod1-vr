@@ -157,6 +157,13 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.3
+
+- **VR did not start when Windows has no active OpenXR runtime** (SteamVR, Meta or other VR software installed, but none
+  chosen as the active one): the game could not find the headset. The mod now picks the runtime of the VR software
+  that is running (SteamVR, then Virtual Desktop, then Meta/Oculus), or the only one installed.
+- **Diagnostic report:** says clearly when no runtime is set as the active one and how to choose one.
+
 ### v1.6.2
 
 - **VR did not start for some players** (the game opened as two flat images side by side): other programs register

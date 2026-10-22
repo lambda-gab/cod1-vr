@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
+#include <tlhelp32.h>
 
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_OPENGL
@@ -138,12 +140,75 @@ static int DisableImplicitLayers(void)
     return n;
 }
 
+static int ProcessRunning(const char *exe)
+{
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32 pe;
+    int found = 0;
+    if (s == INVALID_HANDLE_VALUE) return 0;
+    pe.dwSize = sizeof(pe);
+    if (Process32First(s, &pe)) do {
+        if (!_stricmp(pe.szExeFile, exe)) { found = 1; break; }
+    } while (Process32Next(s, &pe));
+    CloseHandle(s);
+    return found;
+}
+
+// Installed VR software is meant to set one OpenXR runtime as the active one, but some PCs have none
+// (SteamVR, Meta and others installed, none chosen): the loader then fails with XR_ERROR_RUNTIME_UNAVAILABLE
+// and the game stays flat. With no active runtime for 32-bit programs, the one of the VR software that is
+// running is taken (XR_RUNTIME_JSON is the loader's own override), or the only one there is.
+static void ChooseRuntime(void)
+{
+    static const struct { const char *tag, *server; } known[] = {
+        { "steamxr", "vrserver.exe" }, { "virtualdesktop", "VirtualDesktop.Streamer.exe" }, { "oculus", "OVRServer_x64.exe" },
+    };
+    char env[MAX_PATH], active[MAX_PATH] = "", best[MAX_PATH] = "", only[MAX_PATH] = "", paths[8][MAX_PATH];
+    HKEY k;
+    DWORD i, len, n = 0;
+    if (GetEnvironmentVariableA("XR_RUNTIME_JSON", env, sizeof(env))) { Log("OpenXR: XR_RUNTIME_JSON is %s", env); return; }
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1", 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) return;
+    len = sizeof(active) - 1;
+    if (RegQueryValueExA(k, "ActiveRuntime", NULL, NULL, (BYTE *)active, &len) != ERROR_SUCCESS) active[0] = 0;
+    RegCloseKey(k);
+    Log("OpenXR: the active runtime for 32-bit programs is %s", active[0] ? active : "not set");
+    if (active[0] && GetFileAttributesA(active) != INVALID_FILE_ATTRIBUTES) return;   // one is set
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1\\AvailableRuntimes", 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) return;
+    for (i = 0; i < 8; i++) {
+        len = sizeof(paths[n]);
+        if (RegEnumValueA(k, i, paths[n], &len, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        if (GetFileAttributesA(paths[n]) == INVALID_FILE_ATTRIBUTES) continue;
+        strcpy(only, paths[n]);
+        n++;
+    }
+    RegCloseKey(k);
+    {
+        // by priority, not registry order: SteamVR is only running when it was started on purpose, the
+        // Meta/Oculus service runs in the background of many PCs that use something else
+        int c, a;
+        for (c = 0; c < (int)(sizeof(known) / sizeof(known[0])) && !best[0]; c++)
+            for (a = 0; a < (int)n && !best[0]; a++) {
+                char low[MAX_PATH];
+                int j;
+                for (j = 0; paths[a][j] && j < MAX_PATH - 1; j++) low[j] = (char)tolower((unsigned char)paths[a][j]);
+                low[j] = 0;
+                if (strstr(low, known[c].tag) && ProcessRunning(known[c].server)) strcpy(best, paths[a]);
+            }
+    }
+    if (!best[0] && n == 1) strcpy(best, only);
+    if (best[0] && SetEnvironmentVariableA("XR_RUNTIME_JSON", best))
+        Log("OpenXR: no active runtime for 32-bit programs: using %s", best);
+    else
+        Log("OpenXR: no active runtime for 32-bit programs, and none of the %lu installed ones is running", (unsigned long)n);
+}
+
 static int CreateInstance(void)
 {
     const char *ext[] = { XR_KHR_OPENGL_ENABLE_EXTENSION_NAME };
     XrInstanceCreateInfo ci = { XR_TYPE_INSTANCE_CREATE_INFO };
     XrInstanceProperties ip = { XR_TYPE_INSTANCE_PROPERTIES };
 
+    ChooseRuntime();
     strcpy(ci.applicationInfo.applicationName, "Call of Duty VR");
     strcpy(ci.applicationInfo.engineName, "cod_vr");
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;

@@ -156,6 +156,13 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.3
+
+- **O VR não iniciava quando o Windows não tem um runtime OpenXR ativo** (SteamVR, Meta ou outro software de VR
+  instalado, mas nenhum escolhido como ativo): o jogo não achava o headset. O mod agora escolhe o runtime do software
+  de VR que está rodando (SteamVR, depois Virtual Desktop, depois Meta/Oculus), ou o único instalado.
+- **Relatório de diagnóstico:** avisa claramente quando nenhum runtime está definido como ativo e como escolher um.
+
 ### v1.6.2
 
 - **O VR não iniciava para alguns jogadores** (o jogo abria como duas imagens planas lado a lado): outros programas
