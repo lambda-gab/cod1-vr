@@ -20,7 +20,7 @@
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.6.5"
+#define VERSION_TEXT L"v1.6.6"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -97,6 +97,9 @@ static option_t g_vrOpts[] = {
       "HUD", 2, { L"Fixed", L"Follow head" }, { "MenuFollowsHead=0", "MenuFollowsHead=1" }, 0 },
     { L"HUD", NULL, "HUD", 5, { L"Full", L"Immersive (none)", L"Subtitles only", L"Compass only", L"Health and ammo" },
       { "HudMode=0", "HudMode=1", "HudMode=2", "HudMode=3", "HudMode=4" }, 0, 0, 0, 0, g_hudHints },
+    { L"Subtitle size", L"How big the subtitles are. Small is the game's own size; Extra Large is for reading from far away. The exact size is SubtitleSize in cod_vr.ini ([HUD], 1 = the game's size).",
+      "HUD", 4, { L"Small", L"Medium", L"Large", L"Extra Large" },
+      { "SubtitleSize=1", "SubtitleSize=1.5", "SubtitleSize=2.2", "SubtitleSize=3" }, 0 },
     // right column
     { L"Grenade line", L"A line that shows where a grenade will fly and land.",
       "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
@@ -126,7 +129,7 @@ static option_t g_vrOpts[] = {
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
       { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
 };
-#define VR_COL2 11
+#define VR_COL2 12
 
 static option_t g_gfxOpts[] = {
     { L"Headset resolution", L"Sharpness in the headset, per eye. Lower it if the game stutters; above Ultra needs a strong GPU.",

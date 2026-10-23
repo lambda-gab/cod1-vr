@@ -176,6 +176,7 @@
 #define GCL_OFS_ammo                0xf4        // int[]: reserve ammunition, by weaponDef ammoIndex
 #define GCL_OFS_ammoclip            0x1f4       // int[]: rounds in the clip, by weaponDef clipIndex
 #define GENT_OFS_client             0x104       // gclient_t*
+#define GENT_OFS_contents           0xc4        // int r.contents (turrets: 0x200004 from their spawn code)
 #define GENT_OFS_posBase            0x20        // s.pos.trBase (s.pos at +0x14: trType, trTime, trDuration, base, delta)
 #define GENT_OFS_posDelta           0x2c        // s.pos.trDelta
 #define GENT_OFS_currentOrigin      0xe0        // r.currentOrigin

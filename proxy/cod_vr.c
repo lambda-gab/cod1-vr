@@ -142,6 +142,10 @@ static struct {
     int   dumpEyes;         // diagnostics: save the left eye (rendered and sent) 15 s into a level
     int   swapSticks;       // older setting: 1 = moving on the gun hand's stick, turning on the other
     int   moveStick;        // 0 = the left stick moves and the right one turns, 1 = the other way round, -1 = by hand (swapSticks)
+    int   headCollision;    // 1 = the camera stops a little before walls when the head leans or walks into them
+    float subtitleSize;     // HUD: how big the subtitles are drawn, 1 = the game's size
+    float turretOffset[3];  // Turret: where the player stands relative to a mounted MG42, in cm along the gun (X forward, Y left, Z up)
+    int   turretNoCollision;// Turret: the gun is not solid for the player while mounted (it pushed the player when aimed down)
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -212,6 +216,7 @@ static int       g_singlePass;            // headset frame: one cgame pass, both
 static int       g_hudCleared;            // the HUD buffer was cleared this frame
 static int       g_nearLogFrames, g_nearLogLines;   // diagnostics budget
 static float     g_lastViewOrg[3], g_lastViewAxis[3][3];
+static float     g_rawViewOrg[3];      // the game's view origin before FilterShake: what its view-weapon entities are placed from
 // full-screen 2D effects (damage tint, fades, flashes) are drawn into both eyes instead of the HUD
 #define MAX_FULLSCREEN 16
 static struct { float rect[8]; int shader; float color[4]; int hasColor; } g_fs[MAX_FULLSCREEN];
@@ -243,6 +248,8 @@ static int       g_onTurret, g_nearTurret, g_turretGrab, g_turretTarget, g_turre
 static float     g_turretPivot[3], g_turretRestPitch;   // tracking space, fixed while on it
 static float     g_turretPivotWorld[3], g_turretYaw;    // the gun's pivot in the world, where it faces
 static DWORD     g_turretOnAt;                           // when the player got on
+static float     g_turretOrgBase[3];  // the eyes' place as the game put them, before the Turret offsets
+static int       g_turretEnt, g_turretContentsOrig, g_turretContentsZeroed;   // the mounted gun's collision (see UpdateTurret)
 static int       g_turretViaGrips;                       // our own start put him on (not the game's use)
 static int       g_turretPivotOk, g_turretRestSet;
 static float     g_turretBody;        // the body's yaw while on a turret: where it was when getting on
@@ -292,6 +299,7 @@ static float     g_lastSmoothing;      // filter time constant used last frame
 static int       g_scopeActive;        // this frame the zoomed view is drawn into the HUD buffer
 static int       g_lastHudWorld = 1;   // last frame showed the world (HUD size) or a menu (menu size)
 static int       g_menuQuadValid;      // menus / loading screens: the screen stays where it appeared
+static float     g_menuRefZ;           // the head height it was placed at
 static vr_pose_t g_menuQuad;
 static int       g_objOnHand;          // the objectives screen is held up above the left hand
 static int       g_pointerOn;          // empty hands: the right hand aims, a line shows where
@@ -1753,8 +1761,10 @@ static void DropHeldWeapon(int h)
         }
     }
     Log("realistic: weapon %d dropped (item %p)", weapon, item);
-    // the game still has the dropped weapon selected: change to one it has (hidden, empty hands)
-    for (i = 1; i <= 3; i++)
+    // the game still has the dropped weapon selected: change to one it has (hidden, empty hands); with the
+    // dropped one still selected the game does not take the same weapon up from the floor. Grenades count
+    // too: someone who only had a rifle and a grenade could not pick it up again.
+    for (i = 1; i <= 5; i++)
         if (SlotWeapon(cl, i)) { WeaponSlotCmd(i); break; }
 }
 
@@ -1938,6 +1948,7 @@ static void Recenter(void)
 {
     if (g_inVehicle) g_vehicleRecenter = 1;
     g_heightRef = g_head.pos[2];
+    g_menuQuadValid = 0;   // a menu on screen comes back in front of the head
     g_anchorInit = 0;
     g_crouchCorr = 0;
     Log("recentered: head height %.2f", g_heightRef);
@@ -2381,6 +2392,7 @@ static void PlaceMenuQuad(void)
     for (i = 0; i < 3; i++) pos[i] = g_head.pos[i] + f[i] * hl->distance;
     pos[2] += hl->offsetY;
     ScreenPose(&g_menuQuad, pos, f);
+    g_menuRefZ = g_head.pos[2];
     g_menuQuadValid = 1;
 }
 
@@ -2679,9 +2691,64 @@ static int TurretPivot(int idx, float out[3])
 }
 
 // Once per frame: on a turret, next to a free one, or neither.
+static int CfgInt(const char *sec, const char *key, int def, const char *ini);
+static float IniFloat(const char *sec, const char *key, float def, const char *ini);
+
+// [Turret] OffsetX / OffsetY / OffsetZ (cm) and NoCollision are read again every second, so they can be
+// tuned while playing (settings.ini, else cod_vr.ini).
+static void ReloadTurretTuning(void)
+{
+    static DWORD last;
+    char ini[MAX_PATH];
+    if (last && GetTickCount() - last < 1000) return;
+    last = GetTickCount();
+    _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+    cfg.turretOffset[0] = IniFloat("Turret", "OffsetX", 0.0f, ini);
+    cfg.turretOffset[1] = IniFloat("Turret", "OffsetY", 0.0f, ini);
+    cfg.turretOffset[2] = IniFloat("Turret", "OffsetZ", 0.0f, ini);
+    cfg.turretNoCollision = CfgInt("Turret", "NoCollision", 1, ini);
+}
+
+// The mounted gun's own collision pushed the player (in the game it is a box of its own, 0 to 56 units
+// above its origin, which the player's box overlaps when standing right behind it). While mounted the
+// box is made empty (r.contents 0) and put back when the player gets off. Only the gun is touched, not
+// the player or the world, and only when the field holds the value the game's spawn code gives it.
+#define TURRET_CONTENTS 0x200004
+static void TurretCollision(int mounted, int ent)
+{
+    BYTE *gm = (BYTE *)GetModuleHandleA("gamex86.dll");
+    if (!gm) return;
+    __try {
+        if (mounted && cfg.turretNoCollision) {
+            int *c = (int *)(gm + G_OFS_entities + ent * G_ENTITY_SIZE + GENT_OFS_contents);
+            if (!g_turretContentsZeroed) {
+                if (*c != TURRET_CONTENTS) {
+                    static int told;
+                    if (!told) { told = 1; Log("turret: collision left as it is (contents %08x, expected %08x)", *c, TURRET_CONTENTS); }
+                    return;
+                }
+                g_turretEnt = ent;
+                g_turretContentsOrig = *c;
+                g_turretContentsZeroed = 1;
+                Log("turret: the gun's collision is off while mounted (entity %d)", ent);
+            }
+            *c = 0;   // again every frame: the game may set it back
+        } else if (g_turretContentsZeroed) {
+            BYTE *e = gm + G_OFS_entities + g_turretEnt * G_ENTITY_SIZE;
+            int *c = (int *)(e + GENT_OFS_contents);
+            if (e[GENT_OFS_inuse] && *(void **)(e + GENT_OFS_turretInfo) && *c == 0) *c = g_turretContentsOrig;
+            g_turretContentsZeroed = 0;
+            Log("turret: the gun's collision is back");
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_turretContentsZeroed = 0;
+    }
+}
+
 static void UpdateTurret(void)
 {
     BYTE *gm = (BYTE *)GetModuleHandleA("gamex86.dll");
+    ReloadTurretTuning();
     int on = 0, nearby = 0, n, i;
     if (gm && MapLoaded()) {
         __try {
@@ -2739,6 +2806,24 @@ static void UpdateTurret(void)
         g_realSync = 1;           // the grips as they are now, without actions
     }
     g_onTurret = on != 0;
+    TurretCollision(on != 0, on);
+    if (g_onTurret) {
+        // for finding what moves the player on a gun: the game's player origin, the camera and the gun's pitch
+        static DWORD nextDiag;
+        if (GetTickCount() >= nextDiag) {
+            BYTE *pc = PlayerClient();
+            nextDiag = GetTickCount() + 1000;
+            __try {
+                const BYTE *t = gm + G_OFS_entities + on * G_ENTITY_SIZE;
+                Log("turret diag: player origin %.1f %.1f %.1f, camera z %.1f, gun pitch %.1f yaw %.1f, contents %08x",
+                    pc ? *(float *)(pc + GCL_OFS_origin) : 0, pc ? *(float *)(pc + GCL_OFS_origin + 4) : 0,
+                    pc ? *(float *)(pc + GCL_OFS_origin + 8) : 0, g_lastViewOrg[2],
+                    ((const float *)(t + GENT_OFS_currentAngles))[0], ((const float *)(t + GENT_OFS_currentAngles))[1],
+                    *(const int *)(t + GENT_OFS_contents));
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+    }
     g_nearTurret = !on ? nearby : 0;
     g_turretInView = 0;
     if (g_nearTurret) {
@@ -3100,8 +3185,8 @@ static void ProcessControllers(void)
         {
             const vr_pose_t *h = g_gunValid ? &g_gun : NULL;
             float t[3], len;
-            if (g_onTurret && !g_turretPivotOk && g_turretOrgSet) {
-                // the pivot in tracking space, once the eyes are placed (fixed from then on)
+            if (g_onTurret && g_turretOrgSet) {
+                // the pivot in tracking space, seen from where the eyes are (that moves with the Turret offsets)
                 float w[3] = { g_turretPivotWorld[0], g_turretPivotWorld[1], g_turretPivotWorld[2] };
                 WorldToTracking(w, g_turretBody, g_turretPivot);
                 g_turretPivotOk = 1;
@@ -3315,7 +3400,7 @@ static int IsWorldMuzzleFlash(const BYTE *ent)
     if (g_btnDown[BT_PTRIGGER]) lastFiring = GetTickCount();
     else if (GetTickCount() - lastFiring > 200) return 0;
     if ((type != 4 && type != 13) || *(const int *)(ent + REFENT_OFS_renderfx) != 0) return 0;
-    for (i = 0; i < 3; i++) d[i] = o[i] - g_lastViewOrg[i];
+    for (i = 0; i < 3; i++) d[i] = o[i] - g_rawViewOrg[i];
     for (k = 0; k < 3; k++) l[k] = d[0] * g_lastViewAxis[k][0] + d[1] * g_lastViewAxis[k][1] + d[2] * g_lastViewAxis[k][2];
     return l[0] > 8.0f && l[0] < 75.0f && l[1] * l[1] + l[2] * l[2] < 7.0f * 7.0f;
 }
@@ -3442,7 +3527,9 @@ static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3],
     float local[3], d[3];
     int i, k;
     int isPoint = kind != 0;
-    for (i = 0; i < 3; i++) d[i] = p[i] - (isPoint ? fd->vieworg[i] : 0.0f);
+    // from the game's own view origin: the entities were placed from it, and fd->vieworg has the camera shake
+    // filter on it (FilterShake), whose lag while walking moved the gun in the hand like an elastic
+    for (i = 0; i < 3; i++) d[i] = p[i] - (isPoint ? g_rawViewOrg[i] : 0.0f);
     for (k = 0; k < 3; k++) local[k] = d[0] * fd->viewaxis[k][0] + d[1] * fd->viewaxis[k][1] + d[2] * fd->viewaxis[k][2];
     if (isPoint) {
         // the gun sits at weaponOffset from the eye in the game; put that spot in the hand
@@ -3550,6 +3637,31 @@ static void __cdecl hk_BeginFrame(int stereoFrame)
 
 // Places the camera at the tracked eye. The game's own view gives the body: its yaw minus the
 // head yaw it was built from. Head pitch and roll come straight from the headset.
+// The camera is the game's eye plus where the head is from it, and with roomscale the head can lean or walk
+// where the game's player cannot go: walls stop the player, not the head, and the view went into door frames
+// and corners (Pavlov's house). The head's offset is traced against the world and stops HEAD_WALL_GAP units
+// before what it hits; both eyes get the same correction, so the stereo stays as it is.
+#define HEAD_WALL_GAP 4.0f
+static float g_headPush[3];
+
+static void UpdateHeadPush(const cod_refdef_t *fd)
+{
+    float rel[3], p[3], end[3], len, frac, keep;
+    int i;
+    g_headPush[0] = g_headPush[1] = g_headPush[2] = 0;
+    if (!cfg.headCollision || !cfg.positional || g_onTurret || g_inVehicle || !MapLoaded()) return;
+    BodyOffset(g_head.pos, rel);
+    RotateZ(rel, BodyYaw(fd->viewaxis[0]), p);
+    for (i = 0; i < 3; i++) { p[i] *= cfg.worldScale; end[i] = fd->vieworg[i] + p[i]; }
+    len = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (len < 0.5f) return;
+    frac = WorldTrace(fd->vieworg, end);
+    if (frac >= 1.0f) return;
+    keep = frac * len - HEAD_WALL_GAP;
+    if (keep < 0) keep = 0;
+    for (i = 0; i < 3; i++) g_headPush[i] = p[i] * (keep / len) - p[i];
+}
+
 static void ApplyEyePose(cod_refdef_t *fd, const vr_pose_t *eye, float out_axis[3][3], float out_org[3])
 {
     float body = BodyYaw(fd->viewaxis[0]);
@@ -3573,16 +3685,24 @@ static void ApplyEyePose(cod_refdef_t *fd, const vr_pose_t *eye, float out_axis[
         if (!g_turretOrgSet) {
             // where the game puts the gunner's eye for this gun (right behind it, a little above),
             // with this eye there now: the player's own height and place in the room aside
-            for (i = 0; i < 3; i++) g_turretOrg[i] = fd->vieworg[i] - p[i] * cfg.worldScale;
+            for (i = 0; i < 3; i++) g_turretOrgBase[i] = fd->vieworg[i] - p[i] * cfg.worldScale;
             g_turretOrgSet = 1;
             Log("turret: eyes at %.0f %.0f %.0f (gun pivot %.0f %.0f %.0f)", fd->vieworg[0], fd->vieworg[1],
                 fd->vieworg[2], g_turretPivotWorld[0], g_turretPivotWorld[1], g_turretPivotWorld[2]);
+        }
+        {
+            // [Turret] Offset X / Y / Z: where the player stands relative to the gun, in the gun's own
+            // directions as it was when mounted (X along the barrel, Y to its left, Z up), in cm
+            float local[3], off[3];
+            for (i = 0; i < 3; i++) local[i] = cfg.turretOffset[i] * cfg.worldScale / 100.0f;
+            RotateZ(local, g_turretYaw, off);
+            for (i = 0; i < 3; i++) g_turretOrg[i] = g_turretOrgBase[i] + off[i];
         }
         for (i = 0; i < 3; i++) out_org[i] = g_turretOrg[i] + p[i] * cfg.worldScale;
         return;
     }
     g_turretOrgSet = 0;
-    for (i = 0; i < 3; i++) out_org[i] = fd->vieworg[i] + p[i] * cfg.worldScale;
+    for (i = 0; i < 3; i++) out_org[i] = fd->vieworg[i] + p[i] * cfg.worldScale + g_headPush[i];
 }
 
 static void SamplePitchOffset(const cod_refdef_t *fd)
@@ -3676,6 +3796,7 @@ static void RenderBothEyes(cod_refdef_t *fd)
     // weapon belong to the main scene.
     if (!(fd->rdflags & 8)) {
         if (!g_pitchSampled) { SamplePitchOffset(fd); g_pitchSampled = 1; }
+        memcpy(g_rawViewOrg, fd->vieworg, sizeof(g_rawViewOrg));
         FilterShake(fd);
         memcpy(g_lastViewOrg, fd->vieworg, sizeof(g_lastViewOrg));
         memcpy(g_lastViewAxis, fd->viewaxis, sizeof(g_lastViewAxis));
@@ -3702,6 +3823,7 @@ static void RenderBothEyes(cod_refdef_t *fd)
         UpdateRoomScale(fd);
         RenderScopeView(fd);
         FlushHeldEntities(fd);
+        UpdateHeadPush(fd);
     }
 
     memcpy(savedOrg, fd->vieworg, sizeof(savedOrg));
@@ -3825,8 +3947,8 @@ static void __cdecl hk_SetColor(const float *rgba)
 // HUD modes. The compass and the subtitles have their own dvars; health, ammo, the weapon name
 // and the stance come from ui/hud.menu, so their pictures (and text) are left out by where that
 // file puts them on the 640x480 screen. Holding Objectives shows everything.
-// cg_drawStatus also draws the compass, so it stays on when the compass is shown; what it
-// would add then (the grenade icons by the ammo) is left out with the rest of the bottom right.
+// cg_drawStatus stays on in every mode (it also draws the use hints); what it would add (the grenade
+// icons by the ammo) is left out with the rest of the bottom right.
 enum { HUD_FULL, HUD_NONE, HUD_SUBTITLES, HUD_COMPASS, HUD_STATUS };
 enum { HIDE_NOTHING, HIDE_STATUS, HIDE_STATUS_CORNER, HIDE_STANCE };
 static int g_hudShown = -1;    // the mode the dvars were last set for
@@ -3834,16 +3956,23 @@ static int g_hudHide;          // HIDE_*: which of the hud.menu pictures are lef
 
 static void UpdateHudMode(int objectivesHeld)
 {
-    static const int hide[] = { HIDE_NOTHING, HIDE_STATUS, HIDE_STATUS, HIDE_STATUS_CORNER, HIDE_STANCE };
+    // cg_drawStatus stays on in every mode: it draws all of ui/hud.menu, and with it off the use hints went
+    // too ("Cursorhints": the weapon's name and picture when you are near one). What a mode hides is cut out
+    // of the pictures instead (HiddenPicture), as the compass-only mode always did.
+    static const int hide[] = { HIDE_NOTHING, HIDE_STATUS_CORNER, HIDE_STATUS_CORNER, HIDE_STATUS_CORNER, HIDE_STANCE };
     int mode = objectivesHeld ? HUD_FULL : cfg.hudMode;
-    char line[160];
+    char line[200];
+    // bigger subtitles (SubtitleSize) wrap earlier: the game's own line is 80 characters wide
+    int subWidth = (int)(80.0f / cfg.subtitleSize + 0.5f);
     if (mode < HUD_FULL || mode > HUD_STATUS) mode = HUD_FULL;
     g_hudHide = hide[mode];
     if (mode == g_hudShown) return;
-    _snprintf(line, sizeof(line), "set cg_hudCompassSize %s; set cg_subtitles %d; set cg_drawStatus %d\n",
+    if (subWidth < 16) subWidth = 16;
+    if (subWidth > 160) subWidth = 160;
+    _snprintf(line, sizeof(line), "set cg_hudCompassSize %s; set cg_subtitles %d; set cg_drawStatus 1; set cg_subtitleWidth %d\n",
               mode == HUD_FULL || mode == HUD_COMPASS ? "1" : "0",
               mode == HUD_FULL || mode == HUD_SUBTITLES,
-              mode == HUD_FULL || mode == HUD_STATUS || mode == HUD_COMPASS);
+              subWidth);
     Cbuf(line);
     g_hudShown = mode;
     Log("HUD mode %d", mode);
@@ -3878,12 +4007,81 @@ static void LogHudPicture(float x, float y, float w, float h, int shader)
 
 // A picture over the whole screen during play (damage tint, fade, flash) would be a small
 // rectangle on the HUD screen: keep it for DrawFullscreenEffects.
+// Subtitles: the game draws its text one glyph at a time, at a size of its own. With another
+// SubtitleSize the glyphs of the lower part of the screen are held back and drawn at the end of the
+// frame, each block of lines scaled about the middle of its bottom edge (so it grows upwards and
+// stays centred). A glyph is a small picture that shows only a part of its image: icons (the
+// compass, the weapon pictures) show the whole of theirs, and the weapon, ammo and health
+// readouts sit lower or further right than the subtitles.
+#define MAX_GLYPHS 768
+typedef struct { float r[8]; int shader; float color[4]; int hasColor; } glyph_t;
+static glyph_t g_glyphs[MAX_GLYPHS];
+static int     g_glyphCount;
+
+static int IsSubtitleGlyph(float x, float y, float w, float h, float s1, float t1, float s2, float t2)
+{
+    float cx = (x + w * 0.5f) / fb_w, cy = (y + h * 0.5f) / fb_h;
+    if (w > fb_w * 40.0f / 640.0f || h > fb_h * 40.0f / 480.0f) return 0;
+    if (s2 - s1 > 0.35f || t2 - t1 > 0.35f) return 0;   // an icon, not a letter
+    if (cy < 300.0f / 480.0f || cy > 428.0f / 480.0f) return 0;
+    if (cx < 0.05f || cx > 0.95f) return 0;
+    if (cx > 0.67f && cy > 0.78f) return 0;   // the ammo and grenade corner
+    return 1;
+}
+
+static void FlushGlyphs(void)
+{
+    int idx[MAX_GLYPHS], n = g_glyphCount, i, j, start;
+    float k = cfg.subtitleSize, gap = fb_h * 30.0f / 480.0f;
+    g_glyphCount = 0;
+    if (n <= 0) return;
+    for (i = 0; i < n; i++) {   // by height (insertion sort)
+        float cy = g_glyphs[i].r[1] + g_glyphs[i].r[3] * 0.5f;
+        for (j = i; j > 0 && g_glyphs[idx[j - 1]].r[1] + g_glyphs[idx[j - 1]].r[3] * 0.5f > cy; j--) idx[j] = idx[j - 1];
+        idx[j] = i;
+    }
+    for (start = 0; start < n; ) {
+        int end = start + 1;
+        float minX = 1e9f, maxX = -1e9f, bottom = -1e9f, cx;
+        while (end < n) {
+            const float *a = g_glyphs[idx[end - 1]].r, *b = g_glyphs[idx[end]].r;
+            if (b[1] + b[3] * 0.5f - (a[1] + a[3] * 0.5f) > gap) break;
+            end++;
+        }
+        for (i = start; i < end; i++) {
+            const float *r = g_glyphs[idx[i]].r;
+            if (r[0] < minX) minX = r[0];
+            if (r[0] + r[2] > maxX) maxX = r[0] + r[2];
+            if (r[1] + r[3] > bottom) bottom = r[1] + r[3];
+        }
+        cx = (minX + maxX) * 0.5f;
+        for (i = start; i < end; i++) {
+            const glyph_t *g = &g_glyphs[idx[i]];
+            orig_SetColor(g->hasColor ? g->color : NULL);
+            orig_StretchPic(cx + (g->r[0] - cx) * k, bottom - (bottom - g->r[1]) * k, g->r[2] * k, g->r[3] * k,
+                            g->r[4], g->r[5], g->r[6], g->r[7], g->shader);
+        }
+        start = end;
+    }
+    orig_SetColor(g_curColorSet ? g_curColor : NULL);
+}
+
 static void __cdecl hk_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, int shader)
 {
     if (g_hudActive && !(MEM(int, ADDR_cls_keyCatchers) & 2)) {
         if (cfg.logHud) LogHudPicture(x, y, w, h, shader);
 
         if (g_hudHide && HiddenPicture(x, y, w, h)) return;
+    }
+    if (cfg.subtitleSize != 1.0f && g_hudActive && !g_scopeActive && !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
+        g_glyphCount < MAX_GLYPHS && IsSubtitleGlyph(x, y, w, h, s1, t1, s2, t2)) {
+        glyph_t *g = &g_glyphs[g_glyphCount++];
+        float r[8] = { x, y, w, h, s1, t1, s2, t2 };
+        memcpy(g->r, r, sizeof(r));
+        g->shader = shader;
+        g->hasColor = g_curColorSet;
+        memcpy(g->color, g_curColor, sizeof(g_curColor));
+        return;   // drawn at the end of the frame, resized (FlushGlyphs)
     }
     if (g_singlePass && g_hudActive && !g_scopeActive && !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
         x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1 && (!g_curColorSet || g_curColor[3] >= 0.98f)) {
@@ -3934,6 +4132,7 @@ static void DrawFullscreenEffects(void)
 
 static void __cdecl hk_EndFrame(int *frontMsec, int *backMsec)
 {
+    FlushGlyphs();
     if (g_fsCount) {
         if (g_singlePass && g_eye == 0) DrawFullscreenEffects();
         g_fsCount = 0;
@@ -4640,7 +4839,10 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
         if (!g_scopeActive) g_lastHudWorld = hud.world;
         if (!g_scopeActive && hud.fbo) {
             if (!hud.world && !cfg.menuFollowsHead) {
-                if (!g_menuQuadValid) PlaceMenuQuad();
+                // The screen stays where it appeared. When the head has moved well above or below it
+                // (the player sat down or stood up) it is put in front of the head again, once: it
+                // does not follow the head (following it for its first seconds made players dizzy).
+                if (!g_menuQuadValid || fabsf(g_head.pos[2] - g_menuRefZ) > 0.3f) PlaceMenuQuad();
                 hud.posed = 1;
                 hud.pose = g_menuQuad;
             } else if (hud.world) {
@@ -4902,6 +5104,7 @@ static void LoadConfig(void)
     cfg.hipHeight     = IniFloat("Holsters", "HipHeight", IniFloat("Realistic", "HipHeight", -0.75f, ini), ini);
     cfg.lowerBackHeight = IniFloat("Holsters", "LowerBackHeight", IniFloat("Realistic", "LowerBackHeight", -0.70f, ini), ini);
     cfg.roomScale       = CfgInt("VR", "RoomScale", cfg.roomScale, ini);
+    cfg.headCollision   = CfgInt("VR", "HeadCollision", 1, ini);
     cfg.weaponAngle[0]  = IniFloat("Controllers", "WeaponPitch", cfg.weaponAngle[0], ini);
     cfg.weaponAngle[1]  = IniFloat("Controllers", "WeaponYaw", cfg.weaponAngle[1], ini);
     cfg.aimSmoothing    = IniFloat("Controllers", "AimSmoothing", cfg.aimSmoothing, ini);
@@ -4920,6 +5123,10 @@ static void LoadConfig(void)
     if (cfg.shakeKeep > 1) cfg.shakeKeep = 1;
     cfg.vehicleSmooth = IniFloat("Comfort", "VehicleTurnSmooth", 0.5f, ini);
     if (cfg.vehicleSmooth < 0.02f) cfg.vehicleSmooth = 0.02f;
+    ReloadTurretTuning();
+    cfg.subtitleSize = IniFloat("HUD", "SubtitleSize", 1.0f, ini);   // 1 = the game's own size
+    if (cfg.subtitleSize < 0.3f) cfg.subtitleSize = 0.3f;
+    if (cfg.subtitleSize > 6.0f) cfg.subtitleSize = 6.0f;
     cfg.menuPointer     = (float)CfgInt("Controllers", "MenuPointer", (int)cfg.menuPointer, ini);
     {
         int b;

@@ -156,6 +156,25 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.6
+
+- **A arma balançava na mão como um elástico quando você andava ou se movia de lado** (v1.6.4 e v1.6.5): a redução do
+  tremor de câmera mudava o ponto de onde a arma é posicionada. Agora a arma fica firme na mão.
+- **Sem o nome ou a imagem da arma quando você chegava perto de uma** com o HUD em "Imersivo", "Só legendas" ou "Só
+  bússola" (v1.6.5): as dicas de uso do jogo aparecem de novo em todos os modos de HUD.
+- **Menus e telas de carregamento não seguem mais a cabeça** nos primeiros segundos (dava tontura): aparecem na sua
+  frente e ficam ali; só se movem de novo se a cabeça ficar bem acima ou abaixo (você sentou ou levantou) ou ao
+  recentralizar.
+- **A visão não entra mais em paredes e batentes de porta** quando você se inclina ou anda para eles com roomscale:
+  ela para um pouco antes da parede. `[VR]` `HeadCollision=0` desliga. Portas ainda não são detectadas.
+- **Armas fixas (a MG42, os rifles antitanque PTRS41) não empurram mais você** ao mirar para baixo: a arma deixa de ser sólida
+  para você enquanto está nela. `[Turret]` `NoCollision`, e `OffsetX/Y/Z` (cm) para mudar onde você fica.
+- **Pegar a arma largada:** com só um rifle e uma granada, o rifle largado pode ser pego de novo.
+- **Tamanho das legendas** na aba VR do launcher (Pequeno, Médio, Grande, Extra Grande; `[HUD]` `SubtitleSize`).
+- **Runtime OpenXR:** um runtime de 64 bits em `XR_RUNTIME_JSON` (SteamVR) é ignorado por este jogo de 32 bits, e o
+  log de início tem mais etapas para achar falhas no runtime do headset.
+- O relatório de diagnóstico (SOBRE) agora também mostra se o `main\pakz_vr_nohands.pk3` (as mãos escondidas) está instalado.
+
 ### v1.6.5
 
 - **A imagem tremia quando você virava a cabeça** (v1.6.4): a redução do tremor de câmera também suavizava o giro da

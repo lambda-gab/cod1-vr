@@ -552,6 +552,7 @@ static void GameFiles(const char *dir)
     FileInfo(dir, "CoD-VR-Launcher.exe", 1);
     FileInfo(dir, "steam_api.dll", 0);
     FileInfo(dir, "main\\pakz_vr_text.pk3", 0);
+    FileInfo(dir, "main\\pakz_vr_nohands.pk3", 0);
     _snprintf(path, sizeof(path), "%s\\opengl32.dll", dir);
     if (!FileExists(path)) Find("opengl32.dll (the VR mod) is not in the game folder: run the setup again.");
     else if (PeMachine(path) != 0x14c) Find("opengl32.dll in the game folder is not the 32-bit mod file.");

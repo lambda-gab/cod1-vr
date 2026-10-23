@@ -154,6 +154,43 @@ static int ProcessRunning(const char *exe)
     return found;
 }
 
+// 1 when the library a runtime manifest names is 32-bit, 0 when it is another architecture, -1 when unknown
+static int RuntimeIs32Bit(const char *json)
+{
+    char text[4096], lib[MAX_PATH], full[MAX_PATH], *p, *q;
+    unsigned char hdr[0x400];
+    size_t got, j = 0;
+    unsigned off;
+    FILE *f = fopen(json, "rb");
+    if (!f) return -1;
+    got = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[got] = 0;
+    if (!(p = strstr(text, "\"library_path\"")) || !(p = strchr(p + 14, ':')) || !(p = strchr(p, '"'))) return -1;
+    for (p++; *p && *p != '"' && j < MAX_PATH - 1; p++) {
+        if (*p == '\\' && p[1] == '\\') p++;   // JSON escape of a backslash
+        lib[j++] = *p;
+    }
+    lib[j] = 0;
+    if (lib[0] && lib[1] == ':') strcpy(full, lib);
+    else {
+        if (strlen(json) + strlen(lib) >= MAX_PATH) return -1;
+        strcpy(full, json);
+        q = strrchr(full, '\\');
+        if (!q) q = strrchr(full, '/');
+        if (!q) return -1;
+        strcpy(q + 1, lib);
+    }
+    f = fopen(full, "rb");
+    if (!f) return -1;
+    got = fread(hdr, 1, sizeof(hdr), f);
+    fclose(f);
+    if (got < 0x40 || hdr[0] != 'M' || hdr[1] != 'Z') return -1;
+    memcpy(&off, hdr + 0x3c, 4);
+    if (off > got - 6 || memcmp(hdr + off, "PE\0\0", 4)) return -1;
+    return hdr[off + 4] == 0x4c && hdr[off + 5] == 0x01;   // IMAGE_FILE_MACHINE_I386
+}
+
 // Installed VR software is meant to set one OpenXR runtime as the active one, but some PCs have none
 // (SteamVR, Meta and others installed, none chosen): the loader then fails with XR_ERROR_RUNTIME_UNAVAILABLE
 // and the game stays flat. With no active runtime for 32-bit programs, the one of the VR software that is
@@ -166,7 +203,22 @@ static void ChooseRuntime(void)
     char env[MAX_PATH], active[MAX_PATH] = "", best[MAX_PATH] = "", only[MAX_PATH] = "", paths[8][MAX_PATH];
     HKEY k;
     DWORD i, len, n = 0;
-    if (GetEnvironmentVariableA("XR_RUNTIME_JSON", env, sizeof(env))) { Log("OpenXR: XR_RUNTIME_JSON is %s", env); return; }
+    if (GetEnvironmentVariableA("XR_RUNTIME_JSON", env, sizeof(env))) {
+        char *w;
+        Log("OpenXR: XR_RUNTIME_JSON is %s", env);
+        if (RuntimeIs32Bit(env) != 0) return;
+        // something set it for 64-bit programs (a SteamVR launch does); this game is 32-bit and the loader
+        // answers XR_ERROR_RUNTIME_UNAVAILABLE for it: use the 32-bit manifest next to it, or choose below
+        if ((w = strstr(env, "win64")) != NULL) {
+            memcpy(w, "win32", 5);
+            if (RuntimeIs32Bit(env) == 1 && SetEnvironmentVariableA("XR_RUNTIME_JSON", env)) {
+                Log("OpenXR: XR_RUNTIME_JSON is for 64-bit programs, using %s", env);
+                return;
+            }
+        }
+        SetEnvironmentVariableA("XR_RUNTIME_JSON", NULL);
+        Log("OpenXR: XR_RUNTIME_JSON is not a 32-bit runtime, ignored");
+    }
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1", 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) return;
     len = sizeof(active) - 1;
     if (RegQueryValueExA(k, "ActiveRuntime", NULL, NULL, (BYTE *)active, &len) != ERROR_SUCCESS) active[0] = 0;
@@ -381,6 +433,39 @@ static void AttachActions(void)
     Log("OpenXR: controller actions attached");
 }
 
+// What the runtime is handed, in the log: the first thing to look at when a runtime refuses or crashes on the session.
+static void LogGLContext(const XrGraphicsRequirementsOpenGLKHR *req, HDC dc, HGLRC rc)
+{
+    typedef const unsigned char *(WINAPI *GetStringFn)(unsigned);
+    char path[MAX_PATH];
+    HMODULE real;
+    GetStringFn getString = NULL;
+    GetSystemDirectoryA(path, sizeof(path));
+    strcat(path, "\\opengl32.dll");
+    real = GetModuleHandleA(path);   // the system's, loaded by this proxy under its full path
+    if (real) getString = (GetStringFn)GetProcAddress(real, "glGetString");
+    Log("OpenXR: OpenGL %u.%u to %u.%u wanted, DC %p, context %p", XR_VERSION_MAJOR(req->minApiVersionSupported),
+        XR_VERSION_MINOR(req->minApiVersionSupported), XR_VERSION_MAJOR(req->maxApiVersionSupported),
+        XR_VERSION_MINOR(req->maxApiVersionSupported), (void *)dc, (void *)rc);
+    if (getString) {
+        const unsigned char *v = getString(0x1F02), *r = getString(0x1F01), *n = getString(0x1F00);   // VERSION, RENDERER, VENDOR
+        Log("OpenXR: the game's OpenGL is %s on %s (%s)", v ? (const char *)v : "?", r ? (const char *)r : "?", n ? (const char *)n : "?");
+    }
+}
+
+// A crash inside the runtime's own code would close the game without a trace; caught here, the game stays flat.
+static XrResult CreateSessionGuarded(const XrSessionCreateInfo *sci)
+{
+    XrResult r = XR_ERROR_RUNTIME_FAILURE;
+    __try {
+        r = xrCreateSession(xr.instance, sci, &xr.session);
+    } __except (Log("OpenXR: xrCreateSession crashed inside the runtime (exception 0x%lx at %p)", GetExceptionCode(),
+                    GetExceptionInformation()->ExceptionRecord->ExceptionAddress), EXCEPTION_EXECUTE_HANDLER) {
+        xr.session = XR_NULL_HANDLE;
+    }
+    return r;
+}
+
 static int CreateSession(void)
 {
     XrGraphicsRequirementsOpenGLKHR req = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
@@ -392,12 +477,16 @@ static int CreateSession(void)
     int64_t format;
     int i;
 
+    // each step is logged before it runs: a crash inside the runtime leaves the last line as the culprit
+    Log("OpenXR: asking the OpenGL requirements");
     CHECK(xrGetOpenGLGraphicsRequirementsKHR(xr.instance, xr.system, &req));   // mandatory before xrCreateSession
     binding.hDC = gl.GetCurrentDC();
     binding.hGLRC = gl.GetCurrentContext();
     sci.next = &binding;
     sci.systemId = xr.system;
-    CHECK(xrCreateSession(xr.instance, &sci, &xr.session));
+    LogGLContext(&req, binding.hDC, binding.hGLRC);
+    Log("OpenXR: creating the session");
+    CHECK(CreateSessionGuarded(&sci));
     xr.ctx = binding.hGLRC;
 
     rs.poseInReferenceSpace.orientation.w = 1;
@@ -405,6 +494,7 @@ static int CreateSession(void)
     CHECK(xrCreateReferenceSpace(xr.session, &rs, &xr.local));
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     CHECK(xrCreateReferenceSpace(xr.session, &rs, &xr.view));
+    Log("OpenXR: session and spaces created, attaching the actions");
     AttachActions();
 
     CHECK(xrEnumerateViewConfigurationViews(xr.instance, xr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &n, vcv));
@@ -467,6 +557,7 @@ int XR_Init(int hudW, int hudH, int scopeSize)
     if (!xrGetInstanceProcAddr && !LoadLoader()) return 0;
     if (!xr.instance && !CreateInstance()) return 0;
     if (!xr.system && !GetSystem()) return 0;
+    Log("OpenXR: headset found, creating the actions");
     if (!CreateActions()) Log("OpenXR: controller actions could not be created");
     if (!CreateSession()) { XR_Shutdown(); xr.failed = 1; return 0; }
     xr.failed = 0;

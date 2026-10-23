@@ -157,6 +157,25 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.6
+
+- **The gun swayed in your hand like an elastic while you walked or strafed** (v1.6.4 and v1.6.5): the camera shake
+  reduction moved the point the gun is placed from. The gun now stays steady in the hand.
+- **No weapon name or picture when you stood near a weapon** with the HUD on "Immersive", "Subtitles only" or
+  "Compass only" (v1.6.5): the game's use hints are shown in every HUD mode again.
+- **Menus and loading screens no longer follow your head** for their first seconds (it made some players dizzy):
+  they appear in front of you and stay there; they move again only if your head ends up well above or below them
+  (you sat down or stood up), or when you recenter.
+- **The view no longer goes into walls and door frames** when you lean or walk into them with roomscale: it stops a
+  little before the wall. `[VR]` `HeadCollision=0` turns it off. Doors are not detected yet.
+- **Mounted guns (the MG42, the PTRS41 anti-tank rifles) no longer push you** when you aim down: the gun is not solid for
+  you while you are on it. `[Turret]` `NoCollision`, and `OffsetX/Y/Z` (cm) to move where you stand.
+- **Dropped weapon pick-up:** with only a rifle and a grenade, the dropped rifle can be picked up again.
+- **Subtitle size** in the launcher's VR tab (Small, Medium, Large, Extra Large; `[HUD]` `SubtitleSize`).
+- **OpenXR runtime:** a 64-bit runtime named in `XR_RUNTIME_JSON` (SteamVR) is ignored for this 32-bit game, and the
+  start-up log has more steps to find crashes in a headset's runtime.
+- The diagnostic report (ABOUT) now also shows whether `main\pakz_vr_nohands.pk3` (the hidden hands) is installed.
+
 ### v1.6.5
 
 - **The image shook when you turned your head** (v1.6.4): the camera shake reduction also smoothed the game's view
