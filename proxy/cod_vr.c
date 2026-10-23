@@ -3625,49 +3625,43 @@ static void RenderScopeView(cod_refdef_t *fd)
     g_scopeActive = 1;
 }
 
-// Earthquakes and explosions shake the game's camera, its origin and its yaw. In a headset the
-// world wobbling around the head is hard to bear, so the shake is cut down: the view's smooth
-// path is followed (Holt smoothing, which keeps a steady walk free of lag) and what departs from
-// it is kept only in part (ShakeKeep). Small movements (a step's bob) are left alone, and a real
-// jump (a turn of the stick, a teleport) is followed at once.
+// Earthquakes and explosions shake the game's camera. In a headset the world wobbling around the head
+// is hard to bear, so the shake of the view's origin is cut down: the smooth path of the origin is
+// followed (Holt smoothing, which keeps a steady walk free of lag) and what departs from it is kept
+// only in part (ShakeKeep). Small movements (a step's bob) are left alone, and a real jump (a teleport,
+// roomscale catching up) is followed at once. The yaw is not touched: it holds the head's own turns
+// (the aim is written into the game's view), and smoothing it made the image lag and wobble when the
+// head turned (v1.6.4).
 static void FilterShake(cod_refdef_t *fd)
 {
-    static float s[4], b[4];   // smoothed origin x y z and yaw, and how fast each is moving
+    static float s[3], b[3];   // smoothed origin x y z, and how fast each is moving
     static int init;
     static LARGE_INTEGER last;
     LARGE_INTEGER now, freq;
-    float x[4], out[4], dt, a, rawYaw = 0;
+    float out[3], dt, a;
     int i;
     if (cfg.shakeKeep >= 0.999f) { init = 0; return; }
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&freq);
     dt = last.QuadPart ? (float)((double)(now.QuadPart - last.QuadPart) / (double)freq.QuadPart) : 0.0f;
     last = now;
-    for (i = 0; i < 3; i++) x[i] = fd->vieworg[i];
-    x[3] = YawOf(fd->viewaxis[0]);
     if (!init || dt <= 0 || dt > 0.25f) {
-        for (i = 0; i < 4; i++) { s[i] = x[i]; b[i] = 0; }
+        for (i = 0; i < 3; i++) { s[i] = fd->vieworg[i]; b[i] = 0; }
         init = 1;
         return;
     }
     a = 1.0f - expf(-dt / 0.12f);
-    for (i = 0; i < 4; i++) {
-        float pred = s[i] + b[i] * dt, xi = x[i], lim = i < 3 ? 24.0f : 8.0f, dead = i < 3 ? 1.0f : 0.4f, d, ns;
-        if (i == 3) { xi = pred + AngleNormalize180(x[3] - pred); rawYaw = xi; }
+    for (i = 0; i < 3; i++) {
+        float pred = s[i] + b[i] * dt, xi = fd->vieworg[i], d, ns;
         d = xi - pred;
-        if (fabsf(d) > lim) { s[i] = xi; b[i] = 0; out[i] = xi; continue; }
+        if (fabsf(d) > 24.0f) { s[i] = xi; b[i] = 0; out[i] = xi; continue; }
         ns = pred + a * d;
         b[i] += a * ((ns - s[i]) / dt - b[i]);
         s[i] = ns;
         d = xi - ns;
-        out[i] = ns + (fabsf(d) > dead ? (d > 0 ? 1.0f : -1.0f) * (dead + (fabsf(d) - dead) * cfg.shakeKeep) : d);
+        out[i] = ns + (fabsf(d) > 1.0f ? (d > 0 ? 1.0f : -1.0f) * (1.0f + (fabsf(d) - 1.0f) * cfg.shakeKeep) : d);
     }
     for (i = 0; i < 3; i++) fd->vieworg[i] = out[i];
-    if (fabsf(out[3] - rawYaw) > 0.001f) {
-        float t[3];
-        int k;
-        for (k = 0; k < 3; k++) { RotateZ(fd->viewaxis[k], out[3] - rawYaw, t); memcpy(fd->viewaxis[k], t, sizeof(t)); }
-    }
 }
 
 // Headset frame: the scope view (when zoomed), the view weapon in the hand, then the scene from

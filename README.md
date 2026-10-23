@@ -157,6 +157,13 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.5
+
+- **The image shook when you turned your head** (v1.6.4): the camera shake reduction also smoothed the game's view
+  turn, which holds your own head turns, so the picture lagged behind and wobbled by a few degrees while you
+  turned. It now only tones down the shake of the camera's position (earthquakes, bombing runs) and leaves turning
+  alone.
+
 ### v1.6.4
 
 - **Vibration when firing mounted guns and the Panzerfaust:** the MG42, the Flak 88, the Flak Vierling and the tank

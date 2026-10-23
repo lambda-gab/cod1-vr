@@ -156,6 +156,13 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.5
+
+- **A imagem tremia quando você virava a cabeça** (v1.6.4): a redução do tremor de câmera também suavizava o giro da
+  visão do jogo, que carrega os seus próprios giros de cabeça, e a imagem ficava para trás e balançava alguns graus
+  enquanto você girava. Agora ela só reduz o tremor da posição da câmera (terremotos, bombardeios) e não mexe no
+  giro.
+
 ### v1.6.4
 
 - **Vibração ao atirar com armas fixas e com a Panzerfaust:** a MG42, a Flak 88, a Flak Vierling e o tanque agora
