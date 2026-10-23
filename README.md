@@ -146,7 +146,7 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 - `[Holsters]`: weapon over each shoulder (left-handed players may want them swapped), holster heights, dropping
   the gun when you let go, draw time.
 - `[VR]` `RenderScale`: eye resolution, times the headset's recommended size.
-- `[Comfort]`: the vignette (on/off, strength, when it starts closing).
+- `[Comfort]`: the vignette (on/off, strength, when it starts closing), `VehicleTurnSmooth`, `ShakeKeep`.
 - `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`, `ObjectivesBackground`: menus and the
   objectives screen.
 - `[VR]` `MSAA`, `Anisotropy`, `CullMargin`, `HeightOffset`; `[PostFX]`: image quality and effects.
@@ -156,6 +156,24 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 - `[Mods]` `Difficulty`, `InfiniteAmmo`, `Gore`.
 
 ## Releases
+
+### v1.6.4
+
+- **Vibration when firing mounted guns and the Panzerfaust:** the MG42, the Flak 88, the Flak Vierling and the tank
+  now shake both controllers on every shot (a cannon harder and longer); the Panzerfaust gives one hard push to
+  both hands. The grenade line no longer shows while you are on a gun.
+- **Truckride, the Panzerfaust Waters hands over:** inside a vehicle, the grip or the trigger of an empty hand now
+  takes the weapon held out to you.
+- **Gentler turns in vehicles:** the view follows a truck or car round a bend more slowly (and no faster than 50
+  degrees a second), so a sharp turn no longer swings the whole view round at once. `[Comfort]` `VehicleTurnSmooth`
+  (seconds; 0.15 was the old behaviour, 0.5 is the new default).
+- **Briefings and slides** (the pictures between missions, such as the Russian campaign's): they are shown on a screen
+  in front of you, like the menus, instead of one copy in each eye (which looked doubled and out of line), and the
+  trigger skips them ("fire to skip").
+- **Stalingrad, the queue for ammunition:** the scripted walk along the line no longer turns you round (it was taken
+  for a vehicle seat), and the head is free during it.
+- **Less camera shake** in earthquakes and explosions (the bombing at the end of Stalingrad): the shake is cut to 40%.
+  `[Comfort]` `ShakeKeep` (1 = as the game shakes, 0 = none).
 
 ### v1.6.3
 

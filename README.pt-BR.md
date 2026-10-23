@@ -147,7 +147,7 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 - `[Holsters]`: arma de cada ombro (canhotos podem querer trocar), alturas dos coldres, soltar a arma no chão, tempo
   de sacar.
 - `[VR]` `RenderScale`: resolução de cada olho, vezes a recomendada pelo headset.
-- `[Comfort]`: a vinheta (liga/desliga, intensidade, quando começa a fechar).
+- `[Comfort]`: a vinheta (liga/desliga, intensidade, quando começa a fechar), `VehicleTurnSmooth`, `ShakeKeep`.
 - `[HUD]` `MenuFollowsHead`, `ObjectivesOnHand`, `ObjectivesWidth`, `ObjectivesBackground`: menus e a tela de
   objetivos.
 - `[VR]` `MSAA`, `Anisotropy`, `CullMargin`, `HeightOffset`; `[PostFX]`: qualidade da imagem e efeitos.
@@ -155,6 +155,24 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.6.4
+
+- **Vibração ao atirar com armas fixas e com a Panzerfaust:** a MG42, a Flak 88, a Flak Vierling e o tanque agora
+  fazem os dois controles vibrarem a cada tiro (o canhão mais forte e mais longo); a Panzerfaust dá um empurrão forte
+  nas duas mãos. A linha da granada não aparece mais enquanto você está numa arma fixa.
+- **Truckride, a Panzerfaust que o Waters entrega:** dentro de um veículo, o grip ou o gatilho de uma mão vazia agora
+  pega a arma que é estendida para você.
+- **Curvas de veículo mais suaves:** a visão acompanha o caminhão ou o carro numa curva mais devagar (e a no máximo 50
+  graus por segundo), então uma curva fechada não gira mais toda a visão de uma vez. `[Comfort]` `VehicleTurnSmooth`
+  (segundos; 0,15 era o comportamento antigo, 0,5 é o novo padrão).
+- **Briefings e slides** (as imagens entre as missões, como as da campanha russa): aparecem numa tela à sua frente,
+  como os menus, em vez de uma cópia em cada olho (que ficava dobrada e desalinhada), e o gatilho pula ("fire to
+  skip").
+- **Stalingrad, a fila de munição:** a caminhada roteirizada pela fila não vira mais você de costas (era tratada como
+  um banco de veículo), e a cabeça fica livre durante ela.
+- **Menos tremor de câmera** em terremotos e explosões (o bombardeio do fim de Stalingrad): o tremor é reduzido a 40%.
+  `[Comfort]` `ShakeKeep` (1 = como o jogo balança, 0 = nenhum).
 
 ### v1.6.3
 

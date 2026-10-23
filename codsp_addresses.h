@@ -195,6 +195,10 @@
 #define GENT_OFS_eType              0x4         // int s.eType
 #define G_ENTITY_SIZE               0x2c8       // sizeof(gentity_t)
 #define G_OFS_numEntities           0x002db22c  // module offset: int level.num_entities
+#define GENT_OFS_item               0x240       // gitem_t* of an item entity (byte at +0 is 2 for items)
+#define GENT_OFS_useIdx             0x1b4       // index into the use-function table (items: 7)
+#define G_OFS_useTable              0x000a59f8  // module offset: void (*)(gentity_t *item, gentity_t *user, int) [], called when "use" takes an item
+#define GITEM_OFS_giType            0x20        // gitem_t: 1 = weapon
 #define GCL_OFS_weapon              0xa0        // ps.weapon: the weapon in use
 #define GCL_OFS_origin              0x14        // float[3] ps.origin (velocity at 0x20, as in Quake 3)
 #define GCL_OFS_viewangles          0xb0        // float[3] ps.viewangles: pitch, yaw, roll (what the shots follow)

@@ -98,6 +98,8 @@ static struct {
     int   mirrorLeft;       // 1 = a gun in the left hand is drawn mirrored
     int   drawTime;         // Realistic: msec to put a weapon away / raise one (0 = the game's animations)
     int   shoulderSlot[2];  // Realistic: weapon slot over the left [0] and right [1] shoulder
+    float shakeKeep;        // comfort: share of the camera shake (earthquakes, explosions) that is kept, 1 = all of it
+    float vehicleSmooth;    // comfort: seconds the view takes to follow a vehicle's turns (longer = gentler)
     int   menuFollowsHead;  // 1 = menus and loading screens follow the head, 0 = fixed in front of you
     int   objOnHand;        // 1 = the objectives screen shows above the left hand while it is held
     int   hudMode;          // HUD_* : what of the game's HUD stays on screen (all of it while Objectives is held)
@@ -198,6 +200,10 @@ static GLuint hud_fbo[2], hud_tex[2], hud_depth;
 static int    g_backEye = -1;          // eye the backend is drawing (from glDrawBuffer), -1 mono
 static int    g_hudActive;             // this frame sends 2D to the HUD buffer
 static int    g_worldDrawn;            // the left eye drew the 3D world this frame
+// A script's briefing (slides over a black picture over the whole screen, "fire to skip") is a
+// 2D picture stack, not a view: it goes to the screen in front of the player like a menu, and
+// the trigger skips it. g_slideShow is what the frame before showed (the controls read it).
+static int    g_slideFrame, g_slideShow;
 static int    g_eye = -1;              // eye currently being rendered (0 left, 1 right), -1 mono
 static int    g_boundFbo;              // nonzero while an eye FBO is bound
 static int    g_stereoFrameDrawn;      // set once the right eye drew this frame
@@ -220,6 +226,8 @@ static DWORD     g_statTick;
 static int       g_vrFrame;            // this frame renders with headset poses
 static vr_pose_t g_eyes[2], g_head;
 static int       g_projOverride = -1;  // eye whose frustum R_SetupProjection must use, -1 = none
+static int       g_linkedScene;        // the player is linked to something that is not a vehicle (a scripted scene: the head is free on its view)
+static int       g_viewLocked;         // the game holds the view (a scripted scene): it does not follow what we write
 static float     g_headYawCmd;         // aim yaw (head or hand) already contained in the game's view this frame
 // In a vehicle (the player linked to another entity: truck, car, plane) the game turns and clamps
 // the view with the vehicle and shakes it with every bump. The body then follows the vehicle's
@@ -488,16 +496,26 @@ static void UpdateVehicle(float dt)
     BYTE *gm = (BYTE *)GetModuleHandleA("gamex86.dll");
     const BYTE *parent = NULL;
     float yaw, target, d;
+    int scene = 0;
     if (gm && MapLoaded()) {
         __try {
             const BYTE *tag = *(const BYTE **)(gm + G_OFS_entities + GENT_OFS_tagInfo);
             if (tag) parent = *(const BYTE **)tag;
             if (parent && *(void **)(parent + GENT_OFS_turretInfo)) parent = NULL;   // a turret, not a vehicle
+            // linked to a script model that is no vehicle (the queue for ammo in Stalingrad: the
+            // script carries the player along a line): nothing sits in a seat, so the game's own
+            // view stays and the head looks freely over it
+            if (parent && !*(void **)(parent + GENT_OFS_vehicle)) { parent = NULL; scene = 1; }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             parent = NULL;
         }
     }
-    if (g_onTurret) parent = NULL;
+    if (g_onTurret) { parent = NULL; scene = 0; }
+    if (scene != g_linkedScene) {
+        g_linkedScene = scene;
+        Log("linked scene: %s", scene ? "the head is free over the game's view" : "over");
+        if (!scene) g_viewLocked = 0;
+    }
     if (!parent) {
         if (g_inVehicle) { Log("vehicle: left"); g_vigAmount = 0; }
         g_gunVehicle = g_tankMode = 0;
@@ -548,7 +566,11 @@ static void UpdateVehicle(float dt)
     target = yaw + offset;
     d = AngleNormalize180(target - g_vehicleBody);
     if (dt > 0) {
-        g_vehicleBody = AngleNormalize180(g_vehicleBody + d * (1.0f - expf(-dt / 0.15f)));
+        // the body follows the vehicle's turns; a slow follow with a speed limit keeps a sharp bend
+        // from swinging the whole view round at once, which is what makes people sick
+        float step = d * (1.0f - expf(-dt / cfg.vehicleSmooth)), most = 50.0f * dt;
+        if (cfg.vehicleSmooth > 0.2f) step = step > most ? most : step < -most ? -most : step;
+        g_vehicleBody = AngleNormalize180(g_vehicleBody + step);
         g_vehicleTurnRate += (fabsf(AngleNormalize180(yaw - lastYaw)) / dt - g_vehicleTurnRate) * (1.0f - expf(-dt / 0.3f));
     }
     lastYaw = yaw;
@@ -565,6 +587,7 @@ static void UpdateViewAngles(float yaw, float pitch, int fromHand)
     if (!g_headYawInit) { g_headYawPrev = yaw; g_headYawInit = 1; }
     g_aimFromHand = fromHand;
     g_headYawCmd = g_headYawPrev;          // what this frame's view was built from
+    if (g_viewLocked) g_headYawCmd = 0;    // a held view has none of our aim in it: the head turns freely on top
     g_clPitchCmd = va[PITCH];
     if (!cfg.headAim) return;
 
@@ -1272,6 +1295,7 @@ static void UpdateGrenadeArc(void)
     int diag = 0;
 
     if (!cfg.grenadeArc || (cfg.grenadeArc == 1 && !g_btnDown[BT_PTRIGGER])) return;
+    if (g_onTurret || (g_inVehicle && g_gunVehicle)) return;   // the weapon index is stale on a mounted gun
     if (cfg.logNear && GetTickCount() - lastDiag > 1000) { lastDiag = GetTickCount(); diag = 1; }
     def = CurrentWeaponDef();
     if (diag) Log("grenade diag: cgame module %p, weapon index %d, weaponDef %p",
@@ -1734,6 +1758,56 @@ static void DropHeldWeapon(int h)
         if (SlotWeapon(cl, i)) { WeaponSlotCmd(i); break; }
 }
 
+// A hand closing on a weapon lying on the floor: the game's own "use" takes it (the gun goes into that hand
+// through the weapon slots). The game picks what to use by the way the head looks; with a hand that is the
+// wrong test, so the nearest dropped weapon within reach of the hand is handed to the game's use function.
+// Returns 1 when one was taken.
+static int HandPickup(int h)
+{
+    HMODULE m = GetModuleHandleA("gamex86.dll");
+    BYTE *gm = (BYTE *)m, *player, *best = NULL, *prevVM, *gameVM;
+    int n, i;
+    float hand[3], bestD = 90.0f * 90.0f;
+    if (!m || !PlayerClient() || !MapLoaded()) return 0;
+    HandWorld(h, hand);
+    player = gm + G_OFS_entities;
+    __try {
+        n = *(int *)(gm + G_OFS_numEntities);
+        if (n > 1024) n = 1024;
+        for (i = 1; i < n; i++) {
+            BYTE *e = gm + G_OFS_entities + i * G_ENTITY_SIZE;
+            const BYTE *item;
+            const float *o;
+            float d[3], dd;
+            if (!e[GENT_OFS_inuse] || e[0] != 2) continue;               // an item
+            item = *(const BYTE **)(e + GENT_OFS_item);
+            if (!item || *(const int *)(item + GITEM_OFS_giType) != 1) continue;   // a weapon
+            if (!*(const int *)(e + GENT_OFS_useIdx)) continue;
+            o = (const float *)(e + GENT_OFS_currentOrigin);
+            d[0] = o[0] - hand[0]; d[1] = o[1] - hand[1]; d[2] = o[2] - hand[2];
+            dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if (dd < bestD) { bestD = dd; best = e; }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    if (!best) return 0;
+    gameVM = GameVM();
+    if (!gameVM) return 0;
+    prevVM = MEM(BYTE *, ADDR_currentVM);
+    MEM(BYTE *, ADDR_currentVM) = gameVM;
+    __try {
+        typedef void (__cdecl *PFN_Use)(BYTE *item, BYTE *user, int arg);
+        PFN_Use use = ((PFN_Use *)(gm + G_OFS_useTable))[*(int *)(best + GENT_OFS_useIdx)];
+        Log("realistic: hand %d takes the weapon item %d from the floor", h, (int)((best - (gm + G_OFS_entities)) / G_ENTITY_SIZE));
+        use(best, player, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("realistic: taking the weapon from the floor failed");
+    }
+    MEM(BYTE *, ADDR_currentVM) = prevVM;
+    return 1;
+}
+
 // Controller vibration, scaled by Haptics (0.6 = the strengths written here).
 // Controller vibration of one kind (HapticsShots / Damage / Holsters; 0.6 = the strengths here).
 static void Buzz(int h, float amp, int ms, float strength)
@@ -1770,16 +1844,34 @@ static int ZoneUseful(int h, int zone)
     return SlotWeapon(cl, 4) || SlotWeapon(cl, 5);
 }
 
+static int shot_clip(int w, int lastW, int clip, int lastClip)
+{
+    return w == lastW && clip >= 0 && lastClip >= 0 && clip < lastClip;
+}
+
+// The kick of a mounted gun: a machine gun rattles in both hands, a cannon thumps harder and longer.
+static void MountedKick(int cannon)
+{
+    if (cannon) {
+        Buzz(0, 1.0f, 140, cfg.hapShots);
+        Buzz(1, 1.0f, 140, cfg.hapShots);
+    } else {
+        Buzz(0, 0.8f, 45, cfg.hapShots);
+        Buzz(1, 0.8f, 45, cfg.hapShots);
+    }
+}
+
 // Every frame: a tick when a hand reaches a usable holster, a kick on each shot (seen by the
 // muzzle flash of the weapon in the hand, at most every 70 ms, so automatic fire rattles), and
 // both hands shake when the player is hit, harder for more damage.
 static void UpdateHaptics(void)
 {
-    static int lastZone[2], lastHealth = -1, lastWeapon, lastClip = -1;
-    static DWORD lastShot;
+    static int lastZone[2], lastHealth = -1, lastWeapon, lastClip = -1, wasMounted, clipSeen;
+    static DWORD lastShot, mountedAt;
     HMODULE gm = GetModuleHandleA("gamex86.dll");
     DWORD now = GetTickCount();
     BYTE *cl = PlayerClient();
+    int mounted = g_onTurret || (g_inVehicle && g_gunVehicle);
     int h, health = -1, w = GameWeapon(cl), clip = GameClip(cl, w), shot;
     for (h = 0; h < 2; h++) {
         int zone = g_in.handValid[h] ? HandZone(h) : ZONE_NONE;
@@ -1789,11 +1881,34 @@ static void UpdateHaptics(void)
     // a shot: a round left the clip of the same weapon (scoped rifles show no flash), or the
     // weapon in the hand drew its muzzle flash
     shot = g_gunFlashed || (w == lastWeapon && clip >= 0 && lastClip >= 0 && clip < lastClip);
-    if (shot && g_gunHand >= 0 && now - lastShot >= 70) {
+    if (mounted) {
+        // turrets and vehicle guns: both hands hold the gun. The clip tells a shot when the game
+        // counts rounds for it; otherwise (a tank cannon, unlimited ammo) the trigger stands in
+        // for it, paced like the gun.
+        int trig = Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER);
+        if (!wasMounted) { clipSeen = 0; mountedAt = now; }
+        if (w == lastWeapon && clip >= 0 && lastClip >= 0 && clip < lastClip) clipSeen = 1;
+        if (shot_clip(w, lastWeapon, clip, lastClip) && now - lastShot >= 60) {
+            lastShot = now;
+            MountedKick(g_tankMode);
+        } else if (trig && !clipSeen && now - mountedAt > 400 && now - lastShot >= (g_tankMode ? 900u : 70u)) {
+            lastShot = now;
+            MountedKick(g_tankMode);
+        }
+    } else if (shot && g_gunHand >= 0 && now - lastShot >= 70) {
+        const char *wn = WeaponName(CurrentWeaponDef());
         lastShot = now;
-        Buzz(g_gunHand, 0.85f, 40, cfg.hapShots);
-        if (g_twoHand) Buzz(1 - g_gunHand, 0.5f, 40, cfg.hapShots);
+        if (wn && (strstr(wn, "panzerfaust") || strstr(wn, "Panzerfaust"))) {
+            // the rocket leaves the tube with one hard push on both hands
+            Buzz(g_gunHand, 1.0f, 160, cfg.hapShots);
+            Buzz(1 - g_gunHand, 0.8f, 160, cfg.hapShots);
+        } else {
+            Buzz(g_gunHand, 0.85f, 40, cfg.hapShots);
+            if (g_twoHand) Buzz(1 - g_gunHand, 0.5f, 40, cfg.hapShots);
+        }
     }
+    wasMounted = mounted;
+    wasMounted = mounted;
     g_gunFlashed = 0;
     lastWeapon = w;
     lastClip = clip;
@@ -1895,6 +2010,7 @@ static void GripPressed(int h)
             if (g_gunHand == h) return;
         }
         g_useHand = h;   // grabbing nothing: use (pick up, doors)
+        if (g_inVehicle) HandPickup(h);   // in a vehicle the game's own use is blocked (it leans out)
     } else if (h != g_gunHand) {
         // the off hand: close to the gun it holds it with both hands (UpdateGunPose), else use
         const float *a = g_in.hand[h].pos, *b = g_in.hand[g_gunHand].pos;
@@ -1982,6 +2098,25 @@ static void RealisticHands(void)
         else if (!down && was) GripReleased(h);
     }
     if (g_realSync) { g_useHand = -1; g_realSync = 0; }
+    {
+        // In a vehicle something held out to the player (Waters offers the Panzerfaust in the
+        // truck) can be taken with a trigger of an empty hand too, as with the grip: with nothing
+        // in the hands the trigger has nothing to fire.
+        static int trigWas[2];
+        static DWORD useUntil;
+        for (h = 0; h < 2; h++) {
+            int down = trigWas[h] ? g_in.trigger[h] > 0.35f : g_in.trigger[h] > 0.65f;
+            if (down && !trigWas[h] && g_inVehicle && !g_gunVehicle && g_gunHand < 0 && !g_gripDown[h] && HandPickup(h)) {
+                g_useHand = h;
+                useUntil = GetTickCount() + 800;
+            }
+            trigWas[h] = down;
+        }
+        if (useUntil && GetTickCount() > useUntil) {
+            useUntil = 0;
+            if (!g_gripDown[0] && !g_gripDown[1]) g_useHand = -1;
+        }
+    }
     WatchHeldWeapon();
     UpdateHaptics();
     SetButton(BT_PGRIP, g_useHand >= 0);
@@ -2000,6 +2135,7 @@ static void RealisticHands(void)
         }
         fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
                                   (!scoped && Pressed(g_in.trigger[other], BT_PTRIGGER)));
+        if (g_slideShow) fire = Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER);   // "fire to skip"
         SetButton(BT_STRIGGER, g_gunHand >= 0 && scoped && Pressed(g_in.trigger[other], BT_STRIGGER));
         SetButton(BT_PTRIGGER, fire);
     }
@@ -2860,13 +2996,15 @@ static void ProcessControllers(void)
             if (g_onTurret || (g_inVehicle && g_gunVehicle)) {
                 // on a turret or a vehicle's gun: either trigger fires it, the grips only hold it
                 SetButton(BT_PTRIGGER, Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER));
+                UpdateHaptics();
                 SetButton(BT_PGRIP, 0);
                 SetButton(BT_STRIGGER, 0);
                 SetButton(BT_SGRIP, 0);
             } else if (cfg.realistic) {
                 RealisticHands();
             } else {
-                SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER));
+                SetButton(BT_PTRIGGER, Pressed(g_in.trigger[dom], BT_PTRIGGER) ||
+                                       (g_slideShow && Pressed(g_in.trigger[off], BT_PTRIGGER)));
                 SetButton(BT_PGRIP, Pressed(g_in.grip[dom], BT_PGRIP));
                 SetButton(BT_STRIGGER, Pressed(g_in.trigger[off], BT_STRIGGER));
                 SetButton(BT_SGRIP, Pressed(g_in.grip[off], BT_SGRIP));
@@ -3487,6 +3625,51 @@ static void RenderScopeView(cod_refdef_t *fd)
     g_scopeActive = 1;
 }
 
+// Earthquakes and explosions shake the game's camera, its origin and its yaw. In a headset the
+// world wobbling around the head is hard to bear, so the shake is cut down: the view's smooth
+// path is followed (Holt smoothing, which keeps a steady walk free of lag) and what departs from
+// it is kept only in part (ShakeKeep). Small movements (a step's bob) are left alone, and a real
+// jump (a turn of the stick, a teleport) is followed at once.
+static void FilterShake(cod_refdef_t *fd)
+{
+    static float s[4], b[4];   // smoothed origin x y z and yaw, and how fast each is moving
+    static int init;
+    static LARGE_INTEGER last;
+    LARGE_INTEGER now, freq;
+    float x[4], out[4], dt, a, rawYaw = 0;
+    int i;
+    if (cfg.shakeKeep >= 0.999f) { init = 0; return; }
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    dt = last.QuadPart ? (float)((double)(now.QuadPart - last.QuadPart) / (double)freq.QuadPart) : 0.0f;
+    last = now;
+    for (i = 0; i < 3; i++) x[i] = fd->vieworg[i];
+    x[3] = YawOf(fd->viewaxis[0]);
+    if (!init || dt <= 0 || dt > 0.25f) {
+        for (i = 0; i < 4; i++) { s[i] = x[i]; b[i] = 0; }
+        init = 1;
+        return;
+    }
+    a = 1.0f - expf(-dt / 0.12f);
+    for (i = 0; i < 4; i++) {
+        float pred = s[i] + b[i] * dt, xi = x[i], lim = i < 3 ? 24.0f : 8.0f, dead = i < 3 ? 1.0f : 0.4f, d, ns;
+        if (i == 3) { xi = pred + AngleNormalize180(x[3] - pred); rawYaw = xi; }
+        d = xi - pred;
+        if (fabsf(d) > lim) { s[i] = xi; b[i] = 0; out[i] = xi; continue; }
+        ns = pred + a * d;
+        b[i] += a * ((ns - s[i]) / dt - b[i]);
+        s[i] = ns;
+        d = xi - ns;
+        out[i] = ns + (fabsf(d) > dead ? (d > 0 ? 1.0f : -1.0f) * (dead + (fabsf(d) - dead) * cfg.shakeKeep) : d);
+    }
+    for (i = 0; i < 3; i++) fd->vieworg[i] = out[i];
+    if (fabsf(out[3] - rawYaw) > 0.001f) {
+        float t[3];
+        int k;
+        for (k = 0; k < 3; k++) { RotateZ(fd->viewaxis[k], out[3] - rawYaw, t); memcpy(fd->viewaxis[k], t, sizeof(t)); }
+    }
+}
+
 // Headset frame: the scope view (when zoomed), the view weapon in the hand, then the scene from
 // each eye. The right eye reuses the scene's entities, lights and polys (first-item counters
 // restored) and is marked for the backend by x + 2.
@@ -3499,8 +3682,28 @@ static void RenderBothEyes(cod_refdef_t *fd)
     // weapon belong to the main scene.
     if (!(fd->rdflags & 8)) {
         if (!g_pitchSampled) { SamplePitchOffset(fd); g_pitchSampled = 1; }
+        FilterShake(fd);
         memcpy(g_lastViewOrg, fd->vieworg, sizeof(g_lastViewOrg));
         memcpy(g_lastViewAxis, fd->viewaxis, sizeof(g_lastViewAxis));
+        {
+            // Does the game's view follow the aim we write into it? When it does not (a scripted
+            // scene holds it) the head is free: it turns on top of the held view.
+            static float lastView, lastHead, accView, accHead;
+            static int init, heldFrames;
+            float v = YawOf(fd->viewaxis[0]);
+            if (init) {
+                accView = accView * 0.92f + fabsf(AngleNormalize180(v - lastView));
+                accHead = accHead * 0.92f + fabsf(AngleNormalize180(g_headYawPrev - lastHead));
+                // for a good while, not a few frames (drawing a weapon holds the view briefly)
+                heldFrames = (accHead > 4.0f && accView < 0.15f * accHead) ? heldFrames + 1 : 0;
+                if (g_linkedScene && !g_viewLocked) { g_viewLocked = 1; Log("view held by a linked scene: the head turns freely"); }
+                if (!g_viewLocked && heldFrames >= 45) { g_viewLocked = 1; Log("view held by the game: the head turns freely"); }
+                else if (g_viewLocked && !g_linkedScene && accHead > 1.0f && accView > 0.5f * accHead) { g_viewLocked = 0; Log("view follows the aim again"); }
+            }
+            lastView = v;
+            lastHead = g_headYawPrev;
+            init = 1;
+        }
         SetCrouchCorrection(fd->vieworg);
         UpdateRoomScale(fd);
         RenderScopeView(fd);
@@ -3688,7 +3891,11 @@ static void __cdecl hk_StretchPic(float x, float y, float w, float h, float s1, 
 
         if (g_hudHide && HiddenPicture(x, y, w, h)) return;
     }
-    if (g_singlePass && g_hudActive && !g_scopeActive && g_fsCount < MAX_FULLSCREEN &&
+    if (g_singlePass && g_hudActive && !g_scopeActive && !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
+        x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1 && (!g_curColorSet || g_curColor[3] >= 0.98f)) {
+        g_slideFrame = 1;   // the black picture that starts a briefing; what follows it is the slides
+    }
+    if (g_singlePass && g_hudActive && !g_scopeActive && g_fsCount < MAX_FULLSCREEN && !g_slideFrame &&
         !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
         x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1) {
         float r[8] = { x, y, w, h, s1, t1, s2, t2 };
@@ -4427,7 +4634,7 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
         vr_hud_t hud = cfg.hudLayer;
         hud.fbo = g_hudActive ? hud_fbo[0] : 0;
         // Without the HUD layer everything is in the eyes, so the eyes are always shown.
-        hud.world = g_worldDrawn || !hud.fbo;
+        hud.world = (g_worldDrawn && !g_slideFrame) || !hud.fbo;
         // Scope: only the game's scope screen, close to the face, nothing around it
         if (g_scopeActive && hud.fbo) {
             hud.opaque = 1;
@@ -4508,6 +4715,9 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
     }
     g_stereoFrameDrawn = 0;
     g_worldDrawn = 0;
+    if (g_slideShow != g_slideFrame) Log("slides: %s", g_slideFrame ? "on" : "off");
+    g_slideShow = g_slideFrame;
+    g_slideFrame = 0;
     g_hudCleared = 0;
     g_scopeWasActive = g_scopeActive;
     g_scopeActive = 0;
@@ -4711,6 +4921,11 @@ static void LoadConfig(void)
         cfg.traceMask = (int)strtoul(mask, NULL, 0);
     }
     cfg.scopeSmoothing  = IniFloat("Scope", "Smoothing", cfg.scopeSmoothing, ini);
+    cfg.shakeKeep = IniFloat("Comfort", "ShakeKeep", 0.4f, ini);
+    if (cfg.shakeKeep < 0) cfg.shakeKeep = 0;
+    if (cfg.shakeKeep > 1) cfg.shakeKeep = 1;
+    cfg.vehicleSmooth = IniFloat("Comfort", "VehicleTurnSmooth", 0.5f, ini);
+    if (cfg.vehicleSmooth < 0.02f) cfg.vehicleSmooth = 0.02f;
     cfg.menuPointer     = (float)CfgInt("Controllers", "MenuPointer", (int)cfg.menuPointer, ini);
     {
         int b;

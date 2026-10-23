@@ -20,7 +20,7 @@
 #include <string.h>
 #include "launcher_res.h"
 
-#define VERSION_TEXT L"v1.6.3"
+#define VERSION_TEXT L"v1.6.4"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
