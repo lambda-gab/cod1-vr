@@ -1,4 +1,4 @@
-// cod_vr: proxy opengl32.dll that turns on the dormant Quake 3 stereo path of CoDSP.exe 1.5
+// cod_vr: proxy opengl32.dll that turns on the dormant Quake 3 stereo path of CoDSP.exe 1.3
 // and sends each eye to an OpenXR headset (phase 2), or shows both eyes side by side on the
 // monitor when no headset is available (phase 1).
 //
@@ -239,6 +239,7 @@ static float     g_headYawCmd;         // aim yaw (head or hand) already contain
 // own yaw, smoothed, and the head looks around freely.
 static int       g_inVehicle;
 static int       g_gunVehicle;        // the vehicle is a gun (Flak 88, a tank): it fires, no ride hints
+static int       g_noRideAids;        // the vehicle is the boat of "ship" or "stalingrad": no vignette, no skip-mission hold and no ride hints (the missions need the player to crouch)
 static int       g_tankMode;          // driving a tank: left stick drives, right stick turns the gun, the head only looks
 static float     g_tankStick[2], g_tankDt;
 static float     g_vehicleBody, g_vehicleTurnRate, g_vehicleSpeed;
@@ -526,7 +527,7 @@ static void UpdateVehicle(float dt)
     }
     if (!parent) {
         if (g_inVehicle) { Log("vehicle: left"); g_vigAmount = 0; }
-        g_gunVehicle = g_tankMode = 0;
+        g_gunVehicle = g_tankMode = g_noRideAids = 0;
         g_inVehicle = 0;
         g_vehicleTurnRate = g_vehicleSpeed = 0;
         haveLast = 0;
@@ -553,6 +554,9 @@ static void UpdateVehicle(float dt)
             g_gunVehicle = 0;
         }
         g_tankMode = g_gunVehicle && CurrentMap(map, sizeof(map)) && !_strnicmp(map, "tankdrive", 9);
+        // the boat of "ship" (the crossing to Stalingrad) and the one Stalingrad starts in keep the free head and the
+        // vehicle-aligned view, but they are not rides to skip or to feel sick in, and the missions need the player to crouch
+        g_noRideAids = CurrentMap(map, sizeof(map)) && (!_stricmp(map, "ship") || !_strnicmp(map, "stalingrad", 10));
     }
     if (!g_inVehicle || g_vehicleRecenter) {
         // getting in (or recentering): the way the head looks now is the vehicle's front; on a
@@ -1570,7 +1574,7 @@ static void UpdateSkipMission(float dt)
     static DWORD toldAt;
     if (g_inVehicle && !wasInVehicle) told = 0;
     wasInVehicle = g_inVehicle;
-    if (!g_inVehicle || g_gunVehicle) { held = 0; return; }
+    if (!g_inVehicle || g_gunVehicle || g_noRideAids) { held = 0; return; }
     if (!told) {
         GamePrintBold("Feeling sick? Hold both triggers for 4 seconds to skip this mission.");
         GamePrintBold("Push the right stick up or down to change the vignette.");
@@ -2428,7 +2432,10 @@ static void UpdateVignette(float dt, float stick, float turnRate)
     prev[0] = g_lastViewOrg[0]; prev[1] = g_lastViewOrg[1];
     havePrev = 1;
     if (stick < 0.15f) speed = 0;   // roomscale: the body is really moving
-    if (g_inVehicle && cfg.vehicleVignette > 0) {
+    if (g_inVehicle && g_noRideAids) {
+        target = 0;   // the boat of "ship" / "stalingrad": no vignette at all
+        stick = 0;
+    } else if (g_inVehicle && cfg.vehicleVignette > 0) {
         // carried by a vehicle: its speed and turning, the stick has nothing to do with it
         float moving = (g_vehicleSpeed - cfg.vignetteSpeed) / (cfg.vignetteSpeed * 3.0f);
         float turning = (g_vehicleTurnRate - 8.0f) / 30.0f;
@@ -3149,7 +3156,7 @@ static void ProcessControllers(void)
             turnRate = fabsf(sx) * cfg.turnSpeed;
         }
         if (!g_stanceLatched && fabsf(sy) > 0.7f && fabsf(sy) > fabsf(sx)) {
-            if (g_inVehicle && !g_gunVehicle) {
+            if (g_inVehicle && !g_gunVehicle && !g_noRideAids) {
                 // in a vehicle: the vignette's strength, kept for next time
                 char v[16];
                 cfg.vehicleVignette += sy > 0 ? 0.15f : -0.15f;
@@ -5169,7 +5176,7 @@ static void LoadConfig(void)
             CfgStr("Buttons", g_buttons[b].key, g_buttons[b].def, cfg.bind[b], sizeof(cfg.bind[b]), ini);
     }
     if (cfg.enabled && !IsKnownExe()) {
-        Log("not CoDSP.exe 1.5 (timestamp %08x expected): passthrough only", CODSP_TIMESTAMP);
+        Log("not CoDSP.exe 1.3 (timestamp %08x expected): passthrough only", CODSP_TIMESTAMP);
         cfg.enabled = 0;
     }
     if (!cfg.enabled) cfg.vr = 0;
@@ -5314,7 +5321,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         WIN32_FILE_ATTRIBUTE_DATA fa;
         GetModuleFileNameA(NULL, exePath, sizeof(exePath));
         GetFileAttributesExA(exePath, GetFileExInfoStandard, &fa);
-        Log("game: %s, timestamp %08lx (1.5 is %08x), %lu bytes%s", exePath, nt->FileHeader.TimeDateStamp,
+        Log("game: %s, timestamp %08lx (1.3 is %08x), %lu bytes%s", exePath, nt->FileHeader.TimeDateStamp,
             CODSP_TIMESTAMP, fa.nFileSizeLow, nt->FileHeader.TimeDateStamp == CODSP_TIMESTAMP ? "" : " - NOT 1.5");
     }
     Log("cod_vr phase 4 loaded: enabled=%d vr=%d separation=%.2f worldScale=%.2f positional=%d headAim=%d "

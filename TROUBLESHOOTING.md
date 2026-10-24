@@ -74,10 +74,10 @@ Fixed in version 1.6.1. Update to the latest version.
 In the launcher, **GRAPHICS**: lower **Headset resolution** (for example to Medium, 85%) and **Antialiasing**.
 Changes need a game restart. Close other programs that use the graphics card.
 
-### "not CoDSP.exe 1.5" in `cod_vr.log`, or the mod does nothing
+### "not CoDSP.exe 1.3" in `cod_vr.log`, or the mod does nothing
 
-The mod is made for **Call of Duty 1.5** (`CoDSP.exe` from March 2004). Other versions of the game put things
-elsewhere, so the mod stays off. Update the game to 1.5 first. The installer checks the version for you.
+The mod is made for **Call of Duty 1.3** (`CoDSP.exe` from March 2004). Other versions of the game put things
+elsewhere, so the mod stays off. Update the game to 1.3 first. The installer checks the version for you.
 
 ### The Steam version does not start
 

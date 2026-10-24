@@ -15,7 +15,7 @@ The mod is a proxy `opengl32.dll` placed next to `CoDSP.exe`. It forwards every 
   analog movement and roomscale to the usercmd, and map the controller buttons to game commands;
 - show the controller buttons in the game's key hints (a detour in `cgamex86.dll`, reloaded with each level).
 
-It only activates on `CoDSP.exe` 1.5 (the PE timestamp is checked) and stays inactive otherwise. It was built by
+It only activates on `CoDSP.exe` 1.3 (the PE timestamp is checked) and stays inactive otherwise. It was built by
 reverse engineering `CoDSP.exe` with [REA](https://github.com/morluto/rea) + Ghidra, using
 [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest) as a reference. The full notes on addresses, hooks and
 design decisions are in [`CoD_VR_RE.md`](CoD_VR_RE.md) (in Portuguese).
@@ -35,7 +35,7 @@ Then copy from `mods/out/` to `<game folder>\main`:
 - `pakz_vr_nohands.pk3`: hides the first-person hands, so only the gun is in your hand. The launcher (VR tab > Player hands) makes and removes the same pack, which is what a manual install uses.
 - `pakz_vr_text.pk3`: the two training texts that mention the mouse, rewritten for VR.
 
-CoD 1.5 only loads packs whose name starts with `pak`. Delete a pack to undo it.
+CoD 1.3 only loads packs whose name starts with `pak`. Delete a pack to undo it.
 
 ## Installer command line
 

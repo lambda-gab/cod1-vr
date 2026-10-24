@@ -4,7 +4,7 @@
 
 [English](README.md) | **Português**
 
-Mod de PC VR para a **campanha single player do Call of Duty 1** (`CoDSP.exe` 1.5). Jogue o original de 2003 no
+Mod de PC VR para a **campanha single player do Call of Duty 1** (`CoDSP.exe` 1.3). Jogue o original de 2003 no
 headset: você olha e se move com o próprio corpo, a arma fica na sua mão, a mira é pelo controle e o HUD e os menus
 aparecem numa tela flutuante.
 
@@ -31,7 +31,7 @@ quis vivê-lo de novo em VR.
 
 ## Requisitos
 
-- Call of Duty (2003) para PC, single player, **versão 1.5** (`CoDSP.exe`).
+- Call of Duty (2003) para PC, single player, **versão 1.3** (`CoDSP.exe`).
 - Headset de PC VR com controles (testado com Quest pelo Virtual Desktop; Air Link e outros headsets de PC VR devem
   funcionar).
 - Um runtime OpenXR **de 32 bits**: Virtual Desktop (VDXR), Oculus/Meta ou SteamVR (o runtime OpenXR de 32 bits
@@ -51,7 +51,7 @@ quis vivê-lo de novo em VR.
 ### Mais fácil: o instalador (recomendado)
 
 1. Baixe o `CoD-VR-Setup.exe` da [última release](https://github.com/lambda-gab/cod1-vr/releases/latest).
-2. Execute. Ele acha a pasta do jogo (ou deixa você escolher) e confere se o jogo é a versão 1.5.
+2. Execute. Ele acha a pasta do jogo (ou deixa você escolher) e confere se o jogo é a versão 1.3.
 3. Escolha se quer esconder as mãos do personagem, deixando só a arma na sua mão (recomendado), e se quer criar um
    atalho do launcher na área de trabalho.
 4. Conecte o headset e abra o jogo pelo **launcher do Call of Duty VR** (o atalho, ou o `CoD-VR-Launcher.exe` na
@@ -158,6 +158,16 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.6.9
+
+- **As missões do barco** ("ship", a travessia para Stalingrad, e o começo de "Stalingrad", que começa num barco): sem
+  vinheta, sem "segure os dois gatilhos para pular a missão" e sem as mensagens de passeio. As missões exigem que você
+  se agache, então o stick livre para cima e para baixo voltam a ser os botões de postura ali. A cabeça livre e a
+  visão seguindo o barco continuam como estavam. Os carros e caminhões (carride, truckride, ...) mantêm tudo.
+- **A versão do jogo é a 1.3, não a 1.5:** a 1.3 é o último patch single player do Call of Duty (a 1.5 é a do
+  multiplayer). O README, o guia de problemas, as notas técnicas, as mensagens do instalador e o log diziam 1.5. O mod
+  em si não mudou: ele reconhece o mesmo `CoDSP.exe`.
 
 ### v1.6.8
 

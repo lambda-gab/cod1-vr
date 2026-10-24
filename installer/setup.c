@@ -18,7 +18,7 @@
 #include "../third_party/stb/stb_dxt.h"
 #include "setup_res.h"
 
-#define CODSP_TIMESTAMP   0x40443fda              // CoDSP.exe 1.5
+#define CODSP_TIMESTAMP   0x40443fda              // CoDSP.exe 1.3
 #define BACKUP_SUFFIX     L".cod_vr_backup"
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
 #define TEXT_PACK         L"main\\pakz_vr_text.pk3"
@@ -958,8 +958,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 
     if (ExeTimestamp(game) != CODSP_TIMESTAMP &&
         Ask(MB_YESNO | MB_ICONWARNING,
-            T(L"This CoDSP.exe is not version 1.5. The mod only works with 1.5 (it stays inactive otherwise).\n\nInstall anyway?",
-              L"Este CoDSP.exe não é a versão 1.5. O mod só funciona com a 1.5 (nas outras ele fica inativo).\n\nInstalar mesmo assim?")) != IDYES)
+            T(L"This CoDSP.exe is not version 1.3. The mod only works with 1.3 (it stays inactive otherwise).\n\nInstall anyway?",
+              L"Este CoDSP.exe não é a versão 1.3. O mod só funciona com a 1.3 (nas outras ele fica inativo).\n\nInstalar mesmo assim?")) != IDYES)
         return 0;
 
     if (!Install(game, &keptIni)) {

@@ -1,7 +1,7 @@
 # Call of Duty (2003) SP → VR: engenharia reversa do CoDSP.exe
 
 Ferramentas: REA 6.5.0 (`rea-agents`) com o provider Ghidra 12.1.4 (JDK 21).
-Alvo: `CoDSP.exe` 1.5 (02/03/2004), base `0x400000`, x86, sem ASLR. Endereços em `codsp_addresses.h`.
+Alvo: `CoDSP.exe` 1.3 (02/03/2004), base `0x400000`, x86, sem ASLR. Endereços em `codsp_addresses.h`.
 
 ## Conclusão principal
 
@@ -74,7 +74,7 @@ Saída: `proxy/out/opengl32.dll` + `proxy/out/cod_vr.ini`.
 
 - Encaminha os 368 exports do `SysWOW64\opengl32.dll`; só `glDrawBuffer`, `glReadBuffer` e `wglMakeCurrent` são próprios.
 - Hooks: `re.BeginFrame` e `re.RenderScene` (tabela `0x01426d60`) e a IAT de `SwapBuffers` (`0x53302c`).
-  Só são instalados se o `TimeDateStamp` do exe for `0x40443fda` (CoDSP.exe 1.5); em qualquer outro exe a DLL só encaminha as chamadas.
+  Só são instalados se o `TimeDateStamp` do exe for `0x40443fda` (CoDSP.exe 1.3); em qualquer outro exe a DLL só encaminha as chamadas.
 - `BeginFrame(0)` desliga o estéreo do renderer só durante a chamada, o que evita o erro fatal do `RE_BeginFrame`
   na tela de carregamento (`0x410937`). Os dois flags de estéreo ficam ligados a partir do quadro seguinte.
 - `glDrawBuffer(GL_BACK_LEFT/RIGHT)` → FBO por olho (RGBA8 + depth24/stencil8, do tamanho de `vidWidth`×`vidHeight`).
@@ -197,7 +197,7 @@ Resultado: o overlay preto continuou e a lente mostrou um zoom sem utilidade; as
 
 ### Terceira rodada
 
-- **Causa real das mãos e do overlay:** o CoDSP.exe 1.5 só monta `pak*.pk3` e `localized_*.pk3` de `main`; os `zz_*`
+- **Causa real das mãos e do overlay:** o CoDSP.exe 1.3 só monta `pak*.pk3` e `localized_*.pk3` de `main`; os `zz_*`
   nunca foram carregados (confirmado com `CoDSP.exe +set logfile 2 +path +quit`, que grava `main\console.log` na
   VirtualStore). O pacote das mãos agora é `pakz_vr_nohands.pk3` e aparece primeiro no search path. O pacote da luneta
   não é mais instalado.

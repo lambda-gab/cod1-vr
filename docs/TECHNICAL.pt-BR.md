@@ -15,7 +15,7 @@ O mod é um `opengl32.dll` proxy colocado ao lado do `CoDSP.exe`. Ele repassa to
   somar o movimento analógico e o roomscale ao usercmd e mapear os botões do controle para comandos do jogo;
 - mostrar os botões do controle nos avisos de tecla do jogo (um detour no `cgamex86.dll`, refeito a cada fase).
 
-Ele só é ativado no `CoDSP.exe` 1.5 (o timestamp do PE é conferido) e fica inativo nos demais casos. Foi feito a
+Ele só é ativado no `CoDSP.exe` 1.3 (o timestamp do PE é conferido) e fica inativo nos demais casos. Foi feito a
 partir de engenharia reversa do `CoDSP.exe` com [REA](https://github.com/morluto/rea) + Ghidra, tendo como referência
 o [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest). A documentação completa dos endereços, hooks e decisões
 está em [`CoD_VR_RE.md`](CoD_VR_RE.md).
@@ -35,7 +35,7 @@ Depois copie de `mods/out/` para `<pasta do jogo>\main`:
 - `pakz_vr_nohands.pk3`: esconde as mãos em primeira pessoa, deixando só a arma na sua mão. O launcher (aba VR > Player hands) cria e remove esse mesmo pacote, que é o que a instalação manual usa.
 - `pakz_vr_text.pk3`: as duas frases do treinamento que falam de mouse, reescritas para o VR.
 
-O CoD 1.5 só carrega pacotes com nome `pak*`. Apague um pacote para desfazer.
+O CoD 1.3 só carrega pacotes com nome `pak*`. Apague um pacote para desfazer.
 
 ## Linha de comando do instalador
 
