@@ -64,10 +64,12 @@ Run the installer again to update or uninstall. Your settings are kept on update
 1. Extract `cod-vr-manual-install.zip` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
 2. Copy `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini` and `CoD-VR-Launcher.exe` to the game folder (where
    `CoDSP.exe` is).
-3. Connect the headset and start `CoD-VR-Launcher.exe` (or `CoDSP.exe` directly).
+3. Start `CoD-VR-Launcher.exe`, open the **VR** tab and set **Player hands** to **Hidden** (the soldier's arms are shown
+   until you do; the launcher makes the file from your own game, and Windows may ask for administrator rights).
+4. Connect the headset and press PLAY (or start `CoDSP.exe` directly).
 
-To uninstall, delete those four files. Hiding the hands and the VR tutorial texts need the installer (or the steps in
-the [technical notes](docs/TECHNICAL.md)).
+To uninstall, delete those four files (and `main\pakz_vr_nohands.pk3` if you hid the hands). The VR tutorial texts
+need the installer (or the steps in the [technical notes](docs/TECHNICAL.md)).
 
 ## Controls
 
@@ -156,6 +158,15 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 - `[Mods]` `Difficulty`, `InfiniteAmmo`, `Gore`.
 
 ## Releases
+
+### v1.6.8
+
+- **Hide the player's arms from the launcher** (VR tab > **Player hands**: Shown / Hidden). With the manual install
+  there is no installer to make the "no hands" file, so the arms stayed visible; the launcher now makes it (or
+  removes it) from your own game files. Windows may ask for administrator rights. The manual installation steps in
+  this page say to do it.
+- The last row of the VR tab's left column (Subtitle size) was drawn under the hint line at the bottom: the rows are
+  closer together now.
 
 ### v1.6.7
 

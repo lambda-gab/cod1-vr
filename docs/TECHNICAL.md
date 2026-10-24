@@ -32,7 +32,7 @@ python mods/build_pk3.py "<game folder>"
 
 Then copy from `mods/out/` to `<game folder>\main`:
 
-- `pakz_vr_nohands.pk3`: hides the first-person hands, so only the gun is in your hand.
+- `pakz_vr_nohands.pk3`: hides the first-person hands, so only the gun is in your hand. The launcher (VR tab > Player hands) makes and removes the same pack, which is what a manual install uses.
 - `pakz_vr_text.pk3`: the two training texts that mention the mouse, rewritten for VR.
 
 CoD 1.5 only loads packs whose name starts with `pak`. Delete a pack to undo it.

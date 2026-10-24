@@ -32,7 +32,7 @@ python mods/build_pk3.py "<pasta do jogo>"
 
 Depois copie de `mods/out/` para `<pasta do jogo>\main`:
 
-- `pakz_vr_nohands.pk3`: esconde as mãos em primeira pessoa, deixando só a arma na sua mão.
+- `pakz_vr_nohands.pk3`: esconde as mãos em primeira pessoa, deixando só a arma na sua mão. O launcher (aba VR > Player hands) cria e remove esse mesmo pacote, que é o que a instalação manual usa.
 - `pakz_vr_text.pk3`: as duas frases do treinamento que falam de mouse, reescritas para o VR.
 
 O CoD 1.5 só carrega pacotes com nome `pak*`. Apague um pacote para desfazer.

@@ -19,8 +19,9 @@
 #include <ctype.h>
 #include <string.h>
 #include "launcher_res.h"
+#include "../third_party/miniz/miniz.h"
 
-#define VERSION_TEXT L"v1.6.7"
+#define VERSION_TEXT L"v1.6.8"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -128,6 +129,9 @@ static option_t g_vrOpts[] = {
     { L"Vibration: holsters", L"Reaching a holster, taking, putting away and dropping weapons, recentering.",
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
       { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
+    // not a setting of cod_vr.ini: the "no hands" pack in the game folder (HandsPack functions); the click is handled by Click
+    { L"Player hands", L"Hide the soldier's arms so only the gun is in your hand (recommended). Made from your game's own files; Windows may ask for administrator rights.",
+      "Launcher", 2, { L"Shown", L"Hidden" }, { "", "" }, 0 },
 };
 #define VR_COL2 12
 
@@ -244,6 +248,167 @@ static void SaveOption(option_t *o)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Player hands. The game's first-person hands (xmodel/viewmodel_hands*) come with sleeves and arms. The pack
+// main\\pakz_vr_nohands.pk3 gives each of those models a transparent skin, so only the gun shows. The installer
+// makes it; a manual install has no installer, so the launcher can make (and remove) the same pack here, from the
+// player's own paks. Writing into the game folder usually needs administrator rights, so the launcher runs itself
+// again elevated (/handspack hide|show) when it cannot write.
+// ---------------------------------------------------------------------------
+#define HANDS_PACK_FILE   "\\main\\pakz_vr_nohands.pk3"
+#define INVISIBLE_SKIN    "cloth_masked@vr_invisible.tga"   // alpha-tested skin type, alpha 0
+
+typedef struct { char name[128]; void *data; size_t size; } hand_entry_t;
+static hand_entry_t g_handModels[64];
+static int g_numHandModels;
+
+static int CmpNames(const void *a, const void *b) { return _stricmp((const char *)a, (const char *)b); }
+
+static void KeepHandModel(const char *name, void *data, size_t size)
+{
+    int i;
+    for (i = 0; i < g_numHandModels; i++)
+        if (!_stricmp(g_handModels[i].name, name)) { free(g_handModels[i].data); break; }   // a later pak wins
+    if (i == g_numHandModels) {
+        if (g_numHandModels == 64) { free(data); return; }
+        g_numHandModels++;
+    }
+    strncpy(g_handModels[i].name, name, sizeof(g_handModels[i].name) - 1);
+    g_handModels[i].data = data;
+    g_handModels[i].size = size;
+}
+
+// xmodel v14: ... ff ff ff ff 00 00 00 00, u16 skin count, count NUL-terminated names to EOF.
+static void *ReplaceSkins(const BYTE *d, size_t n, size_t *outSize)
+{
+    static const BYTE marker[8] = { 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0 };
+    size_t at = (size_t)-1, i, pos, k;
+    unsigned count;
+    BYTE *out, *w;
+    for (i = 0; i + 8 <= n; i++) if (!memcmp(d + i, marker, 8)) at = i;
+    if (at == (size_t)-1 || at + 10 > n) return NULL;
+    pos = at + 8;
+    count = d[pos] | (d[pos + 1] << 8);
+    k = pos + 2;
+    for (i = 0; i < count; i++) {          // each name must be non-empty and terminated
+        size_t start = k;
+        while (k < n && d[k]) k++;
+        if (k >= n || k == start) return NULL;
+        k++;
+    }
+    for (; k < n; k++) if (d[k]) return NULL;   // nothing else after the names
+    *outSize = pos + 2 + count * (strlen(INVISIBLE_SKIN) + 1);
+    out = w = malloc(*outSize);
+    if (!out) return NULL;
+    memcpy(w, d, pos + 2);
+    w += pos + 2;
+    for (i = 0; i < count; i++) { memcpy(w, INVISIBLE_SKIN, strlen(INVISIBLE_SKIN) + 1); w += strlen(INVISIBLE_SKIN) + 1; }
+    return out;
+}
+
+static int HandsPackExists(void)
+{
+    char path[MAX_PATH];
+    _snprintf(path, sizeof(path), "%s" HANDS_PACK_FILE, g_dir);
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+// Makes the pack from the game's own paks (the same as the installer's). 1 when it is there.
+static int BuildHandsPack(void)
+{
+    char pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    int count = 0, cap = 0, i, ok, models = 0;
+    mz_zip_archive zw;
+    static BYTE tga[18 + 4 * 4 * 4];
+
+    _snprintf(pattern, sizeof(pattern), "%s\\main\\pak*.pk3", g_dir);
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!_strnicmp(fd.cFileName, "pakz_vr", 7)) continue;   // our own packs
+        if (count == cap) { cap = cap ? cap * 2 : 32; paks = realloc(paks, cap * sizeof(*paks)); }
+        _snprintf(paks[count], MAX_PATH, "%s", fd.cFileName);
+        count++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    if (count) qsort(paks, count, sizeof(*paks), CmpNames);   // the engine's order: later paks override
+
+    g_numHandModels = 0;
+    for (i = 0; i < count; i++) {
+        mz_zip_archive z;
+        mz_uint e;
+        memset(&z, 0, sizeof(z));
+        _snprintf(path, sizeof(path), "%s\\main\\%s", g_dir, paks[i]);
+        if (!mz_zip_reader_init_file(&z, path, 0)) continue;
+        for (e = 0; e < mz_zip_reader_get_num_files(&z); e++) {
+            char name[256];
+            mz_zip_reader_get_filename(&z, e, name, sizeof(name));
+            if (!_strnicmp(name, "xmodel/viewmodel_hands", 22)) {
+                size_t size;
+                void *data = mz_zip_reader_extract_to_heap(&z, e, &size, 0);
+                if (data) KeepHandModel(name, data, size);
+            }
+        }
+        mz_zip_reader_end(&z);
+    }
+    free(paks);
+    if (!g_numHandModels) return 0;
+
+    memset(tga, 0, sizeof(tga));   // 4x4, 32 bits, every pixel transparent
+    tga[2] = 2; tga[12] = 4; tga[14] = 4; tga[16] = 32; tga[17] = 8;
+
+    _snprintf(out, sizeof(out), "%s" HANDS_PACK_FILE, g_dir);
+    _snprintf(tmp, sizeof(tmp), "%s.tmp", out);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, tmp, 0)) return 0;
+    ok = mz_zip_writer_add_mem(&zw, "skins/" INVISIBLE_SKIN, tga, sizeof(tga), MZ_DEFAULT_COMPRESSION);
+    for (i = 0; i < g_numHandModels; i++) {
+        size_t size;
+        void *data = ok ? ReplaceSkins(g_handModels[i].data, g_handModels[i].size, &size) : NULL;
+        if (data) {
+            ok = mz_zip_writer_add_mem(&zw, g_handModels[i].name, data, size, MZ_DEFAULT_COMPRESSION);
+            free(data);
+            models++;
+        }
+        free(g_handModels[i].data);
+    }
+    ok = ok && mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    if (!ok || !models) { DeleteFileA(tmp); return 0; }
+    return MoveFileExA(tmp, out, MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
+static int RemoveHandsPack(void)
+{
+    char path[MAX_PATH];
+    _snprintf(path, sizeof(path), "%s" HANDS_PACK_FILE, g_dir);
+    return DeleteFileA(path) != 0 || !HandsPackExists();
+}
+
+// Runs the launcher again as administrator to make or remove the pack; 1 when it worked.
+static int RunHandsHelper(HWND wnd, int hide)
+{
+    char exe[MAX_PATH];
+    SHELLEXECUTEINFOA sei;
+    DWORD code = 1;
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.hwnd = wnd;
+    sei.lpVerb = "runas";
+    sei.lpFile = exe;
+    sei.lpParameters = hide ? "/handspack hide" : "/handspack show";
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExA(&sei) || !sei.hProcess) return 0;
+    WaitForSingleObject(sei.hProcess, 60000);
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    return code == 0;
+}
+
 static void LoadAll(void)
 {
     int i;
@@ -259,6 +424,7 @@ static void LoadAll(void)
         }
     }
     for (i = 0; i < NUM_VR; i++) LoadOption(&g_vrOpts[i]);
+    g_vrOpts[NUM_VR - 1].cur = HandsPackExists();   // "Player hands": Hidden when the pack is there
     for (i = 0; i < NUM_GFX; i++) LoadOption(&g_gfxOpts[i]);
     {
         // the first MODS had "Infinite health": now the God mode difficulty
@@ -802,8 +968,8 @@ static void Paint(HWND wnd, HDC wdc)
             DrawPageTitle(dc, L"VR", NULL);
             Text(dc, g_fBold, COL_GOLD, P(40), P(66), P(480), P(90), L"COMFORT AND MOVEMENT", DT_SINGLELINE | DT_VCENTER);
             Text(dc, g_fBold, COL_GOLD, P(510), P(66), P(960), P(90), L"WEAPONS AND VIBRATION", DT_SINGLELINE | DT_VCENTER);
-            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 31, 94, 40, 480);
-            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 34, 94, 510, 960);
+            h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 29, 94, 40, 480);
+            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR - VR_COL2, 31, 94, 510, 960);
             DrawHint(dc, g_vrOpts, h1 >= 0 ? h1 : h2);
         } else if (g_page == PAGE_MODS) {
             DrawPageTitle(dc, L"MODS", L"Things the original game does not have. Used the next time the game starts.");
@@ -858,6 +1024,19 @@ static void Click(HWND wnd, int idx)
     case HIT_ROW:
         o = PageOption(h->arg);
         if (!o) break;
+        if (g_page == PAGE_VR && o == &g_vrOpts[NUM_VR - 1]) {
+            // Player hands: make or remove the pack (elevated when the game folder is not writable)
+            int hide = !HandsPackExists();
+            int done = hide ? BuildHandsPack() : RemoveHandsPack();
+            if (!done) done = RunHandsHelper(wnd, hide);
+            if (!done)
+                MessageBoxW(wnd, hide ? L"The hands could not be hidden: the pack could not be made from your game files. "
+                                        L"The mod works without it."
+                                      : L"The pack could not be removed. Delete main\\pakz_vr_nohands.pk3 from the game folder.",
+                            L"CoD VR", MB_OK | MB_ICONWARNING);
+            o->cur = HandsPackExists();
+            break;
+        }
         if (o->cur < 0) o->cur = o->def;
         else if (h->type == HIT_PREV) o->cur = (o->cur + o->count - 1) % o->count;
         else o->cur = (o->cur + 1) % o->count;
@@ -986,7 +1165,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     char path[MAX_PATH], *slash;
     const char *appdata = getenv("APPDATA");
-    (void)prev; (void)cmdLine;
+    (void)prev;
 
     GetModuleFileNameA(NULL, path, sizeof(path));
     slash = strrchr(path, '\\');
@@ -998,6 +1177,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdLine, int show)
     g_haveGame = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     _snprintf(path, sizeof(path), "%s\\opengl32.dll", g_dir);
     g_haveMod = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    if (cmdLine && wcsstr(cmdLine, L"/handspack"))   // the elevated helper of the Player hands option: no window
+        return (wcsstr(cmdLine, L"hide") ? BuildHandsPack() : RemoveHandsPack()) ? 0 : 1;
     LoadAll();
 
     screen = GetDC(NULL);

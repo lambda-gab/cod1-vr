@@ -64,10 +64,13 @@ Execute o instalador de novo para atualizar ou desinstalar. Nas atualizações, 
 1. Extraia o `cod-vr-manual-install.zip` da [última release](https://github.com/lambda-gab/cod1-vr/releases/latest).
 2. Copie `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini` e `CoD-VR-Launcher.exe` para a pasta do jogo (onde está
    o `CoDSP.exe`).
-3. Conecte o headset e abra o `CoD-VR-Launcher.exe` (ou direto o `CoDSP.exe`).
+3. Abra o `CoD-VR-Launcher.exe`, vá na aba **VR** e mude **Player hands** para **Hidden** (os braços do soldado
+   aparecem até você fazer isso; o launcher gera o arquivo a partir do seu próprio jogo, e o Windows pode pedir
+   direitos de administrador).
+4. Conecte o headset e aperte PLAY (ou abra direto o `CoDSP.exe`).
 
-Para desinstalar, apague esses quatro arquivos. Esconder as mãos e os textos do treinamento para VR precisam do
-instalador (ou dos passos nas [informações técnicas](docs/TECHNICAL.pt-BR.md)).
+Para desinstalar, apague esses quatro arquivos (e o `main\pakz_vr_nohands.pk3`, se você escondeu as mãos). Os textos
+do treinamento para VR precisam do instalador (ou dos passos nas [informações técnicas](docs/TECHNICAL.pt-BR.md)).
 
 ## Controles
 
@@ -155,6 +158,15 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.6.8
+
+- **Esconder os braços do personagem pelo launcher** (aba VR > **Player hands**: Shown / Hidden). Na instalação
+  manual não há instalador para criar o arquivo "sem mãos", então os braços ficavam visíveis; agora o launcher cria
+  (ou remove) o arquivo a partir dos arquivos do seu próprio jogo. O Windows pode pedir direitos de administrador. Os
+  passos da instalação manual deste README mandam fazer isso.
+- A última linha da coluna esquerda da aba VR (Subtitle size) era desenhada embaixo da linha de dica no rodapé: as
+  linhas ficaram mais próximas.
 
 ### v1.6.7
 
