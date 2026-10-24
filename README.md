@@ -157,6 +157,13 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.6.7
+
+- **Crash in the mission "rocket"** when fighting the enemies at the start: the game's drawing of static models
+  (props, trees, rubble) fills a fixed-size list and wrote past its end when a lot of them were in view. The mod now
+  leaves out the models that do not fit for that frame instead of letting the game crash (a log line,
+  `static models: the index cache is full`, tells when it happens).
+
 ### v1.6.6
 
 - **The gun swayed in your hand like an elastic while you walked or strafed** (v1.6.4 and v1.6.5): the camera shake

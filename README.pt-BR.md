@@ -156,6 +156,13 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.6.7
+
+- **Crash na missão "rocket"** ao lutar com os inimigos no começo: o desenho dos modelos estáticos do jogo (objetos,
+  árvores, entulho) enche uma lista de tamanho fixo e escrevia além do fim dela quando havia muitos à vista. Agora o
+  mod deixa de fora, naquele quadro, os modelos que não cabem, em vez de deixar o jogo travar (uma linha no log,
+  `static models: the index cache is full`, avisa quando acontece).
+
 ### v1.6.6
 
 - **A arma balançava na mão como um elástico quando você andava ou se movia de lado** (v1.6.4 e v1.6.5): a redução do

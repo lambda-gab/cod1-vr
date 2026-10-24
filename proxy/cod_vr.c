@@ -4225,6 +4225,35 @@ static PFN_Tramp Detour(DWORD target, const BYTE *prologue, int len, void *hook)
     return (PFN_Tramp)t;
 }
 
+// RB_SurfaceStaticModelCached (0x4fabd0, the game's static models: props, trees, rubble) appends the
+// surface's indices to a cache of 0x20000 shorts (0x17f0c94) whose counter (0x1830c94) sits right after
+// it, and never checks the room. In a prop-heavy view (the mission rocket, with the wide VR view) the
+// cache overflowed, the write hit the counter, and the next store crashed the game. A surface that does
+// not fit is left out of that frame instead.
+#define STATIC_CACHE_COUNT   0x1830c94
+#define STATIC_CACHE_SHORTS  0x20000
+typedef void (__cdecl *PFN_StaticModel)(void *arg);
+static PFN_StaticModel tramp_StaticModel;
+
+static void __cdecl hk_StaticModel(void *arg)
+{
+    __try {
+        const BYTE *surf = *(const BYTE **)((const BYTE *)arg + 4);
+        int n = *(const unsigned short *)(surf + 0x10);
+        int count = *(const int *)STATIC_CACHE_COUNT;
+        if (count < 0 || count + n + 8 > STATIC_CACHE_SHORTS) {
+            static int skipped;
+            if (skipped++ < 5 || skipped % 500 == 0)
+                Log("static models: the index cache is full (%d of %d, surface of %d), surface left out (%d so far)",
+                    count, STATIC_CACHE_SHORTS, n, skipped);
+            return;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;   // an argument that cannot be read: not worth drawing
+    }
+    tramp_StaticModel(arg);
+}
+
 static void __cdecl hk_SetGL2D(void)
 {
     if (g_fxTarget) BindEye(g_fxTarget - 1);   // full-screen effect pass for one eye
@@ -4283,6 +4312,12 @@ static void InstallDetours(void)
     static const BYTE bdv[] = { 0x51, 0xA1, 0xA8, 0x46, 0x53, 0x01 };
     // mov eax, dword ptr [0x1423c70]
     static const BYTE joy[] = { 0xA1, 0x70, 0x3C, 0x42, 0x01 };
+    if (!tramp_StaticModel) {
+        // mov eax, dword ptr [0x1534704]; mov ecx, dword ptr [eax + 0x20]
+        static const BYTE sm[] = { 0xA1, 0x04, 0x47, 0x53, 0x01, 0x8B, 0x48, 0x20 };
+        tramp_StaticModel = (PFN_StaticModel)Detour(0x4fabd0, sm, sizeof(sm), (void *)hk_StaticModel);
+        if (tramp_StaticModel) Log("hooked RB_SurfaceStaticModelCached (index cache guard)");
+    }
     if (cfg.vr && cfg.controllers && !tramp_JoystickMove) {
         tramp_JoystickMove = Detour(ADDR_CL_JoystickMove, joy, sizeof(joy), (void *)hk_JoystickMove);
         if (tramp_JoystickMove) Log("hooked CL_JoystickMove");
