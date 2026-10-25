@@ -15,7 +15,7 @@ The mod is a proxy `opengl32.dll` placed next to `CoDSP.exe`. It forwards every 
   analog movement and roomscale to the usercmd, and map the controller buttons to game commands;
 - show the controller buttons in the game's key hints (a detour in `cgamex86.dll`, reloaded with each level).
 
-It only activates on `CoDSP.exe` 1.3 (the PE timestamp is checked) and stays inactive otherwise. It was built by
+It only activates on `CoDSP.exe` 1.3 and `CoDUOSP.exe` 1.51 (United Offensive; the PE timestamps are checked) and stays inactive otherwise. Each game has its own address table (`addr_values.h`: the same names, one value per game), found by matching the same code in both executables. It was built by
 reverse engineering `CoDSP.exe` with [REA](https://github.com/morluto/rea) + Ghidra, using
 [RTCWQuest](https://github.com/Team-Beef-Studios/RTCWQuest) as a reference. The full notes on addresses, hooks and
 design decisions are in [`CoD_VR_RE.md`](CoD_VR_RE.md) (in Portuguese).

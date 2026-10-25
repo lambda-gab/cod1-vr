@@ -2,10 +2,14 @@
 
 IDI_LAUNCHER ICON   "res\\launcher.ico"
 IDR_BANNER   RCDATA "res\\banner.jpg"
+IDR_BANNER_UO RCDATA "res\\banner_uo.jpg"
+IDR_SUP_RECRUIT RCDATA "res\\sup_recruit.bin"
+IDR_SUP_VETERAN RCDATA "res\\sup_veteran.bin"
+IDR_SUP_MASTER  RCDATA "res\\sup_master.bin"
 
 1 VERSIONINFO
-FILEVERSION 1,6,9,0
-PRODUCTVERSION 1,6,9,0
+FILEVERSION 1,7,0,0
+PRODUCTVERSION 1,7,0,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -13,8 +17,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Call of Duty VR launcher"
       VALUE "ProductName", "Call of Duty VR"
-      VALUE "FileVersion", "1.6.9"
-      VALUE "ProductVersion", "1.6.9"
+      VALUE "FileVersion", "1.7.0"
+      VALUE "ProductVersion", "1.7.0"
     END
   END
   BLOCK "VarFileInfo"

@@ -4,7 +4,7 @@
 
 **English** | [Português](README.pt-BR.md)
 
-A PC VR mod for the **Call of Duty 1 single player campaign** (`CoDSP.exe` 1.3). Play the original 2003 game in your
+A PC VR mod for the **Call of Duty 1 single player campaign** (`CoDSP.exe` 1.3) and its expansion **United Offensive** (`CoDUOSP.exe` 1.51). Play the original 2003 game in your
 headset: you look around and move with your own body, the gun is in your hand, you aim with the controller and you see
 the HUD and menus on a floating screen.
 
@@ -29,9 +29,30 @@ wanted to experience it again in VR.
 >
 > [**Support on Patreon**](https://www.patreon.com/cw/LambdaGab)
 
+### Patreon supporters
+
+<p align="center">
+  <img src="docs/images/supporters/master.png" width="110" alt="Master"><br>
+  <b>Dmitriy Melnikov</b><br>
+  <sub>&#9733; MASTER &#9733;</sub>
+</p>
+
+<p align="center">
+  <sub>
+    <img src="docs/images/supporters/recruit.png" width="18" alt=""> Recruit
+    &nbsp;&middot;&nbsp;
+    <img src="docs/images/supporters/veteran.png" width="18" alt=""> Veteran
+    &nbsp;&middot;&nbsp;
+    <img src="docs/images/supporters/master.png" width="18" alt=""> Master
+    <br>
+    Thank you for keeping the project going. The supporters are also shown beside the game's main menu in the headset.
+  </sub>
+</p>
+
 ## Requirements
 
-- Call of Duty (2003) for PC, single player, **version 1.3** (`CoDSP.exe`).
+- Call of Duty (2003) for PC, single player, **version 1.3** (`CoDSP.exe`), and/or Call of Duty: United Offensive,
+  single player, **version 1.51** (`CoDUOSP.exe`).
 - A PC VR headset with controllers (tested with a Quest through Virtual Desktop; Air Link and other PC VR headsets
   should work too).
 - A **32-bit** OpenXR runtime: Virtual Desktop (VDXR), Oculus/Meta, or SteamVR (its 32-bit OpenXR runtime comes
@@ -51,7 +72,7 @@ wanted to experience it again in VR.
 ### Easiest: the installer (recommended)
 
 1. Download `CoD-VR-Setup.exe` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
-2. Run it. It finds the game folder (or lets you pick it) and checks that the game is version 1.3.
+2. Run it. It finds the game folder (or lets you pick it) and checks that the game is version 1.3 (United Offensive: 1.51).
 3. Choose whether to hide the player's hands, so only the gun is in your hand (recommended), and whether to create
    a desktop shortcut to the launcher.
 4. Connect the headset and start the game with the **Call of Duty VR launcher** (the shortcut, or
@@ -62,13 +83,13 @@ Run the installer again to update or uninstall. Your settings are kept on update
 ### Manual
 
 1. Extract `cod-vr-manual-install.zip` from the [latest release](https://github.com/lambda-gab/cod1-vr/releases/latest).
-2. Copy `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini` and `CoD-VR-Launcher.exe` to the game folder (where
-   `CoDSP.exe` is).
+2. Copy `opengl32.dll`, `openxr_loader.dll`, `cod_vr.ini`, `supporters.ini` and `CoD-VR-Launcher.exe` to the game folder (where
+   `CoDSP.exe` or `CoDUOSP.exe` is).
 3. Start `CoD-VR-Launcher.exe`, open the **VR** tab and set **Player hands** to **Hidden** (the soldier's arms are shown
    until you do; the launcher makes the file from your own game, and Windows may ask for administrator rights).
 4. Connect the headset and press PLAY (or start `CoDSP.exe` directly).
 
-To uninstall, delete those four files (and `main\pakz_vr_nohands.pk3` if you hid the hands). The VR tutorial texts
+To uninstall, delete those five files (and `main\pakz_vr_nohands.pk3` if you hid the hands). The VR tutorial texts
 need the installer (or the steps in the [technical notes](docs/TECHNICAL.md)).
 
 ## Controls
@@ -97,13 +118,13 @@ Buttons (editable in `[Buttons]` of `cod_vr.ini`):
 | Control | Action |
 |---|---|
 | Either trigger | Fire (with a grenade: hold to see its trajectory, release to throw). With a scoped rifle, the trigger of the hand not holding the gun zooms |
-| Grip of an empty hand | Use / pick up (doors, weapons on the floor) |
-| Other hand's grip, near the gun | Hold the gun with both hands |
-| Left stick | Move (relative to the head) |
+| Grip of an empty hand, or of the free hand away from the gun | Use / pick up (doors, weapons on the floor). Planting explosives: with a gun in one hand, reach the other hand into the bomb and hold its grip |
+| Free hand's grip on the gun's handguard | Hold the gun with both hands |
+| Left stick | Move (relative to the head). With Blink or Shift (beta): push forward to aim a jump, let go to go |
 | Right stick | Turn (45° snap); up/down changes stance |
-| A / B | Jump / reload |
-| X | Objectives (shown above your left hand) |
-| Y | Melee |
+| A / B (your gun hand's buttons) | Jump / reload (left-handed: X / Y) |
+| X, Y (the other hand's buttons; left-handed: A, B) | Wildcards: a tap runs the button's own action (none by default), holding one and pressing another button runs a shortcut (weapon switch on Y + A). Editable in the launcher |
+| Back of the hand without the gun, turned to your eyes | Objectives, like looking at a watch. Melee: swing the gun |
 | Left stick click | Recenter (stand up straight) |
 | Right stick click | Go prone |
 | Menu | Game menu |
@@ -119,7 +140,7 @@ The launcher has the settings most players want, saved as soon as you change the
 - **GRAPHICS:** headset resolution (from *Potato* 50% to *GPU Furnace* 200%, with the size per eye), antialiasing
   (MSAA), texture filtering (anisotropic), texture quality, brightness, and post-processing test options (ambient
   occlusion, sharpening, colour style, bloom: leave them off if the image looks worse).
-- **VR:** comfort vignette, snap or smooth turning, dominant hand, roomscale, physical crouch, menus fixed or
+- **VR:** movement (continuous, or Blink / Shift jumps, beta), comfort vignette, snap or smooth turning, roomscale, physical crouch, menus fixed or
   following the head, what of the HUD stays on screen, grenade trajectory, crosshair style, melee by swinging the
   gun, dropping the weapon on release, two-hand steadiness and recoil, objectives on the hand, and vibration
   strength for shots, hits and holsters.
@@ -159,6 +180,38 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.7.0
+
+- **Call of Duty: United Offensive** (`CoDUOSP.exe` 1.51) works, single player campaign. The installer and the launcher
+  accept it (the launcher's home page has a card for each game you have), and everything below is for both games.
+  United Offensive extras: the jeep's machine gun is aimed with the controller; the bipod machine guns (.30 cal, MG34,
+  DP28) are set up with the trigger of your free hand (press again to take it down); the Foy ladder, the Noville tank
+  start and the bomber's turrets work; Perma death erases United Offensive's own saves.
+- **The bomber's gun turrets** (dorsal and tail): you stay at the gun's seat while it turns, the controller you point
+  aims it (the head looks around freely), the seat is the same wherever the controller points when you get on, the
+  recenter button brings you back to it, a grip press gets you off, and the plain reticle is hidden on turrets.
+- **Movement** (VR tab): *Continuous* walks with the stick, as before (the default). **Blink (beta)** and **Shift
+  (beta)** move by jumps: push the move stick forward to aim an arc with that stick's hand (your gun hand stays free),
+  let go to go there. The destination has to be floor where you fit. Blink fades the screen out and in; Shift glides.
+- **Buttons.** The two buttons of the hand that does not hold the gun (X and Y, or A and B if you are left-handed) are
+  wildcards: a tap runs the button's own action, holding one and pressing another button runs a shortcut (weapon
+  switch on Y + A by default). The two buttons of your gun hand act at once: A = Jump, B = Reload (left-handed: X =
+  Jump, Y = Reload), so you can reload while the thumb stays on the move stick.
+- **CONTROLS page:** your dominant hand is the first choice and the defaults follow it (choose Left and "Default" is the
+  left-handed layout, so the separate Leftie profile is gone). The page has no more long texts, and the launcher is a
+  little taller and its home page centred.
+- **Plant explosives and use things with your free hand while a gun is in the other:** reach the free hand into the
+  bomb (or switch, door) and hold its grip. Before, the weapon had to be put away.
+- **Objectives** appear on the back of the hand that does not hold the gun, like a watch: turn it to your eyes. The
+  screen is bigger and its background more opaque (the subtitles' box too).
+- **Patreon Supporters:** the people who support the project on Patreon are listed on a panel beside the game's main
+  menu in the headset (the list is `supporters.ini` in the game folder; the launcher draws the panel).
+- **Holsters:** reaching a holster you can use gives one vibration of a second, not a continuous one.
+- **Scopes:** a round mask closes the view while you zoom.
+- **VR tab:** new *Vehicle turns* and *Camera shake* options (how the view follows a vehicle's bends, how much it shakes
+  in explosions).
+- **Fixes:** the "lean out of the window" hint only on the car ride; the trees' flicker in United Offensive (the
+  static model cache); Pimax: VR starts when the runtime registered its 64-bit file for 32-bit programs.
 ### v1.6.9
 
 - **The boat missions** ("ship", the crossing to Stalingrad, and the start of "Stalingrad", which begins in a boat): no

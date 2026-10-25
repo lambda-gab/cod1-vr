@@ -19,6 +19,7 @@
 #include "setup_res.h"
 
 #define CODSP_TIMESTAMP   0x40443fda              // CoDSP.exe 1.3
+#define CODUO_TIMESTAMP   0x412653f0              // CoDUOSP.exe 1.51 (United Offensive)
 #define BACKUP_SUFFIX     L".cod_vr_backup"
 #define HANDS_PACK        L"main\\pakz_vr_nohands.pk3"
 #define TEXT_PACK         L"main\\pakz_vr_text.pk3"
@@ -57,21 +58,27 @@ static void Join(wchar_t *out, const wchar_t *dir, const wchar_t *name)
     out[MAX_PATH - 1] = 0;
 }
 
-static int HasGame(const wchar_t *dir)
+static int HasExe(const wchar_t *dir, const wchar_t *exe)
 {
     wchar_t p[MAX_PATH];
-    Join(p, dir, L"CoDSP.exe");
+    Join(p, dir, exe);
     return FileExists(p);
 }
 
-// PE header TimeDateStamp of CoDSP.exe, 0 if unreadable
-static DWORD ExeTimestamp(const wchar_t *dir)
+// A Call of Duty folder: the original game (CoDSP.exe), United Offensive (CoDUOSP.exe) or both in one folder.
+static int HasGame(const wchar_t *dir)
+{
+    return HasExe(dir, L"CoDSP.exe") || HasExe(dir, L"CoDUOSP.exe");
+}
+
+// PE header TimeDateStamp of a game exe, 0 if unreadable
+static DWORD ExeTimestamp(const wchar_t *dir, const wchar_t *exe)
 {
     wchar_t p[MAX_PATH];
     BYTE buf[1024];
     DWORD n = 0, pe;
     HANDLE f;
-    Join(p, dir, L"CoDSP.exe");
+    Join(p, dir, exe);
     f = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) return 0;
     ReadFile(f, buf, sizeof(buf), &n, NULL);
@@ -97,18 +104,23 @@ static int RegPath(HKEY root, const wchar_t *key, const wchar_t *value, wchar_t 
     return ok;
 }
 
-// Candidates: the folder this setup runs from, the Activision install key, Steam.
+// Candidates: the folder this setup runs from, the Activision install keys (the original game, United Offensive), Steam.
 static int FindGame(wchar_t *out)
 {
+    static const wchar_t *const keys[] = { L"SOFTWARE\\Activision\\Call of Duty", L"SOFTWARE\\Activision\\Call of Duty United Offensive" };
+    static const wchar_t *const steam[] = { L"\\steamapps\\common\\Call of Duty", L"\\steamapps\\common\\Call of Duty United Offensive" };
     wchar_t p[MAX_PATH], *slash;
+    int i;
     GetModuleFileNameW(NULL, p, MAX_PATH);
     if ((slash = wcsrchr(p, L'\\')) != NULL) *slash = 0;
     if (HasGame(p)) { wcscpy(out, p); return 1; }
-    if (RegPath(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Activision\\Call of Duty", L"InstallPath", p) && HasGame(p)) { wcscpy(out, p); return 1; }
-    if (RegPath(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", L"InstallPath", p)) {
-        wcscat(p, L"\\steamapps\\common\\Call of Duty");
-        if (HasGame(p)) { wcscpy(out, p); return 1; }
-    }
+    for (i = 0; i < 2; i++)
+        if (RegPath(HKEY_LOCAL_MACHINE, keys[i], L"InstallPath", p) && HasGame(p)) { wcscpy(out, p); return 1; }
+    for (i = 0; i < 2; i++)
+        if (RegPath(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", L"InstallPath", p)) {
+            wcscat(p, steam[i]);
+            if (HasGame(p)) { wcscpy(out, p); return 1; }
+        }
     return 0;
 }
 
@@ -116,8 +128,8 @@ static int PickFolder(wchar_t *out)
 {
     BROWSEINFOW bi = { 0 };
     PIDLIST_ABSOLUTE id;
-    bi.lpszTitle = T(L"Select the Call of Duty folder (the one with CoDSP.exe)",
-                     L"Selecione a pasta do Call of Duty (a que tem o CoDSP.exe)");
+    bi.lpszTitle = T(L"Select the Call of Duty folder (the one with CoDSP.exe or CoDUOSP.exe)",
+                     L"Selecione a pasta do Call of Duty (a que tem o CoDSP.exe ou o CoDUOSP.exe)");
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     id = SHBrowseForFolderW(&bi);
     if (!id) return 0;
@@ -857,6 +869,8 @@ static int Install(const wchar_t *game, int *keptIni)
     if (!WriteResource(IDR_OPENXR_LOADER, p)) return 0;
     Join(p, game, LAUNCHER_EXE);
     if (!WriteResource(IDR_LAUNCHER, p)) return 0;
+    Join(p, game, L"supporters.ini");   // the Patreon supporters shown beside the main menu: always the release's list
+    WriteResource(IDR_SUPPORTERS, p);
     Join(p, game, L"cod_vr.ini");
     *keptIni = FileExists(p);
     if (*keptIni) {
@@ -876,6 +890,7 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, L"openxr_loader.dll");   DeleteFileW(p);
     Join(p, game, L"cod_vr.ini");          DeleteFileW(p);
     Join(p, game, L"cod_vr.ini.default");  DeleteFileW(p);
+    Join(p, game, L"supporters.ini");      DeleteFileW(p);
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
     Join(p, game, TEXT_PACK);              DeleteFileW(p);
     Join(p, game, GORE_PACK);              DeleteFileW(p);
@@ -887,6 +902,23 @@ static void Uninstall(const wchar_t *game)
 
 // Command line (no dialogs): /silent /dir="<game folder>" [/hands] [/shortcut] [/uninstall]
 // Exit code 0 = done, 1 = failed, 2 = no game in that folder.
+// The launcher draws the supporters' panel (the game shows it beside its main menu) from supporters.ini; it also does it each time it
+// starts. Run once here so the panel is there even if the game is started without the launcher.
+static void ExportSupportersPanel(const wchar_t *game)
+{
+    wchar_t exe[MAX_PATH], cmdline[MAX_PATH + 32];
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    Join(exe, game, LAUNCHER_EXE);
+    _snwprintf(cmdline, MAX_PATH + 32, L"\"%s\" /exportpanel", exe);
+    cmdline[MAX_PATH + 31] = 0;
+    if (CreateProcessW(exe, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, game, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 15000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
 static int Silent(const wchar_t *cmd)
 {
     wchar_t game[MAX_PATH] = L"", pack[MAX_PATH];
@@ -913,6 +945,7 @@ static int Silent(const wchar_t *cmd)
     BuildGorePack(game);
     BuildFontPack(game);
     BuildShockPack(game);
+    ExportSupportersPanel(game);
     if (wcsstr(cmd, L"/shortcut")) CreateShortcut(game);
     Join(pack, game, HANDS_PACK);
     if (wcsstr(cmd, L"/hands")) return BuildHandsPack(game, &models) ? 0 : 1;
@@ -938,7 +971,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     }
     while (!game[0] || !HasGame(game)) {
         if (game[0])
-            Ask(MB_OK | MB_ICONWARNING, T(L"CoDSP.exe was not found in:\n\n%s", L"CoDSP.exe não foi encontrado em:\n\n%s"), game);
+            Ask(MB_OK | MB_ICONWARNING, T(L"CoDSP.exe or CoDUOSP.exe was not found in:\n\n%s", L"CoDSP.exe ou CoDUOSP.exe não foi encontrado em:\n\n%s"), game);
         if (!PickFolder(game)) return 0;
     }
 
@@ -956,10 +989,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         }
     }
 
-    if (ExeTimestamp(game) != CODSP_TIMESTAMP &&
+    // every game exe in the folder has to be the version the mod knows (CoDSP.exe 1.3, CoDUOSP.exe 1.51)
+    if (((HasExe(game, L"CoDSP.exe") && ExeTimestamp(game, L"CoDSP.exe") != CODSP_TIMESTAMP) ||
+         (HasExe(game, L"CoDUOSP.exe") && ExeTimestamp(game, L"CoDUOSP.exe") != CODUO_TIMESTAMP)) &&
         Ask(MB_YESNO | MB_ICONWARNING,
-            T(L"This CoDSP.exe is not version 1.3. The mod only works with 1.3 (it stays inactive otherwise).\n\nInstall anyway?",
-              L"Este CoDSP.exe não é a versão 1.3. O mod só funciona com a 1.3 (nas outras ele fica inativo).\n\nInstalar mesmo assim?")) != IDYES)
+            T(L"The game here is not the version the mod supports (CoDSP.exe 1.3, CoDUOSP.exe 1.51). The mod stays inactive in the other versions.\n\nInstall anyway?",
+              L"O jogo desta pasta não é a versão que o mod suporta (CoDSP.exe 1.3, CoDUOSP.exe 1.51). Nas outras versões o mod fica inativo.\n\nInstalar mesmo assim?")) != IDYES)
         return 0;
 
     if (!Install(game, &keptIni)) {
@@ -972,6 +1007,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     BuildGorePack(game);   // used only when MODS > Gore is set to Gore
     BuildFontPack(game);   // used only when GRAPHICS > Text font is Modern
     BuildShockPack(game);  // explosions without the view shake
+    ExportSupportersPanel(game);
     Join(pack, game, HANDS_PACK);
     r = Ask(MB_YESNO | MB_ICONQUESTION,
             T(L"Hide the player's hands and show only the gun?\n\n(The models are made from your own game files.)",

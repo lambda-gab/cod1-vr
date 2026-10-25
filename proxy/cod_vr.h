@@ -196,4 +196,5 @@ void XR_RequestDump(const char *dir);
 // a progress bar in the world (tracking space, Quake axes): centre, half-width and half-height vectors, 0..1
 void XR_SetProgress(const float center[3], const float right[3], const float up[3], float fraction);   // diagnostics: save the left eye as rendered and as sent, once
 void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4]);
+void XR_SetPanel(GLuint fbo, int w, int h, const float pos[3], const float axis[3][3], float width);   // a flat image panel in the room for this frame (beside the menu)
 

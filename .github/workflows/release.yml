@@ -36,7 +36,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item installer/out/CoD-VR-Setup.exe dist/
-          Compress-Archive -Path proxy/out/opengl32.dll, proxy/out/openxr_loader.dll, proxy/cod_vr.ini, launcher/out/CoD-VR-Launcher.exe -DestinationPath dist/cod-vr-manual-install.zip
+          Compress-Archive -Path proxy/out/opengl32.dll, proxy/out/openxr_loader.dll, proxy/cod_vr.ini, launcher/supporters.ini, launcher/out/CoD-VR-Launcher.exe -DestinationPath dist/cod-vr-manual-install.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -49,12 +49,12 @@ jobs:
         with:
           files: dist/*
           body: |
-            **Call of Duty (2003) VR** for `CoDSP.exe` 1.5 (single player).
+            **Call of Duty (2003) VR** for `CoDSP.exe` 1.3 and **United Offensive** `CoDUOSP.exe` 1.51 (single player).
 
             **Install:** download `CoD-VR-Setup.exe` and run it. It finds the game folder, installs the mod and can
             hide the player's hands (made from your own game files). Run it again to update or uninstall.
 
-            **Manual install:** extract `cod-vr-manual-install.zip` into the game folder (where `CoDSP.exe` is).
+            **Manual install:** extract `cod-vr-manual-install.zip` into the game folder (where `CoDSP.exe` or `CoDUOSP.exe` is).
 
             Needs a 32-bit OpenXR runtime (Virtual Desktop, Quest Link or the SteamVR beta). See the README for
             controls and settings.
@@ -65,4 +65,4 @@ jobs:
             esconder as mãos do personagem (geradas a partir dos arquivos do seu jogo). Execute de novo para
             atualizar ou desinstalar.
 
-            **Manual:** extraia o `cod-vr-manual-install.zip` na pasta do jogo (onde fica o `CoDSP.exe`).
+            **Manual:** extraia o `cod-vr-manual-install.zip` na pasta do jogo (onde fica o `CoDSP.exe` ou o `CoDUOSP.exe`).

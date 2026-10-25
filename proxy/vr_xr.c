@@ -46,11 +46,16 @@ static struct {
     XrSessionState state;
     int        running;         // between xrBeginSession and xrEndSession
     // 0 = left eye, 1 = right eye, 2 = HUD quad, 3 = scope lens (unused), 4/5 = laser per eye
-    XrSwapchain swapchain[6];
-    int        scW[6], scH[6];
-    uint32_t   imageCount[6];
-    XrSwapchainImageOpenGLKHR images[6][MAX_IMAGES];
+    XrSwapchain swapchain[7];   // 6 = the supporters panel beside the menu (created when first shown)
+    int        scW[7], scH[7];
+    uint32_t   imageCount[7];
+    XrSwapchainImageOpenGLKHR images[7][MAX_IMAGES];
     int        laserOn;
+    int64_t    format;           // the swapchain format picked at start (the panel's swapchain is made later)
+    int        panelOn;          // a flat panel in the room this frame (XR_SetPanel): fbo, size, pose in Quake axes, width in metres
+    GLuint     panelFbo;
+    int        panelW, panelH;
+    float      panelPos[3], panelAxis[3][3], panelWidth;
     int        renderW, renderH;   // eye buffers (the swapchains are the recommended size)
     int        progressOn;       // a progress bar: centre, half-size vectors (XR coordinates), 0..1
     float      progress[3], progressR[3], progressU[3], progressFrac;
@@ -203,6 +208,7 @@ static void ChooseRuntime(void)
     char env[MAX_PATH], active[MAX_PATH] = "", best[MAX_PATH] = "", only[MAX_PATH] = "", paths[8][MAX_PATH];
     HKEY k;
     DWORD i, len, n = 0;
+    int wrong = 0;
     if (GetEnvironmentVariableA("XR_RUNTIME_JSON", env, sizeof(env))) {
         char *w;
         Log("OpenXR: XR_RUNTIME_JSON is %s", env);
@@ -224,7 +230,12 @@ static void ChooseRuntime(void)
     if (RegQueryValueExA(k, "ActiveRuntime", NULL, NULL, (BYTE *)active, &len) != ERROR_SUCCESS) active[0] = 0;
     RegCloseKey(k);
     Log("OpenXR: the active runtime for 32-bit programs is %s", active[0] ? active : "not set");
-    if (active[0] && GetFileAttributesA(active) != INVALID_FILE_ATTRIBUTES) return;   // one is set
+    if (active[0] && GetFileAttributesA(active) != INVALID_FILE_ATTRIBUTES) {
+        if (RuntimeIs32Bit(active) != 0) return;   // one is set
+        // Pimax registers its 64-bit manifest for 32-bit programs too, next to a 32-bit one: the loader cannot use it
+        wrong = 1;
+        Log("OpenXR: that runtime is not 32-bit, looking for its 32-bit manifest");
+    }
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1\\AvailableRuntimes", 0, KEY_READ | KEY_WOW64_32KEY, &k) != ERROR_SUCCESS) return;
     for (i = 0; i < 8; i++) {
         len = sizeof(paths[n]);
@@ -234,6 +245,14 @@ static void ChooseRuntime(void)
         n++;
     }
     RegCloseKey(k);
+    if (wrong) {
+        // a 32-bit manifest in the same folder as the active (64-bit) one
+        size_t d = strlen(active);
+        int a;
+        while (d && active[d - 1] != '\\' && active[d - 1] != '/') d--;
+        for (a = 0; a < (int)n && !best[0]; a++)
+            if (!_strnicmp(paths[a], active, d) && !strchr(paths[a] + d, '\\') && RuntimeIs32Bit(paths[a]) == 1) strcpy(best, paths[a]);
+    }
     {
         // by priority, not registry order: SteamVR is only running when it was started on purpose, the
         // Meta/Oculus service runs in the background of many PCs that use something else
@@ -249,7 +268,7 @@ static void ChooseRuntime(void)
     }
     if (!best[0] && n == 1) strcpy(best, only);
     if (best[0] && SetEnvironmentVariableA("XR_RUNTIME_JSON", best))
-        Log("OpenXR: no active runtime for 32-bit programs: using %s", best);
+        Log("OpenXR: %s for 32-bit programs: using %s", wrong ? "the active runtime is not 32-bit" : "no active runtime", best);
     else
         Log("OpenXR: no active runtime for 32-bit programs, and none of the %lu installed ones is running", (unsigned long)n);
 }
@@ -329,7 +348,7 @@ static int CreateSwapchain(int i, int64_t format, int w, int h)
     xr.scH[i] = h;
     for (k = 0; k < MAX_IMAGES; k++) xr.images[i][k].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
     CHECK(xrEnumerateSwapchainImages(xr.swapchain[i], MAX_IMAGES, &xr.imageCount[i], (XrSwapchainImageBaseHeader *)xr.images[i]));
-    Log("OpenXR: %s swapchain %dx%d, %u images", i >= 4 ? "laser" : i == 3 ? "scope" : i == 2 ? "HUD" : i ? "right eye" : "left eye", w, h, xr.imageCount[i]);
+    Log("OpenXR: %s swapchain %dx%d, %u images", i == 6 ? "supporters" : i >= 4 ? "laser" : i == 3 ? "scope" : i == 2 ? "HUD" : i ? "right eye" : "left eye", w, h, xr.imageCount[i]);
     return 1;
 }
 
@@ -499,6 +518,7 @@ static int CreateSession(void)
 
     CHECK(xrEnumerateViewConfigurationViews(xr.instance, xr.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &n, vcv));
     format = PickFormat();
+    xr.format = format;
     if (!format) { Log("OpenXR: no usable swapchain format"); return 0; }
     Log("OpenXR: swapchain format 0x%llx", format);
 
@@ -573,7 +593,7 @@ void XR_Shutdown(void)
     int i;
     if (xr.session) {
         if (xr.running) xrEndSession(xr.session);
-        for (i = 0; i < 6; i++) if (xr.swapchain[i]) xrDestroySwapchain(xr.swapchain[i]);
+        for (i = 0; i < 7; i++) if (xr.swapchain[i]) xrDestroySwapchain(xr.swapchain[i]);
         for (i = 0; i < 2; i++) if (xr.handSpace[i]) xrDestroySpace(xr.handSpace[i]);
         if (xr.local) xrDestroySpace(xr.local);
         if (xr.view) xrDestroySpace(xr.view);
@@ -667,6 +687,7 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     xr.laserOn = 0;
     xr.reticleOn = 0;
     xr.progressOn = 0;
+    xr.panelOn = 0;
     PollEvents();
     if (!xr.running) return 0;
 
@@ -801,6 +822,20 @@ void XR_SetProgress(const float center[3], const float right[3], const float up[
     FromQ3(up, xr.progressU);
     xr.progressFrac = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
     xr.progressOn = 1;
+}
+
+// A fixed image panel in the room for this frame (the supporters beside the main menu): the image is the framebuffer's
+// colour (premultiplied alpha, w x h), the pose Quake-style (axis[0] points away from the viewer, axis[1] left, axis[2] up).
+void XR_SetPanel(GLuint fbo, int w, int h, const float pos[3], const float axis[3][3], float width)
+{
+    if (!fbo || w <= 0 || h <= 0 || width <= 0) return;
+    xr.panelFbo = fbo;
+    xr.panelW = w;
+    xr.panelH = h;
+    memcpy(xr.panelPos, pos, sizeof(xr.panelPos));
+    memcpy(xr.panelAxis, axis, sizeof(xr.panelAxis));
+    xr.panelWidth = width;
+    xr.panelOn = 1;
 }
 
 void XR_SetReticle(int style, const float center[3], const float right[3], const float up[3], const float rgba[4])
@@ -1017,7 +1052,8 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
     XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     XrCompositionLayerProjection beam = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView bv[2] = { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW }, { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
-    const XrCompositionLayerBaseHeader *layers[4];
+    XrCompositionLayerQuad panelLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+    const XrCompositionLayerBaseHeader *layers[5];
     int i, n = 0, render;
 
     if (!xr.frameOpen) return;
@@ -1085,6 +1121,30 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
         quad.size.width = width;
         quad.size.height = width * xr.scH[2] / xr.scW[2];
         layers[n++] = (const XrCompositionLayerBaseHeader *)&quad;
+    }
+
+    // A panel beside the menu (the supporters), above the menu screen and under the pointer
+    if (render && xr.panelOn) {
+        if (!xr.swapchain[6] && xr.format && !CreateSwapchain(6, xr.format, xr.panelW, xr.panelH)) xr.panelOn = 0;
+        if (xr.panelOn && xr.swapchain[6] && xr.panelW == xr.scW[6] && xr.panelH == xr.scH[6] &&
+            CopySwapchainImage(6, xr.panelFbo, 0, 0, xr.panelW, xr.panelH)) {
+            float right[3], back[3], c0[3], c1[3], c2[3];
+            for (i = 0; i < 3; i++) { right[i] = -xr.panelAxis[1][i]; back[i] = -xr.panelAxis[0][i]; }
+            FromQ3(right, c0);
+            FromQ3(xr.panelAxis[2], c1);
+            FromQ3(back, c2);
+            FromQ3(xr.panelPos, &panelLayer.pose.position.x);
+            panelLayer.pose.orientation = MatrixToQuat(c0, c1, c2);
+            panelLayer.space = xr.local;
+            panelLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            panelLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            panelLayer.subImage.swapchain = xr.swapchain[6];
+            panelLayer.subImage.imageRect.extent.width = xr.scW[6];
+            panelLayer.subImage.imageRect.extent.height = xr.scH[6];
+            panelLayer.size.width = xr.panelWidth;
+            panelLayer.size.height = xr.panelWidth * xr.scH[6] / xr.scW[6];
+            layers[n++] = (const XrCompositionLayerBaseHeader *)&panelLayer;
+        }
     }
 
     // Menu pointer beam, above the menu screen
