@@ -31,10 +31,12 @@ quis vivê-lo de novo em VR.
 
 ### Apoiadores no Patreon
 
-<p align="center">
-  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <b>Dmitriy Melnikov</b><br>
-  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <sub>Master</sub>
-</p>
+<table>
+  <tr>
+    <td valign="middle"><img src="docs/images/supporters/master.png" width="64" alt="Master"></td>
+    <td valign="middle"><b>Dmitriy Melnikov</b><br>Master</td>
+  </tr>
+</table>
 
 ## Requisitos
 
