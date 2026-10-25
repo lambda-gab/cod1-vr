@@ -32,21 +32,8 @@ wanted to experience it again in VR.
 ### Patreon supporters
 
 <p align="center">
-  <img src="docs/images/supporters/master.png" width="110" alt="Master"><br>
-  <b>Dmitriy Melnikov</b><br>
-  <sub>&#9733; MASTER &#9733;</sub>
-</p>
-
-<p align="center">
-  <sub>
-    <img src="docs/images/supporters/recruit.png" width="18" alt=""> Recruit
-    &nbsp;&middot;&nbsp;
-    <img src="docs/images/supporters/veteran.png" width="18" alt=""> Veteran
-    &nbsp;&middot;&nbsp;
-    <img src="docs/images/supporters/master.png" width="18" alt=""> Master
-    <br>
-    Thank you for keeping the project going. The supporters are also shown beside the game's main menu in the headset.
-  </sub>
+  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <b>Dmitriy Melnikov</b><br>
+  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <sub>Master</sub>
 </p>
 
 ## Requirements

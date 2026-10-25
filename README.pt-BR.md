@@ -32,21 +32,8 @@ quis vivê-lo de novo em VR.
 ### Apoiadores no Patreon
 
 <p align="center">
-  <img src="docs/images/supporters/master.png" width="110" alt="Master"><br>
-  <b>Dmitriy Melnikov</b><br>
-  <sub>&#9733; MASTER &#9733;</sub>
-</p>
-
-<p align="center">
-  <sub>
-    <img src="docs/images/supporters/recruit.png" width="18" alt=""> Recruit
-    &nbsp;&middot;&nbsp;
-    <img src="docs/images/supporters/veteran.png" width="18" alt=""> Veteran
-    &nbsp;&middot;&nbsp;
-    <img src="docs/images/supporters/master.png" width="18" alt=""> Master
-    <br>
-    Obrigado por manter o projeto vivo. Os apoiadores também aparecem ao lado do menu principal do jogo, no headset.
-  </sub>
+  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <b>Dmitriy Melnikov</b><br>
+  <img src="docs/images/supporters/master.png" width="30" alt="Master"> <sub>Master</sub>
 </p>
 
 ## Requisitos
