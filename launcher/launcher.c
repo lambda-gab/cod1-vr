@@ -21,7 +21,7 @@
 #include "launcher_res.h"
 #include "../third_party/miniz/miniz.h"
 
-#define VERSION_TEXT L"v1.7.0"
+#define VERSION_TEXT L"v1.7.1"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -1231,7 +1231,7 @@ static int SupRowHeight(int tier) { return tier == SUP_MASTER ? 36 : tier == SUP
 // exportIt: every name on one tall panel (for the game's own menu, ExportSupporterPanel); *outH gets the panel's height
 static void DrawSupporters(HDC dc, int exportIt, int *outH)
 {
-    const int x0 = 14, y0 = 14, x1 = 184, top = y0 + 34;
+    const int x0 = 14, y0 = 14, x1 = 244, top = y0 + 34;
     int y1 = 354, bottom;
     int i, page = 0, pages = 1, y, used = 0, first = 0, last = 0;
     if (g_numSup <= 0) return;
@@ -1325,7 +1325,7 @@ static void ExportSupporterPanel(void)
     g_fBold = MakeFont(14, FW_BOLD, L"Segoe UI");
     g_fText = MakeFont(13, FW_NORMAL, L"Segoe UI");
     g_fSmall = MakeFont(11, FW_NORMAL, L"Segoe UI");
-    w = P(170);
+    w = P(230);
     // the height is only known once the panel has said how tall it is: a first, measuring pass on a small bitmap
     dc = CreateCompatibleDC(NULL);
     {

@@ -169,6 +169,12 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.7.1
+
+- **Painel de Patreon Supporters:** mais largo, para o nome caber por inteiro, e agora ao lado do menu principal do
+  jogo (à esquerda, fora da imagem do menu) em vez de por cima dele, então as listas de Load e Save e os outros
+  menus nunca o cobrem nem são cobertos por ele. Igual no Call of Duty e no United Offensive.
+
 ### v1.7.0
 
 - **Call of Duty: United Offensive** (`CoDUOSP.exe` 1.51) funciona, campanha single player. O instalador e o launcher

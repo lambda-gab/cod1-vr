@@ -169,6 +169,12 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.7.1
+
+- **Patreon Supporters panel:** wider, so the whole name fits, and now beside the game's main menu (on its left,
+  outside the menu picture) instead of over it, so the Load and Save lists and the other menus never cover it or are
+  covered by it. Same in Call of Duty and United Offensive.
+
 ### v1.7.0
 
 - **Call of Duty: United Offensive** (`CoDUOSP.exe` 1.51) works, single player campaign. The installer and the launcher

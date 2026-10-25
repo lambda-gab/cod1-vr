@@ -6193,21 +6193,24 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
             }
         }
         if (drawn && g_vrFrame && g_scopeActive && hud.fbo && !g_scopeOverlay) DrawScopeMask(hud.fbo, fb_w, fb_h);
-        if (hud.fbo && hud.posed && !hud.world && !g_scopeActive && !g_slideFrame && (MEM(int, ADDR_cls_keyCatchers) & 2) && !MapLoaded()) {
-            // the main menu: the supporters' panel over the menu screen's left edge (the same height centre), a hair
-            // in front of it so it is drawn on top of the menu picture
+        {
+            int menuUp = hud.fbo && hud.posed && !hud.world && !g_scopeActive && !g_slideFrame && (MEM(int, ADDR_cls_keyCatchers) & 2) && !MapLoaded();
+        if (menuUp) {
+            // the main menu: the supporters' panel outside the menu screen, on its left (the same height centre), so the
+            // Load / Save lists and the other menus never cover it or get covered
             LoadSupporterPanel();
             if (g_supFbo) {
-                const float panelWidth = 0.27f, margin = 0.035f, lift = 0.004f;
+                const float panelWidth = 0.365f, gap = 0.07f;
                 float pos[3], ax[3][3];
                 int k;
                 memcpy(ax, hud.pose.axis, sizeof(ax));
                 for (k = 0; k < 3; k++)   // axis[1] is the left, axis[0] points away from the viewer
-                    pos[k] = hud.pose.pos[k] + hud.pose.axis[1][k] * (hud.menuWidth * 0.5f - margin - panelWidth * 0.5f) - hud.pose.axis[0][k] * lift;
+                    pos[k] = hud.pose.pos[k] + hud.pose.axis[1][k] * (hud.menuWidth * 0.5f + gap + panelWidth * 0.5f);
                 static int told;
                 if (!told) { told = 1; Log("supporters: the panel is shown beside the menu (menu width %.2f, centre %.2f %.2f %.2f)", hud.menuWidth, pos[0], pos[1], pos[2]); }
                 XR_SetPanel(g_supFbo, g_supW, g_supH, pos, (const float (*)[3])ax, panelWidth);
             }
+        }
         }
         XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, NULL);
         // Monitor: the left eye while playing, the HUD buffer (menus) otherwise.
