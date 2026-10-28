@@ -179,6 +179,7 @@ extern int g_uo;   // 1 = CoDUOSP.exe
 #define WEAPDEF_OFS_hipGunKick      g_A.WEAPDEF_OFS_hipGunKick
 #define WEAPDEF_OFS_hipViewKick     g_A.WEAPDEF_OFS_hipViewKick
 #define WEAPDEF_OFS_adsOverlayShader g_A.WEAPDEF_OFS_adsOverlayShader      // char*: set for scoped weapons
+#define WEAPDEF_OFS_adsTransInTime  g_A.WEAPDEF_OFS_adsTransInTime  // int ms: the time to aim down the sights (adsTransOutTime follows)
 #define WEAPDEF_OFS_adsZoomFov      g_A.WEAPDEF_OFS_adsZoomFov      // float: the fov when fully zoomed in (scoped rifles 10)
 #define WEAPDEF_OFS_adsOverlayHeight g_A.WEAPDEF_OFS_adsOverlayHeight  // float: the scope overlay's height in 640x480 units (400: its circle)
 #define WEAPDEF_OFS_lmgDeployAnim   g_A.WEAPDEF_OFS_lmgDeployAnim      // char*, UO only (0 in SP): set for the LMGs set up with aim down the sights (.30 cal, MG34, DP28)

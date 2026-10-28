@@ -175,7 +175,13 @@ static struct {
     char  shortcut[4][4][64];   // [A, B, X, Y held][A, B, X, Y pressed]: the shortcut's command ([Buttons] ShortcutXA ...); only the two buttons of the hand that does not hold the gun are held ones
     float turretSeatLift;   // Turret: game units added to the seat of a gun that makes the soldier crouch (the bomber's tail gun)
     float turretSeat[2][3]; // Turret: extra X / Y / Z (cm, the gun's own directions) for the bomber's dorsal [0] and tail [1] guns
+    int   scopeInstant;     // Scope: 1 = scoped weapons go to their zoom at once (no aim-down-sights animation)
     int   moveMode;         // Controllers: 0 Blink (aim with the move stick, the screen blinks, teleport), 1 Shift (glide there), 2 Continuous
+    int   fxAlways;         // Graphics: 1 = fire, smoke and other effects are not dropped by the game's view test (fx_cull 0)
+    int   keepLook;         // Comfort: 1 = a scripted scene or a car / truck taking over the view does not turn the picture away from where you look
+    float chestNear;        // Holsters: how far in front of the eyes (metres, negative = behind them) the chest zone starts
+    float chestWidth;       // Holsters: half the chest zone's width, metres
+    int   armed;            // Controllers: 1 = always armed: the weapon stays in the dominant hand (no holsters, never dropped), for gunstock controllers
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -278,6 +284,11 @@ static int       g_noRideAids;        // the vehicle is the boat of "ship" or "s
 static int       g_tankMode;          // driving a tank: left stick drives, right stick turns the gun, the head only looks
 static float     g_tankStick[2], g_tankDt;
 static float     g_vehicleBody, g_vehicleTurnRate, g_vehicleSpeed;
+// A scripted scene (the player linked to a script origin, or the game holding the view) takes over the game's view: the way
+// the body was facing is kept across the start of it (g_sceneBase at the game's yaw g_sceneV0) and the scene's own turns go on
+// from there, instead of the picture jumping by the head's yaw or by whatever the script set. g_prevBody = the body of the frame before.
+static float     g_prevBody, g_sceneBase, g_sceneV0;
+static int       g_sceneHold;
 static float     g_vigStrength;
 // Turrets (MG42, 30 cal, Flak 88): the player on one, or next to a free one
 static int       g_onTurret, g_nearTurret, g_turretGrab, g_turretTarget, g_turretUseIn, g_turretInView;
@@ -301,6 +312,8 @@ static int       g_vehicleRecenter;   // the next frame faces the vehicle's fron
 static int       g_vehAimInit;        // the vehicle aim has a last frame to compare with
 static DWORD     g_vignetteShownAt;   // when the vehicle vignette was last changed (its bar shows)
 static float     g_vigAmount;         // (defined with the vignette below)
+static float     g_vehicleOffsetAdd;  // degrees the right stick has turned the body in the seat since UpdateVehicle looked (cars, trucks)
+static DWORD     g_vehicleInAt;       // when the player got into the vehicle he is in (the vignette waits a little: see UpdateVignette)
 static float     g_tpFade;            // Blink: 0..1, how black both eyes are (see UpdateTeleport)
 static int       g_ladderMove;        // on a ladder or right at one: the move stick climbs (no teleport aiming)
 static char      g_userIni[MAX_PATH]; // (and the player settings with the config)
@@ -505,7 +518,18 @@ static void UpdateRoomScale(const cod_refdef_t *fd)
 static float BodyYaw(const float viewFwd[3])
 {
     if (g_onTurret) return g_turretBody;
-    return g_inVehicle ? g_vehicleBody : YawOf(viewFwd) - g_headYawCmd;
+    if (g_inVehicle) return g_vehicleBody;
+    if (g_sceneHold) return AngleNormalize180(g_sceneBase + YawOf(viewFwd) - g_sceneV0);
+    return YawOf(viewFwd) - g_headYawCmd;
+}
+
+// The maps where the player drives a tank: Call of Duty's tankdrive*, and United Offensive's kursk (its kursk_tankdrive script puts
+// the player in the T-34 with useby; the other UO tank scenes, Noville's start for one, are rides through a script link).
+static int IsTankMap(void)
+{
+    char map[64];
+    if (!CurrentMap(map, sizeof(map))) return 0;
+    return !_strnicmp(map, "tankdrive", 9) || (g_uo && !_stricmp(map, "kursk"));
 }
 
 // Where a seat faces, from the vehicle's front, where it is not the front: the car at the end of
@@ -523,12 +547,11 @@ static float SeatTurn(void)
 static void TankDiagnostics(void)
 {
     static DWORD next;
-    char map[64];
     BYTE *gm, *pc;
     if (GetTickCount() < next) return;
     next = GetTickCount() + 2000;
-    if (!CurrentMap(map, sizeof(map)) || _strnicmp(map, "tankdrive", 9)) return;
-    gm = (BYTE *)GetModuleHandleA(GAME_DLL);
+    if (!IsTankMap()) return;
+    gm =(BYTE *)GetModuleHandleA(GAME_DLL);
     pc = PlayerClient();
     __try {
         BYTE *me = gm + G_OFS_entities;
@@ -592,7 +615,7 @@ static void UpdateVehicle(float dt)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return;
     }
-    if (g_uo && g_gunVehicle && !g_rideGun && g_vehicleSpeed > 60.0f) { g_rideGun = 1; Log("vehicle gun: it drives, so the ride aids (vignette setting, skip) are on"); }
+    if (g_uo && g_gunVehicle && !g_tankMode && !g_rideGun && g_vehicleSpeed > 60.0f) { g_rideGun = 1; Log("vehicle gun: it drives, so the ride aids (vignette setting, skip) are on"); }
     if (!g_inVehicle) {
         char map[64];
         __try {
@@ -600,7 +623,7 @@ static void UpdateVehicle(float dt)
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             g_gunVehicle = 0;
         }
-        g_tankMode = g_gunVehicle && CurrentMap(map, sizeof(map)) && !_strnicmp(map, "tankdrive", 9);
+        g_tankMode = g_gunVehicle && IsTankMap();
         // the boat of "ship" (the crossing to Stalingrad) and the one Stalingrad starts in keep the free head and the
         // vehicle-aligned view, but they are not rides to skip or to feel sick in, and the missions need the player to crouch
         g_noRideAids = CurrentMap(map, sizeof(map)) && (!_stricmp(map, "ship") || !_strnicmp(map, "stalingrad", 10));
@@ -609,19 +632,28 @@ static void UpdateVehicle(float dt)
         // getting in (or recentering): the way the head looks now is the vehicle's front; on a
         // gun, where the game points it (the barrel)
         g_vehicleBody = AngleNormalize180((g_gunVehicle ? YawOf(g_lastViewAxis[0]) : yaw) + SeatTurn() - YawOf(g_head.axis[0]));
+        // Getting into a car or truck (not recentering, not a gun): the picture keeps showing the way the body faced instead of
+        // turning to the vehicle's front. The Recenter button still lines the view up with the front.
+        if (cfg.keepLook && !g_inVehicle && !g_gunVehicle && !g_vehicleRecenter) {
+            g_vehicleBody = g_prevBody;
+            Log("vehicle: the view is kept where the body faced (%.1f)", g_prevBody);
+        }
         offset = AngleNormalize180(g_vehicleBody - yaw);
         if (g_vehicleRecenter) { g_vehicleRecenter = 0; Log("vehicle: recentered"); }
         g_inVehicle = 1;
+        g_vehicleInAt = GetTickCount();
         g_vehicleTurnRate = 0;
         lastYaw = yaw;
         Log("vehicle: in (entity %d), yaw %.1f%s", (int)((parent - (gm + G_OFS_entities)) / G_ENTITY_SIZE), yaw,
             g_tankMode ? ", a tank" : g_gunVehicle ? ", a gun" : "");
-        if (g_tankMode) GamePrintBold("Left stick drives the tank, the gun follows your head.");
+        if (g_tankMode) GamePrintBold("Left stick drives the tank, the gun follows the controller of your gun hand.");
         else if (g_gunVehicle && !g_vehicleRecenter) GamePrintBold(g_uo ? "Point the controller of your gun hand to aim." : "Move your head to aim at the target.");
     }
     // follows the vehicle's turns without its jolts (a gun turns with its own aim: the body
     // stays, unless the whole thing is driving)
     if (g_tankMode || (g_gunVehicle && g_vehicleSpeed < 30.0f)) { offset = AngleNormalize180(g_vehicleBody - yaw); lastYaw = yaw; haveLast = 1; return; }
+    offset += g_vehicleOffsetAdd;   // the body turned by the stick: the seat's direction moves with it
+    g_vehicleOffsetAdd = 0;
     target = yaw + offset;
     d = AngleNormalize180(target - g_vehicleBody);
     if (dt > 0) {
@@ -655,9 +687,10 @@ static void UpdateViewAngles(float yaw, float pitch, int fromHand)
         // (about 0.11 degrees a count) and the gun, which follows the view, turns with them.
         static float fx, fy;
         int ix, iy;
-        // The gun follows where the head looks: its turn rate is the angle it is off by.
-        float ey = AngleNormalize180(g_vehicleBody + YawOf(g_head.axis[0]) - YawOf(g_lastViewAxis[0]));
-        float ep = PitchOf(g_head.axis[0]) - PitchOf(g_lastViewAxis[0]);
+        // The gun follows where the dominant controller points (the head when it is not tracked): its turn rate is the
+        // angle it is off by. yaw / pitch are that direction (ProcessControllers), the head only looks.
+        float ey = AngleNormalize180(g_vehicleBody + yaw - YawOf(g_lastViewAxis[0]));
+        float ep = pitch - PitchOf(g_lastViewAxis[0]);
         float ry = fabsf(ey) < 2.0f ? 0 : ey * 3.0f, rp = fabsf(ep) < 1.5f ? 0 : ep * 3.0f;
         if (ry > 90.0f) ry = 90.0f;
         if (ry < -90.0f) ry = -90.0f;
@@ -698,12 +731,22 @@ static void UpdateViewAngles(float yaw, float pitch, int fromHand)
             // (the tank's gun is turned that way): the game gets the mouse moves that close what is
             // missing between where the gun points and where the shots go, a part of it a frame
             // (about 0.11 degrees a count). Not while the game stands still, or the moves pile up.
-            static float fx, fy;
+            static float fx, fy, lastWantedM[2];
+            static int lastWantedOk;
             int ix, iy;
+            // What the aim turned by since the last frame goes in at once as well (feed-forward): the 30 % of the error alone
+            // trailed a quick turn of the controller by 13-18 degrees (UO jeep log), which felt like the gun fighting the hand.
+            float ffy = 0, ffp = 0;
+            if (lastWantedOk && g_gunVehicle) {   // the UO jeep's gun only: cars and trucks keep the plain loop
+                ffy =AngleNormalize180(wanted[1] - lastWantedM[1]);
+                ffp = wanted[0] - lastWantedM[0];
+                if (fabsf(ffy) > 40.0f || fabsf(ffp) > 40.0f) ffy = ffp = 0;   // a jump (new seat, recenter), not a turn
+            }
+            lastWantedM[0] = wanted[0]; lastWantedM[1] = wanted[1]; lastWantedOk = valid;
             if (MEM(int, ADDR_eventHead) - MEM(int, ADDR_eventTail) < 3) {
                 float ey = AngleNormalize180(wanted[1] - seen[1]), ep = wanted[0] - seen[0];
-                fx -= ey * 0.3f / 0.11f;
-                fy += ep * 0.3f / 0.11f;
+                fx -= (ey * 0.3f + ffy) / 0.11f;
+                fy += (ep * 0.3f + ffp) / 0.11f;
                 if (fx > 400.0f) fx = 400.0f;
                 if (fx < -400.0f) fx = -400.0f;
                 if (fy > 400.0f) fy = 400.0f;
@@ -1064,7 +1107,16 @@ static void MenuControls(int dom)
     MenuKey(2, keys[2], (g_in.buttons & VRB_A) != 0);
     MenuKey(3, keys[3], sy > 0.7f || (g_menuKeyDown[3] && sy > 0.3f));
     MenuKey(4, keys[4], sy < -0.7f || (g_menuKeyDown[4] && sy < -0.3f));
-    MenuKey(5, keys[5], (g_in.buttons & VRB_MENU) != 0);
+    {
+        // the menu button, or any button the player gave the "Menu" action (controllers with no menu button of their own)
+        // (A and B keep their own jobs in the menus: select and back)
+        static const struct { int bt, bit; } menuBtn[4] = {
+            { BT_X, VRB_X }, { BT_Y, VRB_Y }, { BT_LCLICK, VRB_LSTICK }, { BT_RCLICK, VRB_RSTICK } };
+        int k, down = (g_in.buttons & VRB_MENU) != 0;
+        for (k = 0; k < 4; k++)
+            if (!_stricmp(cfg.bind[menuBtn[k].bt], "key:ESCAPE") && (g_in.buttons & menuBtn[k].bit)) down = 1;
+        MenuKey(5, keys[5], down);
+    }
 }
 
 static void LeaveMenuMode(void)
@@ -1520,8 +1572,8 @@ static void UpdateGrenadeArc(void)
 enum { ZONE_NONE, ZONE_SHOULDER_L, ZONE_SHOULDER_R, ZONE_CHEST, ZONE_WAIST_L, ZONE_WAIST_R, ZONE_WAIST_F, ZONE_WAIST_B, ZONE_COUNT };
 // what a zone holds: weapon 1, weapon 2, or whichever long gun was not drawn last (the zone gives
 // back one and takes the other), the pistol, a grenade
-enum { ACT_NONE, ACT_W1, ACT_W2, ACT_SWITCH, ACT_PISTOL, ACT_GRENADE };
-enum { HELD_LONG, HELD_PISTOL, HELD_GRENADE };
+enum { ACT_NONE, ACT_W1, ACT_W2, ACT_SWITCH, ACT_PISTOL, ACT_GRENADE, ACT_BINOCULAR };
+enum { HELD_LONG, HELD_PISTOL, HELD_GRENADE, HELD_BINOCULAR };
 static int   g_gunHand = -1;       // hand holding the weapon, -1 = both hands empty
 static int   g_heldKind;
 static int   g_heldWeapon;         // the game's weapon in that hand, 0 while the switch is under way
@@ -1560,6 +1612,9 @@ static BYTE *PlayerClient(void)
 }
 
 static int SlotWeapon(const BYTE *cl, int slot) { return cl ? cl[GCL_OFS_slots + slot] : 0; }
+// United Offensive's binoculars are the weapon in slot 7 (after the satchel in 6); the original game has no such slot
+#define SLOT_BINOCULAR 7
+static int BinocularWeapon(const BYTE *cl) { return g_uo ? SlotWeapon(cl, SLOT_BINOCULAR) : 0; }
 static int GameWeapon(const BYTE *cl) { return cl ? *(const int *)(cl + GCL_OFS_weapon) : 0; }
 
 // ---------------------------------------------------------------------------
@@ -1676,16 +1731,17 @@ static void SetPlayerOrigin(const float o[3])
 
 // ---------------------------------------------------------------------------
 // Using something with the FREE hand while a gun is in the other (planting explosives, switches, doors). The game uses
-// what the aim points at, and with a gun in hand the aim is the gun's line. When the free hand reaches into something
-// usable, its grip is "use" (never the handguard grab) and, for as long as it is held, the aim goes to that thing's centre
-// (from the eyes), so the game uses it whatever the gun points at. Nothing changes until the grip is pressed: no aim switch
-// by gaze (it made the aim drop out whenever the head met a trigger).
+// what the aim points at, and with a gun in hand the aim is the gun's line. The TRIGGER of the free hand is "use": when
+// the free HAND is at something usable (no need to look at it or to see the use hint), for as long as the trigger is
+// held the aim goes to that thing's centre (from the eyes), so the game uses it whatever the gun points at. With nothing
+// usable near, that trigger keeps its other jobs (fire, zoom, LMG set-up). The free hand's grip only holds the gun (it used
+// to be the use as well; removed).
 // "Usable" is read from the game's entities, by their boxes (absmin/absmax = currentOrigin - 0x18 / - 0x0c, contents at
 // - 0x1c): the usable bit (0x200000: items, the turrets' 0x200004) or a small trigger (0x40000000, up to 160 units across:
-// a bomb's use trigger, not an area). The hand has to be inside the box grown by 24 units. The log names what was found
-// (`use: hand N reaches entity E (contents ..)`), which tells whether a bomb's trigger fits this rule.
+// a bomb's use trigger, not an area). The hand has to be inside the box grown by USE_REACH. The log names what was found
+// (`use: entity E within reach (contents ..)`), which tells whether a bomb's trigger fits this rule.
 // ---------------------------------------------------------------------------
-#define USE_REACH        24.0f
+#define USE_REACH        24.0f   // from the free hand
 #define CONTENTS_USABLE  0x200000
 #define CONTENTS_TRIGGER_BIT 0x40000000
 static int g_useEnt;   // the entity the free hand's grip is using (0 = none: the aim is that hand's own pointing)
@@ -1697,14 +1753,14 @@ static const float *EntBox(const BYTE *e, const float **mx)
     return (const float *)((const BYTE *)org - 0x18);
 }
 
-// The usable entity whose box holds hand h (world position), the nearest by centre; 0 if none.
-static int UsableAtHand(int h)
+// The usable entity whose box (grown by `reach`) holds the tracking-space point `at`, the nearest by centre; 0 if none.
+static int UsableNear(const float at[3], float reach)
 {
     BYTE *gm = (BYTE *)GetModuleHandleA(GAME_DLL);
     float hand[3], best = 1e9f;
     int i, n, found = 0;
-    if (!gm || !MapLoaded() || !PlayerClient() || !g_in.handValid[h]) return 0;
-    TrackingToWorld(g_in.hand[h].pos, BodyYaw(g_lastViewAxis[0]), hand);
+    if (!gm || !MapLoaded() || !PlayerClient()) return 0;
+    TrackingToWorld(at, BodyYaw(g_lastViewAxis[0]), hand);
     __try {
         n = *(int *)(gm + G_OFS_numEntities);
         if (n > 1024) n = 1024;
@@ -1721,7 +1777,7 @@ static int UsableAtHand(int h)
             if (!(contents & CONTENTS_USABLE) && size > 160.0f) continue;   // an area trigger, not something to use
             for (k = 0; k < 3; k++) {
                 float c = (mn[k] + mx[k]) * 0.5f;
-                if (hand[k] < mn[k] - USE_REACH || hand[k] > mx[k] + USE_REACH) break;
+                if (hand[k] < mn[k] - reach || hand[k] > mx[k] + reach) break;
                 d += (hand[k] - c) * (hand[k] - c);
             }
             if (k == 3 && d < best) { best = d; found = i; }
@@ -1732,7 +1788,7 @@ static int UsableAtHand(int h)
     if (found) {
         const BYTE *e = gm + G_OFS_entities + found * G_ENTITY_SIZE;
         const float *mx, *mn = EntBox(e, &mx);
-        Log("use: hand %d reaches entity %d (contents %08x, box %.0f %.0f %.0f to %.0f %.0f %.0f)", h, found,
+        Log("use: entity %d within reach (contents %08x, box %.0f %.0f %.0f to %.0f %.0f %.0f)", found,
             *(const int *)((const BYTE *)(e + GENT_OFS_currentOrigin) - 0x1c), mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
     }
     return found;
@@ -1830,7 +1886,10 @@ static int HandZone(int h)
     float reach = sqrtf(fwd * fwd + left * left);   // how far the hand is from the body: reaching out for something on the floor is not a holster
     if (up > cfg.backHeight && fwd < 0.05f && fabsf(left) < 0.5f) return left > 0 ? ZONE_SHOULDER_L : ZONE_SHOULDER_R;
     // the chest: in front of the body, between the shoulders and the waist
-    if (up < cfg.backHeight && up > cfg.hipHeight + 0.2f && fwd > 0.05f && fwd < 0.45f && fabsf(left) < 0.25f) return ZONE_CHEST;
+    // (the eyes stand ahead of the chest, so a hand pressed to it can be level with the eyes' plane or just behind it: the zone starts at
+    // ChestNear, -0.12 by default. It began at +0.05, which a hand holding a pistol to its chest may never have reached: guess from a
+    // player's report that the pistol could not be put away there, not measured)
+    if (up < cfg.backHeight && up > cfg.hipHeight + 0.2f && fwd > cfg.chestNear && fwd < 0.45f && fabsf(left) < cfg.chestWidth) return ZONE_CHEST;
     // behind the body from the waist line down to the lower back
     if (fabsf(up - cfg.lowerBackHeight) < 0.32f && fabsf(left) < 0.4f && fwd < -0.03f && fwd > -0.7f && reach < cfg.waistReach + 0.1f) return ZONE_WAIST_B;
     if (fabsf(up - cfg.hipHeight) < 0.2f && fwd > -0.15f && fwd < 0.5f && reach < cfg.waistReach) {
@@ -1843,7 +1902,7 @@ static int HandZone(int h)
 
 static void WeaponSlotCmd(int slot)
 {
-    static const char *names[6] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade" };
+    static const char *names[8] = { "", "primary", "primaryb", "pistol", "grenade", "smokegrenade", "satchel", "binocular" };
     char line[48];
     _snprintf(line, sizeof(line), "weaponslot %s\n", names[slot]);
     Cbuf(line);
@@ -1866,11 +1925,14 @@ static int ZoneSlot(const BYTE *cl, int zone, int *kind)
     } else if (act == ACT_GRENADE) {
         slot = SlotWeapon(cl, 4) ? 4 : SlotWeapon(cl, 5) ? 5 : 0;
         *kind = HELD_GRENADE;
+    } else if (act == ACT_BINOCULAR) {
+        slot = BinocularWeapon(cl) ? SLOT_BINOCULAR : 0;
+        *kind = HELD_BINOCULAR;
     }
     return slot;
 }
 
-// Does a weapon of this kind go back into this zone? Grenades are thrown, they go anywhere.
+// Does a weapon of this kind go back into this zone? Grenades are thrown and the binoculars cannot be dropped: they go anywhere.
 static int ZoneHome(int zone, int kind)
 {
     int act = cfg.zoneAct[zone];
@@ -1908,6 +1970,51 @@ static void DrawWeapon(int h, int zone)
     Log("realistic: hand %d draws slot %d (weapon %d)", h, slot, g_wantWeapon);
 }
 
+// Always armed (Controllers AlwaysArmed): the hand is never empty. Whatever the game holds is in the dominant hand: at the start,
+// after a grenade was thrown, after a pickup. A weapon the game holds that is in none of the slots 1-5 (the binoculars) is taken as it is.
+static int ArmedHand(void) { return cfg.rightHanded ? 1 : 0; }
+
+static void ArmedUpdate(void)
+{
+    BYTE *cl = PlayerClient();
+    int w, slot, found = 0;
+    if (g_gunHand >= 0 || !cl || !MapLoaded()) return;
+    w = GameWeapon(cl);
+    if (!w) return;
+    for (slot = 1; slot <= 5 && !found; slot++) if (SlotWeapon(cl, slot) == w) { found = slot; break; }
+    if (!found && BinocularWeapon(cl) == w) found = SLOT_BINOCULAR;
+    g_gunHand = ArmedHand();
+    g_heldKind = found == 3 ? HELD_PISTOL : found == SLOT_BINOCULAR ? HELD_BINOCULAR : found >= 4 ? HELD_GRENADE : HELD_LONG;
+    g_heldWeapon = w;
+    g_wantWeapon = w;
+    g_wantTime = GetTickCount();
+    if (found && found < 3) g_lastLong = found;
+    Log("armed: the weapon %d (slot %d) is in the %s hand", w, found, g_gunHand ? "right" : "left");
+}
+
+// Always armed: the next weapon among the ones carried (long guns, pistol, grenades), straight into the dominant hand.
+static void CycleAllWeapons(void)
+{
+    BYTE *cl = PlayerClient();
+    int have[6], n = 0, cur = -1, slot, w, h = ArmedHand();
+    if (!cl) return;
+    w = GameWeapon(cl);
+    for (slot = 1; slot <= 5; slot++)
+        if (SlotWeapon(cl, slot)) { if (SlotWeapon(cl, slot) == w) cur = n; have[n++] = slot; }
+    if (BinocularWeapon(cl)) { if (BinocularWeapon(cl) == w) cur = n; have[n++] = SLOT_BINOCULAR; }
+    if (n < 2) return;
+    slot = have[(cur + 1) % n];
+    g_wantWeapon = SlotWeapon(cl, slot);
+    g_wantTime = GetTickCount();
+    WeaponSlotCmd(slot);
+    g_gunHand = h;
+    g_heldKind = slot == 3 ? HELD_PISTOL : slot == SLOT_BINOCULAR ? HELD_BINOCULAR : slot >= 4 ? HELD_GRENADE : HELD_LONG;
+    if (slot < 3) g_lastLong = slot;
+    g_heldWeapon = 0;
+    HolsterClick(h);
+    Log("armed: next weapon, slot %d (weapon %d)", slot, g_wantWeapon);
+}
+
 // The shortcut "Switch weapon 1 & 2": the other long gun than the one drawn last, as a Switch
 // holster gives, straight into the hand that holds the gun (the dominant one when it is empty).
 static void SwitchLongGuns(void)
@@ -1915,6 +2022,7 @@ static void SwitchLongGuns(void)
     BYTE *cl = PlayerClient();
     int want = g_lastLong == 1 ? 2 : 1, other = want == 1 ? 2 : 1, slot, h;
     if (!cl) return;
+    if (cfg.armed && cfg.realistic) { CycleAllWeapons(); return; }   // always armed: one button reaches every weapon
     slot = SlotWeapon(cl, want) ? want : SlotWeapon(cl, other) ? other : 0;
     if (!slot) return;   // no long gun
     g_lastLong = slot;
@@ -2366,14 +2474,16 @@ static int GameClip(const BYTE *cl, int w)
 static int ZoneUseful(int h, int zone)
 {
     BYTE *cl = PlayerClient();
-    if (zone == ZONE_NONE || !cl) return 0;
+    if (zone == ZONE_NONE || !cl || cfg.armed) return 0;
     if (h == g_gunHand)
-        return g_heldKind == HELD_GRENADE ? cfg.zoneAct[zone] == ACT_GRENADE : ZoneHome(zone, g_heldKind);
+        return g_heldKind == HELD_GRENADE ? cfg.zoneAct[zone] == ACT_GRENADE :
+               g_heldKind == HELD_BINOCULAR ? cfg.zoneAct[zone] == ACT_BINOCULAR : ZoneHome(zone, g_heldKind);
     if (g_gunHand >= 0) return 0;   // one weapon at a time
     switch (cfg.zoneAct[zone]) {
     case ACT_W1: case ACT_W2: case ACT_SWITCH: return SlotWeapon(cl, 1) || SlotWeapon(cl, 2);
     case ACT_PISTOL: return SlotWeapon(cl, 3) != 0;
     case ACT_GRENADE: return SlotWeapon(cl, 4) || SlotWeapon(cl, 5);
+    case ACT_BINOCULAR: return BinocularWeapon(cl) != 0;
     }
     return 0;
 }
@@ -2568,7 +2678,13 @@ static void UpdatePhysicalCrouch(float dt)
 
 static void GripPressed(int h)
 {
-    int zone = HandZone(h);
+    int zone;
+    if (cfg.armed) {
+        // always armed: no holsters, the dominant hand keeps its weapon; its grip picks up what lies at the hand
+        if (h == (cfg.rightHanded ? 1 : 0)) HandPickup(h);
+        return;
+    }
+    zone = HandZone(h);
     if (g_gunHand < 0) {
         if (zone != ZONE_NONE) {
             DrawWeapon(h, zone);
@@ -2578,14 +2694,7 @@ static void GripPressed(int h)
         g_useEnt = 0;
         if (g_uo || g_inVehicle) HandPickup(h);   // in a vehicle the game's own use is blocked (it leans out)
     } else if (h != g_gunHand) {
-        // the off hand: on the gun it holds it with both hands (UpdateGunPose), anywhere else use (plant a bomb)
-        // (the hand reaching into something usable, a bomb's trigger: always use, wherever it is from the gun)
-        int ent = UsableAtHand(h);
-        if (ent || !OffHandOnGun(&g_in.hand[g_gunHand], &g_in.hand[h])) {
-            g_useHand = h;
-            g_useEnt = ent;
-            Log("realistic: hand %d uses while hand %d holds the gun%s", h, g_gunHand, ent ? " (on something usable)" : "");
-        }
+        // the off hand: on the gun it holds it with both hands (UpdateGunPose); using things is its trigger (RealisticHands)
     }
 }
 
@@ -2593,6 +2702,7 @@ static void GripReleased(int h)
 {
     if (h == g_useHand) { g_useHand = -1; g_useEnt = 0; }
     if (h != g_gunHand) return;
+    if (cfg.armed) return;   // never put away or dropped
     {
         // a weapon goes back only where it belongs: long guns over a shoulder, the pistol at the
         // hip, grenades at the lower back (a gun held low at the side is not being holstered)
@@ -2680,6 +2790,7 @@ static void RealisticHands(void)
         else if (!down && was) GripReleased(h);
     }
     if (g_realSync) { g_useHand = -1; g_realSync = 0; }
+    if (cfg.armed) ArmedUpdate();
     {
         // In a vehicle something held out to the player (Waters offers the Panzerfaust in the
         // truck) can be taken with a trigger of an empty hand too, as with the grip: with nothing
@@ -2709,10 +2820,32 @@ static void RealisticHands(void)
         // Offensive's LMGs (.30 cal, MG34, DP28) are set up on their bipod with aim down the sights
         // ("Press [..] to setup your weapon"), held for as long as it stays set up: there a press of
         // the other hand's trigger sets it up and the next one takes it down.
-        static int lmgSetUp, lmgTrigger;
+        static int lmgSetUp, lmgTrigger, useTrig;
         const BYTE *def = CurrentWeaponDef();
         int scoped = 0, lmg = 0, other = 1 - g_gunHand;
         int fire;
+        if (g_gunHand >= 0 && !g_inVehicle) {
+            // The other hand's trigger is also "use" (plant a bomb, switches, doors) when that HAND is at something usable
+            // (no looking at it, no use hint needed). It then does nothing else (no fire, zoom or set-up); anywhere else it
+            // keeps aiming and firing with the rifle.
+            int down = useTrig ? g_in.trigger[other] > 0.35f : g_in.trigger[other] > 0.65f;
+            if (down && !useTrig) {
+                int ent = g_in.handValid[other] ? UsableNear(g_in.hand[other].pos, USE_REACH) : 0;
+                if (ent) {
+                    g_useHand = other;
+                    g_useEnt = ent;
+                    useTrig = 1;
+                    Log("realistic: the trigger of hand %d uses entity %d while hand %d holds the gun", other, ent, g_gunHand);
+                }
+            } else if (!down && useTrig) {
+                useTrig = 0;
+                if (g_useHand == other) { g_useHand = -1; g_useEnt = 0; }
+            }
+        } else if (useTrig) {
+            useTrig = 0;
+            g_useHand = -1;
+            g_useEnt = 0;
+        }
         __try {
             const char *ov = def ? *(const char * const *)(def + WEAPDEF_OFS_adsOverlayShader) : NULL;
             const char *dep = def && WEAPDEF_OFS_lmgDeployAnim ? *(const char * const *)(def + WEAPDEF_OFS_lmgDeployAnim) : NULL;
@@ -2722,7 +2855,7 @@ static void RealisticHands(void)
             scoped = lmg = 0;
         }
         if (lmg && g_gunHand >= 0) {
-            float v = g_in.trigger[other];
+            float v = useTrig ? 0 : g_in.trigger[other];
             int down = lmgTrigger ? v > 0.35f : v > 0.65f;
             if (down && !lmgTrigger) {
                 lmgSetUp = !lmgSetUp;
@@ -2734,10 +2867,10 @@ static void RealisticHands(void)
             lmgSetUp = lmgTrigger = 0;   // another weapon, or none in the hand
         }
         fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
-                                  (!scoped && Pressed(g_in.trigger[other], BT_PTRIGGER)));
+                                  (!scoped && !useTrig && Pressed(g_in.trigger[other], BT_PTRIGGER)));
         if (g_slideShow) fire = Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER);   // "fire to skip"
 
-        SetButton(BT_STRIGGER, lmg ? lmgSetUp : g_gunHand >= 0 && scoped && Pressed(g_in.trigger[other], BT_STRIGGER));
+        SetButton(BT_STRIGGER, lmg ? lmgSetUp : g_gunHand >= 0 && scoped && !useTrig && Pressed(g_in.trigger[other], BT_STRIGGER));
         SetButton(BT_PTRIGGER, fire);
     }
 }
@@ -2748,7 +2881,7 @@ static void RealisticHands(void)
 // of every weapon the aimed one, in the game (which shoots) and in the cgame (prediction).
 static void PatchSpread(HMODULE m, int ofsDefs, int ofsCount, const char *what)
 {
-    int count, i, n = 0, t = 0;
+    int count, i, n = 0, t = 0, s = 0;
     BYTE **defs;
     __try {
         count = *(int *)((BYTE *)m + ofsCount);
@@ -2762,6 +2895,15 @@ static void PatchSpread(HMODULE m, int ofsDefs, int ofsCount, const char *what)
             ads = *(float *)(defs[i] + WEAPDEF_OFS_adsSpread);
             if (cfg.hipAccuracy)
                 for (k = 0; k < 4; k++) if (hip[k] != ads) { hip[k] = ads; n++; }
+            if (cfg.scopeInstant) {
+                // a scoped weapon (it has an overlay picture) takes no time to go to its zoom and back: the overlay picture
+                // came closer from far away while the zoom ran, which broke the picture in the headset
+                const char *ov = *(const char * const *)(defs[i] + WEAPDEF_OFS_adsOverlayShader);
+                if ((DWORD)ov > 0x10000 && ov[0]) {
+                    int *adsTimes = (int *)(defs[i] + WEAPDEF_OFS_adsTransInTime);   // in, then out (ms)
+                    for (k = 0; k < 2; k++) if (adsTimes[k] > 1) { adsTimes[k] = 1; s++; }
+                }
+            }
             if (cfg.realistic && cfg.drawTime > 0) {
                 // the hand takes the weapon: no lowering / raising animation (M1A1 stock unfolding)
                 int *times = (int *)(defs[i] + WEAPDEF_OFS_dropTime);
@@ -2773,6 +2915,7 @@ static void PatchSpread(HMODULE m, int ofsDefs, int ofsCount, const char *what)
     }
     if (n) Log("%s: hip fire spread set to the aimed spread (%d values)", what, n);
     if (t) Log("%s: weapon switch times set to %d ms (%d values)", what, cfg.drawTime, t);
+    if (s) Log("%s: the zoom of scoped weapons made instant (%d values)", what, s);
 }
 
 static void UpdateHipAccuracy(void)
@@ -2781,7 +2924,7 @@ static void UpdateHipAccuracy(void)
     static HMODULE gChecked, cgChecked;
     static int gKnown, cgKnown;
     HMODULE g = GetModuleHandleA(GAME_DLL), cg = GetModuleHandleA(CGAME_DLL);
-    if ((!cfg.hipAccuracy && !(cfg.realistic && cfg.drawTime > 0)) || GetTickCount() - last < 1000)
+    if ((!cfg.hipAccuracy && !(cfg.realistic && cfg.drawTime > 0) && !cfg.scopeInstant) || GetTickCount() - last < 1000)
         return;   // weapons load as the level uses them
     last = GetTickCount();
     if (g && g != gChecked) {
@@ -3058,6 +3201,17 @@ static void UpdateVignette(float dt, float stick, float turnRate)
         if (target > 1) target = 1;
         g_vigStrength = cfg.vehicleVignette;
         stick = 0;
+        // The first 2.5 s in a vehicle (the truck of "truckride": it settles on its springs and starts to roll, its measured speed
+        // and turning jump about) are not judged: the vignette went on and off there, a flicker that stopped by itself.
+        if (GetTickCount() - g_vehicleInAt < 2500) target = 0;
+        {
+            static DWORD nextDiag;
+            if (GetTickCount() - g_vehicleInAt < 4000 && GetTickCount() >= nextDiag) {
+                nextDiag = GetTickCount() + 200;
+                Log("vehicle diag: %lu ms in, speed %.0f, turn %.1f deg/s, vignette %.2f (target %.2f), scene %d, locked %d",
+                    GetTickCount() - g_vehicleInAt, g_vehicleSpeed, g_vehicleTurnRate, g_vigAmount, target, g_linkedScene, g_viewLocked);
+            }
+        }
     } else {
         g_vigStrength = cfg.vignetteStrength;
     }
@@ -3271,8 +3425,10 @@ static void DrawScopeMask(GLuint fbo, int w, int h)
     p = zoom > 0 && zoom < cfg.scopeMaxFov ? (cfg.scopeMaxFov - g_scopeFov) / (cfg.scopeMaxFov - zoom) : 1.0f;
     if (p < 0) p = 0;
     if (p > 1) p = 1;
-    // radius in pixels of the HUD buffer: a third of the overlay's circle at the start, all of it at the end
-    rad[0] = (0.35f + 0.65f * p) * ovH * 0.5f / 480.0f * h;
+    // radius in pixels of the HUD buffer: the whole of the overlay's circle from the first frame (the zoom itself is the game's own
+    // fov change). It used to start at a third of it and grow, which showed as a black picture coming closer.
+    (void)p;
+    rad[0] = ovH * 0.5f / 480.0f * h;
     rad[1] = rad[0] * 1.03f + 1.0f;             // a soft edge of a few pixels
     rad[2] = (float)(w + h);                     // past every corner
     sx = 2.0f / w; sy = 2.0f / h;                // NDC per pixel
@@ -3741,6 +3897,9 @@ static void UpdateMods(void)
     if (!bloodSet) {   // after the game's config (which may have it off)
         Cbuf(cfg.gore ? "set cg_blood 1\n" : "set cg_blood 0\n");
         Cbuf("set cg_cursorHints 3\n");   // the use hints (a test build of the turrets turned them off)
+        // The game draws an effect only if it passes a test against ITS view (the aim: with the gun at the floor the
+        // tank's fire and smoke were dropped, 0 sprites at pitch 50); the headset's own culling is done by the renderer
+        if (cfg.fxAlways) Cbuf("set fx_cull 0\n");
         bloodSet = 1;
     }
     if (deathHandled && GetTickCount() - deathTime > 2500) {   // after the death has been seen
@@ -3949,11 +4108,22 @@ static void ProcessControllers(void)
             tin += TurnOf(cfg.bind[BT_STICKLEFT]) * (sx < 0 ? -sx : 0);
             tin += TurnOf(cfg.bind[BT_STICKUP]) * (sy > 0 ? sy : 0);
             tin += TurnOf(cfg.bind[BT_STICKDOWN]) * (sy < 0 ? -sy : 0);
+            // In a car or truck the view belongs to the vehicle (UpdateViewAngles aims toward the vehicle's body yaw), so a turn written
+            // into the game's view yaw went nowhere: the player could not turn round to shoot behind. There the stick turns the
+            // body in its seat (g_vehicleBody), and the seat's direction follows (g_vehicleOffsetAdd).
+            int inSeat = g_inVehicle && !g_gunVehicle && !g_tankMode;
             if (cfg.snapTurn > 0) {
-                if (!g_turnLatched && fabsf(tin) > 0.7f) { va[YAW] -= (tin > 0 ? 1 : -1) * cfg.snapTurn; g_turnLatched = 1; }
+                if (!g_turnLatched && fabsf(tin) > 0.7f) {
+                    float step = (tin > 0 ? 1 : -1) * cfg.snapTurn;
+                    if (inSeat) { g_vehicleBody = AngleNormalize180(g_vehicleBody - step); g_vehicleOffsetAdd -= step; }
+                    else va[YAW] -= step;
+                    g_turnLatched = 1;
+                }
                 else if (fabsf(tin) < 0.3f) g_turnLatched = 0;
             } else if (fabsf(tin) > 0.15f) {
-                va[YAW] -= tin * cfg.turnSpeed * dt;
+                float step = tin * cfg.turnSpeed * dt;
+                if (inSeat) { g_vehicleBody = AngleNormalize180(g_vehicleBody - step); g_vehicleOffsetAdd -= step; }
+                else va[YAW] -= step;
                 turnRate = fabsf(tin) * cfg.turnSpeed;
             }
         }
@@ -4023,8 +4193,8 @@ static void ProcessControllers(void)
                 // through where it points like the gun's; the gun goes on being drawn in its hand.
                 h = &g_in.hand[g_useHand];
             }
-            if (g_uo && g_inVehicle && g_gunVehicle && !g_tankMode) {
-                // the jeep's machine gun follows the way the dominant controller points (the other one only when the
+            if (g_inVehicle && g_gunVehicle && (g_uo || g_tankMode)) {
+                // a tank's gun (both games) and the jeep's machine gun follow the way the dominant controller points (the other one only when the
                 // dominant is not tracked), whatever the head looks at; no grip needed
                 int k = g_in.handValid[dom] ? dom : g_in.handValid[off] ? off : -1;
                 if (k >= 0) { h = &g_in.hand[k]; handDir = 1; }
@@ -4863,7 +5033,11 @@ static void FilterShake(cod_refdef_t *fd)
     LARGE_INTEGER now, freq;
     float out[3], dt, a;
     int i;
-    if (cfg.shakeKeep >= 0.999f) { init = 0; return; }
+    float keep = cfg.shakeKeep;
+    // The first 3 s in a vehicle (the truck of "truckride": the player locks to its frame and it rattles) the shake is cut hard, whatever the
+    // setting: the camera shook for a few seconds there
+    if (g_inVehicle && !g_gunVehicle && GetTickCount() - g_vehicleInAt < 3000 && keep > 0.1f) keep = 0.1f;
+    if (keep >= 0.999f) { init = 0; return; }
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&freq);
     dt = last.QuadPart ? (float)((double)(now.QuadPart - last.QuadPart) / (double)freq.QuadPart) : 0.0f;
@@ -4882,7 +5056,7 @@ static void FilterShake(cod_refdef_t *fd)
         b[i] += a * ((ns - s[i]) / dt - b[i]);
         s[i] = ns;
         d = xi - ns;
-        out[i] = ns + (fabsf(d) > 1.0f ? (d > 0 ? 1.0f : -1.0f) * (1.0f + (fabsf(d) - 1.0f) * cfg.shakeKeep) : d);
+        out[i] = ns + (fabsf(d) > 1.0f ? (d > 0 ? 1.0f : -1.0f) * (1.0f + (fabsf(d) - 1.0f) * keep) : d);
     }
     for (i = 0; i < 3; i++) fd->vieworg[i] = out[i];
 }
@@ -4931,6 +5105,17 @@ static void RenderBothEyes(cod_refdef_t *fd)
             lastView = v;
             lastHead = g_headYawPrev;
             init = 1;
+        }
+        {
+            // a scene takes the view: keep the way the body faced (see g_sceneBase)
+            int hold = cfg.keepLook && (g_linkedScene || g_viewLocked) && !g_inVehicle && !g_onTurret;
+            if (hold && !g_sceneHold) {
+                g_sceneBase = g_prevBody;
+                g_sceneV0 = YawOf(fd->viewaxis[0]);
+                Log("scene: the view is kept where the body faced (%.1f; the game's view is %.1f now)", g_sceneBase, g_sceneV0);
+            }
+            g_sceneHold = hold;
+            g_prevBody = BodyYaw(fd->viewaxis[0]);
         }
         SetCrouchCorrection(fd->vieworg);
         UpdateRoomScale(fd);
@@ -5102,7 +5287,7 @@ static int HiddenPicture(float x, float y, float w, float h)
     return stance ||
            (cx >= 242 && cx <= 563 && cy >= 430 && cy <= 477) ||   // weapon name
            (cx >= 537 && cy >= 420 && cy <= 486) ||                // fire mode, ammo
-           (cx >= 495 && cx <= 636 && cy >= 455 && cy <= 476) ||   // health bar
+           (cx >= 484 && cx <= 640 && cy >= 452 && cy <= 480) ||   // health bar: back 501-631, bar, and the cross (488-500, centre 494: left out by the old 495)
            (g_hudHide == HIDE_STATUS_CORNER && cx >= 440 && cy >= 380);   // grenade icons
 }
 
@@ -5279,6 +5464,19 @@ static void __cdecl hk_StretchPic(float x, float y, float w, float h, float s1, 
     if (x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1) {   // diagnostics
         g_fullShader = shader;
         g_fullAlpha = g_curColorSet ? g_curColor[3] : 1.0f;
+        if (g_hudActive && !(MEM(int, ADDR_cls_keyCatchers) & 2) && g_fullAlpha > 0.02f) {
+            // a full-screen picture during play (damage tint, flash, fade): who draws it, its colour and what the mod made of it
+            static DWORD nextFull;
+            static int fullLines;
+            if (GetTickCount() >= nextFull && fullLines < 600) {
+                nextFull = GetTickCount() + 400;
+                fullLines++;
+                Log("full-screen picture: shader %d, colour %.2f %.2f %.2f alpha %.2f, %s", shader,
+                    g_curColorSet ? g_curColor[0] : 1.0f, g_curColorSet ? g_curColor[1] : 1.0f, g_curColorSet ? g_curColor[2] : 1.0f,
+                    g_fullAlpha, g_scopeActive ? "scope" : g_slideFrame ? "slide frame" :
+                    (g_singlePass && g_fullAlpha >= 0.98f) ? "taken as a briefing start" : "kept for both eyes");
+            }
+        }
     }
     if (g_singlePass && g_hudActive && !g_scopeActive && !(MEM(int, ADDR_cls_keyCatchers) & 2) &&
         x <= 1 && y <= 1 && x + w >= fb_w - 1 && y + h >= fb_h - 1 && (!g_curColorSet || g_curColor[3] >= 0.98f)) {
@@ -5345,8 +5543,9 @@ static void __cdecl hk_EndFrame(int *frontMsec, int *backMsec)
             for (t = 0; t < 16; t++)
                 if (g_statTypes[t]) n += _snprintf(types + n, sizeof(types) - n, " %d:%d", t, g_statTypes[t]);
             memset(g_statTypes, 0, sizeof(g_statTypes));
-            Log("stats/s: scenes %d rdflags 0x%x, max entities %d, max polys %d, dlights %d, added by reType%s",
-                g_statScenes, g_statFlags, g_statMaxEnt, g_statMaxPoly, MEM(int, ADDR_r_numDlights), types);
+            Log("stats/s: scenes %d rdflags 0x%x, max entities %d, max polys %d, dlights %d, game view yaw %.0f pitch %.0f, added by reType%s",
+                g_statScenes, g_statFlags, g_statMaxEnt, g_statMaxPoly, MEM(int, ADDR_r_numDlights),
+                YawOf(g_lastViewAxis[0]), PitchOf(g_lastViewAxis[0]), types);
             g_statTick = now;
             g_statScenes = g_statFlags = g_statMaxEnt = g_statMaxPoly = 0;
         }
@@ -6310,8 +6509,14 @@ static void LoadConfig(void)
     cfg.rightHanded     = CfgInt("Controllers", "RightHanded", cfg.rightHanded, ini);
     cfg.swapSticks      = CfgInt("Controllers", "SwapSticks", 0, ini);
     cfg.moveStick       = CfgInt("Controllers", "MoveStick", -1, ini);
+    cfg.scopeInstant    = CfgInt("Scope", "InstantAds", 1, ini);
     cfg.moveMode        = CfgInt("Controllers", "MoveMode", 2, ini);
     if (cfg.moveMode < 0 || cfg.moveMode > 2) cfg.moveMode = 2;
+    cfg.fxAlways        = CfgInt("Graphics", "FxAlways", 1, ini);
+    cfg.keepLook        = CfgInt("Comfort", "KeepLook", 1, ini);
+    cfg.chestNear       = IniFloat("Holsters", "ChestNear", -0.12f, ini);
+    cfg.chestWidth      = IniFloat("Holsters", "ChestWidth", 0.30f, ini);
+    cfg.armed           = CfgInt("Controllers", "AlwaysArmed", 0, ini);
     cfg.snapTurn        = IniFloat("Controllers", "SnapTurn", cfg.snapTurn, ini);
     cfg.turnSpeed       = IniFloat("Controllers", "SmoothTurnSpeed", cfg.turnSpeed, ini);
     cfg.converge        = IniFloat("Controllers", "ConvergeDistance", cfg.converge, ini);
@@ -6428,12 +6633,12 @@ static void LoadConfig(void)
         // were [Realistic] LeftShoulder / RightShoulder before)
         static const struct { int zone; const char *key, *def; } zones[] = {
             { ZONE_SHOULDER_L, "LeftShoulder", "primaryb" }, { ZONE_SHOULDER_R, "RightShoulder", "primary" },
-            { ZONE_CHEST, "Chest", "none" }, { ZONE_WAIST_L, "WaistLeft", "pistol" }, { ZONE_WAIST_R, "WaistRight", "none" },
+            { ZONE_CHEST, "Chest", "binocular" }, { ZONE_WAIST_L, "WaistLeft", "pistol" }, { ZONE_WAIST_R, "WaistRight", "none" },
             { ZONE_WAIST_F, "WaistFront", "none" }, { ZONE_WAIST_B, "WaistBack", "grenade" },
         };
         static const struct { const char *name; int act; } acts[] = {
             { "none", ACT_NONE }, { "primary", ACT_W1 }, { "primaryb", ACT_W2 }, { "switch", ACT_SWITCH },
-            { "pistol", ACT_PISTOL }, { "grenade", ACT_GRENADE }, { "smokegrenade", ACT_GRENADE },
+            { "pistol", ACT_PISTOL }, { "grenade", ACT_GRENADE }, { "smokegrenade", ACT_GRENADE }, { "binocular", ACT_BINOCULAR },
         };
         char v[32], old[32];
         int z, k;

@@ -8,8 +8,8 @@ IDR_SUP_VETERAN RCDATA "res\\sup_veteran.bin"
 IDR_SUP_MASTER  RCDATA "res\\sup_master.bin"
 
 1 VERSIONINFO
-FILEVERSION 1,7,1,0
-PRODUCTVERSION 1,7,1,0
+FILEVERSION 1,7,2,0
+PRODUCTVERSION 1,7,2,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -17,8 +17,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Call of Duty VR launcher"
       VALUE "ProductName", "Call of Duty VR"
-      VALUE "FileVersion", "1.7.1"
-      VALUE "ProductVersion", "1.7.1"
+      VALUE "FileVersion", "1.7.2"
+      VALUE "ProductVersion", "1.7.2"
     END
   END
   BLOCK "VarFileInfo"

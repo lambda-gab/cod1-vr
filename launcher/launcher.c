@@ -21,7 +21,7 @@
 #include "launcher_res.h"
 #include "../third_party/miniz/miniz.h"
 
-#define VERSION_TEXT L"v1.7.1"
+#define VERSION_TEXT L"v1.7.2"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -271,6 +271,7 @@ static const choice_t g_holsterActs[] = {
     { L"Switch Weapon 1 & 2", "switch" },
     { L"Pistol", "pistol" },
     { L"Grenade", "grenade" },
+    { L"Binoculars (United Offensive)", "binocular" },
 };
 
 static const choice_t g_actions[] = {
@@ -295,15 +296,23 @@ static const choice_t g_actions[] = {
     { L"Sprint (United Offensive)", "+sprint" },
     { L"Switch weapon 1 & 2", "vr:switchweapon" },     // without reaching for the shoulders
     { L"Comfort vignette (next)", "vr:vignette" },      // Off, Low, Medium, High, Off...
+    { L"Menu", "key:ESCAPE" },          // the game's menu, for controllers without a menu button (opens it, and closes it from inside)
     { L"Turn left", "vr:turnleft" },    // only for the free stick (the lists of the buttons stop before these)
     { L"Turn right", "vr:turnright" },
 };
-#define NUM_BTN_ACTS 21   // the entries of g_actions a button can have
-#define NUM_STK_ACTS 23   // and the free stick's directions
+#define NUM_BTN_ACTS 22   // the entries of g_actions a button can have
+#define NUM_STK_ACTS 24   // and the free stick's directions
 
 static const choice_t g_handActs[] = {
     { L"Right", "1" },
     { L"Left", "0" },
+};
+
+// What the hands do with the weapons: taken from the body and put away (free hands), or one weapon always in the dominant hand,
+// never dropped (for gunstock controllers: the free hand's X / A button then switches weapon).
+static const choice_t g_armedActs[] = {
+    { L"Free hands", "0" },
+    { L"Always armed (gunstock)", "1" },
 };
 
 // The stick that moves you; the other one is free: each of its four directions gets an action.
@@ -313,20 +322,21 @@ static const choice_t g_stickActs[] = {
 };
 
 #define NUM_HOLSTERS 7
-#define NUM_HANDS    1   // the entry after the holsters: dominant hand
+#define NUM_HANDS    2   // the entries after the holsters: dominant hand, then the weapon handling (free hands / always armed)
 #define NUM_BUTTONS  6   // then A, B, X, Y and the stick clicks (the page shows the two of the dominant hand)
 #define NUM_SHORTCUTS 12 // then the shortcuts: X + A, X + B, X + Y, Y + A, Y + B, Y + X (right-handed), A + X, A + Y, A + B, B + X, B + Y, B + A (left-handed)
 #define CTL_SHORTCUT (NUM_HOLSTERS + NUM_HANDS + NUM_BUTTONS)
 #define CTL_MOVE     (CTL_SHORTCUT + NUM_SHORTCUTS)   // then the move stick and the free stick's up, down, left, right
 static struct { const wchar_t *label; const char *section, *key, *def; const choice_t *ch; int n; int cur; } g_ctl[] = {
-    { L"Left shoulder", "Holsters", "LeftShoulder", "primaryb", g_holsterActs, 6, 0 },
-    { L"Right shoulder", "Holsters", "RightShoulder", "primary", g_holsterActs, 6, 0 },
-    { L"Chest", "Holsters", "Chest", "none", g_holsterActs, 6, 0 },
-    { L"Waist, right", "Holsters", "WaistRight", "none", g_holsterActs, 6, 0 },
-    { L"Waist, left", "Holsters", "WaistLeft", "pistol", g_holsterActs, 6, 0 },
-    { L"Waist, front", "Holsters", "WaistFront", "none", g_holsterActs, 6, 0 },
-    { L"Waist, back", "Holsters", "WaistBack", "grenade", g_holsterActs, 6, 0 },
+    { L"Left shoulder", "Holsters", "LeftShoulder", "primaryb", g_holsterActs, 7, 0 },
+    { L"Right shoulder", "Holsters", "RightShoulder", "primary", g_holsterActs, 7, 0 },
+    { L"Chest", "Holsters", "Chest", "binocular", g_holsterActs, 7, 0 },
+    { L"Waist, right", "Holsters", "WaistRight", "none", g_holsterActs, 7, 0 },
+    { L"Waist, left", "Holsters", "WaistLeft", "pistol", g_holsterActs, 7, 0 },
+    { L"Waist, front", "Holsters", "WaistFront", "none", g_holsterActs, 7, 0 },
+    { L"Waist, back", "Holsters", "WaistBack", "grenade", g_holsterActs, 7, 0 },
     { L"Dominant hand", "Controllers", "RightHanded", "1", g_handActs, 2, 0 },
+    { L"Weapon handling", "Controllers", "AlwaysArmed", "0", g_armedActs, 2, 0 },
     { L"A", "Buttons", "A", "+gostand", g_actions, NUM_BTN_ACTS, 0 },
     { L"B", "Buttons", "B", "+reload", g_actions, NUM_BTN_ACTS, 0 },
     { L"X", "Buttons", "X", "", g_actions, NUM_BTN_ACTS, 0 },
@@ -358,9 +368,12 @@ static struct { const wchar_t *label; const char *section, *key, *def; const cho
 // are on the opposite shoulders and hip, the left stick turns, the face buttons and stick clicks swap controllers. The profile
 // called Default means these, whichever hand is chosen.
 static int g_leftHand;   // the dominant hand of the profile in use: 1 = left
+static int g_armed;      // the profile in use is always armed (the weapon never leaves the dominant hand)
 
 static const char *CtlDefFor(int i, int left)
 {
+    // always armed: the free hand's X (right-handed) or A (left-handed) tapped switches weapon, so nothing needs the holsters
+    if (g_armed && !strcmp(g_ctl[i].key, left ? "A" : "X")) return "vr:switchweapon";
     static const char *const mirrored[][2] = {
         { "LeftShoulder", "primary" }, { "RightShoulder", "primaryb" }, { "WaistRight", "pistol" }, { "WaistLeft", "none" },
         { "MoveStick", "1" }, { "A", "" }, { "B", "" }, { "X", "+gostand" }, { "Y", "+reload" },
@@ -383,6 +396,9 @@ static void LoadControls(void)
         GetPrivateProfileStringA("Controllers", "RightHanded", "1", hand, sizeof(hand), g_gameIni);
         GetPrivateProfileStringA("Controllers", "RightHanded", hand, hand, sizeof(hand), g_userIni);
         g_leftHand = !strcmp(hand, "0");
+        GetPrivateProfileStringA("Controllers", "AlwaysArmed", "0", hand, sizeof(hand), g_gameIni);
+        GetPrivateProfileStringA("Controllers", "AlwaysArmed", hand, hand, sizeof(hand), g_userIni);
+        g_armed = !strcmp(hand, "1");
     }
     for (i = 0; i < NUM_CTL; i++) {
         char val[64], v[64];
@@ -547,6 +563,8 @@ static void ApplyProfile(void)
     ProfileSection(g_profile, sec, sizeof(sec));
     GetPrivateProfileStringA(sec, "RightHanded", "1", val, sizeof(val), g_userIni);
     g_leftHand = !strcmp(val, "0");
+    GetPrivateProfileStringA(sec, "AlwaysArmed", "0", val, sizeof(val), g_userIni);
+    g_armed = !strcmp(val, "1");
     for (i = 0; i < NUM_CTL; i++) {
         GetPrivateProfileStringA(sec, g_ctl[i].key, CtlDef(i), val, sizeof(val), g_userIni);   // what was never changed is the default (of the hand)
         WritePrivateProfileStringA(g_ctl[i].section, g_ctl[i].key, val, g_userIni);
@@ -1613,8 +1631,9 @@ static void DrawControls(HDC dc)
         Text(dc, g_fBold, g_profile == 0 ? COL_DIM : hotD ? COL_GOLD : COL_TEXT, P(822), y0, P(930), y1, L"Delete", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if (g_profile > 0) AddHit(P(822), y0, P(930), y1, HIT_DELPROF, 0);
     }
-    // the dominant hand is the most important choice: a row of its own across the page
-    DrawDropDown(dc, NUM_HOLSTERS, P(92), P(118), P(60), P(230), P(40), P(960));
+    // the dominant hand is the most important choice: a row of its own across the page, with what the hands do with the weapons beside it
+    DrawDropDown(dc, NUM_HOLSTERS, P(92), P(118), P(60), P(230), P(40), P(470));
+    DrawDropDown(dc, NUM_HOLSTERS + 1, P(92), P(118), P(520), P(690), P(500), P(960));
     // left column: the weapons on the body, then the sticks; right column: the buttons, then their shortcuts
     Text(dc, g_fBold, COL_GOLD, P(50), P(130), P(480), P(154), L"Take weapons from your body (grip)", DT_SINGLELINE);
     for (i = 0; i < NUM_HOLSTERS; i++) {
@@ -1636,21 +1655,30 @@ static void DrawControls(HDC dc)
     {
         // the dominant hand's two buttons (A and B, or X and Y), then the stick clicks
         int rh = g_ctl[NUM_HOLSTERS].cur != 1, first = NUM_HOLSTERS + NUM_HANDS, k;
+        static const wchar_t *const plain[4] = { L"A", L"B", L"X", L"Y" };
+        static const wchar_t *const tap[4] = { L"A (tap)", L"B (tap)", L"X (tap)", L"Y (tap)" };
+        for (k = 0; k < 4; k++) g_ctl[first + k].label = plain[k];
         Text(dc, g_fBold, COL_GOLD, P(520), P(130), P(950), P(154), L"Buttons", DT_SINGLELINE);
         for (k = 0; k < 4; k++) {
             int idx = k < 2 ? first + (rh ? 0 : 2) + k : first + 4 + (k - 2);   // A B | X Y, then the two stick clicks
             int y0 = P(158 + k * 28);
             DrawDropDown(dc, idx, y0, y0 + P(24), P(540), P(710), P(520), P(960));
         }
-        // the two buttons of the other hand are wildcards: held, then another button, one shortcut each
-        Text(dc, g_fBold, COL_GOLD, P(520), P(280), P(960), P(304), rh ? L"Shortcuts: hold X or Y, then press" : L"Shortcuts: hold A or B, then press", DT_SINGLELINE);
+        // the two buttons of the other hand are wildcards: tapped on their own they run their action (first two rows), held,
+        // then another button, one shortcut each
+        Text(dc, g_fBold, COL_GOLD, P(520), P(280), P(960), P(304), rh ? L"X and Y: tap, or hold then press" : L"A and B: tap, or hold then press", DT_SINGLELINE);
+        for (k = 0; k < 2; k++) {
+            int idx = first + (rh ? 2 : 0) + k, y0 = P(308 + k * 26);
+            g_ctl[idx].label = tap[(rh ? 2 : 0) + k];
+            DrawDropDown(dc, idx, y0, y0 + P(24), P(540), P(710), P(520), P(960));
+        }
         for (k = 0; k < 6; k++) {
-            int idx = CTL_SHORTCUT + (rh ? 0 : 6) + k, y0 = P(308 + k * 28);
+            int idx = CTL_SHORTCUT + (rh ? 0 : 6) + k, y0 = P(308 + (k + 2) * 26);
             DrawDropDown(dc, idx, y0, y0 + P(24), P(540), P(710), P(520), P(960));
         }
     }
     {
-        int hot = Hovered(HIT_RESET, 0), x0 = P(760), y0 = P(508), x1 = P(960), y1 = P(536);
+        int hot = Hovered(HIT_RESET, 0), x0 = P(760), y0 = P(524), x1 = P(960), y1 = P(550);
         Fill(dc, x0, y0, x1, y1, hot ? COL_GOLD : RGB(80, 80, 80));
         Fill(dc, x0 + P(1), y0 + P(1), x1 - P(1), y1 - P(1), RGB(24, 24, 24));
         Text(dc, g_fBold, hot ? COL_GOLD : COL_TEXT, x0, y0, x1, y1, L"Reset to defaults", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
@@ -1884,11 +1912,26 @@ static void ChangeHand(int left)
     int i, old = g_leftHand;
     ProfileSection(g_profile, sec, sizeof(sec));
     for (i = 0; i < NUM_CTL; i++) {
-        if (i == NUM_HOLSTERS) continue;
+        if (i == NUM_HOLSTERS || i == NUM_HOLSTERS + 1) continue;
         GetPrivateProfileStringA(sec, g_ctl[i].key, "\x01", val, sizeof(val), g_userIni);
         if (val[0] != 1 && !_stricmp(val, CtlDefFor(i, old))) WritePrivateProfileStringA(sec, g_ctl[i].key, NULL, g_userIni);
     }
     WritePrivateProfileStringA(sec, "RightHanded", left ? "0" : "1", g_userIni);
+    ApplyProfile();
+}
+
+// The weapon handling changes (free hands <-> always armed): same rule, the buttons still at the old mode's default take the new one's.
+static void ChangeArmed(int armed)
+{
+    char sec[64], val[64];
+    int i;
+    ProfileSection(g_profile, sec, sizeof(sec));
+    for (i = 0; i < NUM_CTL; i++) {
+        if (i == NUM_HOLSTERS || i == NUM_HOLSTERS + 1) continue;
+        GetPrivateProfileStringA(sec, g_ctl[i].key, "\x01", val, sizeof(val), g_userIni);
+        if (val[0] != 1 && !_stricmp(val, CtlDefFor(i, g_leftHand))) WritePrivateProfileStringA(sec, g_ctl[i].key, NULL, g_userIni);   // (g_armed still the old one)
+    }
+    WritePrivateProfileStringA(sec, "AlwaysArmed", armed ? "1" : "0", g_userIni);
     ApplyProfile();
 }
 
@@ -1927,6 +1970,7 @@ static void Click(HWND wnd, int idx)
             pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, wnd, NULL);
             DestroyMenu(menu);
             if (pick > 0 && ct == NUM_HOLSTERS && pick - 1 != g_ctl[ct].cur) ChangeHand(!strcmp(g_ctl[ct].ch[pick - 1].val, "0"));
+            else if (pick > 0 && ct == NUM_HOLSTERS + 1 && pick - 1 != g_ctl[ct].cur) ChangeArmed(!strcmp(g_ctl[ct].ch[pick - 1].val, "1"));
             else if (pick > 0) { g_ctl[ct].cur = pick - 1; SaveControl(ct); }
             break;
         }
@@ -1973,7 +2017,7 @@ static void Click(HWND wnd, int idx)
         if (MessageBoxW(wnd, L"Put every weapon zone and button of this profile back to its default?", L"CoD VR", MB_YESNO | MB_ICONQUESTION) == IDYES) {
             int c, a;
             for (c = 0; c < NUM_CTL; c++) {
-                if (c == NUM_HOLSTERS) continue;   // the dominant hand stays: the defaults are its own
+                if (c == NUM_HOLSTERS || c == NUM_HOLSTERS + 1) continue;   // the dominant hand and the weapon handling stay: the defaults are theirs
                 g_ctl[c].cur = -1;
                 for (a = 0; a < g_ctl[c].n; a++)
                     if (IsDefault(c, a)) { g_ctl[c].cur = a; break; }

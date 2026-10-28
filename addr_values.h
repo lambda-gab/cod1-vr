@@ -157,3 +157,4 @@ X(G_OFS_useTable, 0x000a59f8, 0x000aa654)
 X(ADDR_RB_SurfaceStaticModelCached, 0x004fabd0, 0x004ffda0)
 X(ADDR_staticCacheCount, 0x01830c94, 0x046d9854)
 X(ADDR_staticModelDet, 0x01534704, 0x047be044)
+X(WEAPDEF_OFS_adsTransInTime, 0x00000268, 0x000002c4)  /* int, ms: cgame and game field tables of both games (adsTransOutTime is the next int) */

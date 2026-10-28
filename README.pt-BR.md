@@ -108,7 +108,8 @@ Botões (editáveis em `[Buttons]` no `cod_vr.ini`):
 | Controle | Ação |
 |---|---|
 | Qualquer gatilho | Atirar (com granada: segure para ver a trajetória e solte para lançar). Com fuzil de luneta, o gatilho da mão que não segura a arma dá o zoom |
-| Grip da mão vazia, ou da mão livre longe da arma | Usar / pegar (portas, armas no chão). Plantar explosivos: com uma arma numa mão, leve a outra até a bomba e segure o grip dela |
+| Grip da mão vazia | Usar / pegar (portas, armas no chão) |
+| Gatilho da mão livre, com a mão numa bomba ou interruptor | Usar (plantar explosivos) enquanto a outra mão segura uma arma |
 | Grip da mão livre no guarda-mão da arma | Segurar a arma com as duas mãos |
 | Analógico esquerdo | Andar (relativo à cabeça). Com Blink ou Shift (beta): empurre para a frente para mirar um salto, solte para ir |
 | Analógico direito | Girar (snap 45°); cima/baixo muda a postura |
@@ -168,6 +169,32 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
   `TwoHandStabilization`, `TwoHandRecoilReduction`.
 
 ## Releases
+
+### v1.7.2
+
+- **Usar coisas com a mão livre agora é o gatilho dela:** com uma arma numa mão, ponha a outra na bomba (um interruptor, uma
+  porta) e aperte o gatilho dela; não precisa olhar para a bomba nem ver a dica de uso. Longe dessas coisas, esse gatilho
+  continua mirando e atirando com o fuzil. O grip da mão livre não planta mais: ele só segura a arma com as duas mãos.
+- **Modo sempre armado (gunstock):** CONTROLS > Weapon handling. A arma fica na mão dominante, nunca é guardada nem cai, e
+  não há coldres. O X da mão livre (A para canhotos) troca de arma por padrão, passando por tudo que você carrega. Para
+  controles em forma de arma. "Free hands" continua sendo o padrão.
+- **Binóculo (United Offensive)** é um item de coldre, no peito por padrão; qualquer zona do corpo pode guardá-lo.
+- **Ação Menu** para qualquer botão (CONTROLS), para controles sem botão de menu. O mesmo botão fecha o menu.
+- **Ação de toque do X e do Y** (A e B para canhotos) em CONTROLS: agora dá para atribuir uma ação que roda num toque, sem
+  apertar outro botão junto.
+- **Tanques:** o canhão segue o controle da mão dominante (Call of Duty e United Offensive); o tanque de Kursk do United
+  Offensive é dirigido como o do Call of Duty, com a cabeça livre do movimento do tanque.
+- **Fogo e fumaça não somem mais** quando sua arma aponta para outro lado (um tanque em chamas enquanto você mira no chão):
+  o jogo descartava os efeitos fora da visão da mira. `[Graphics] FxAlways`.
+- **Cenas scriptadas e entrar em carro ou caminhão mantêm a direção da sua visão** em vez de dar um salto (a cena da
+  munição e o caminhão em Trenches). `[Comfort] KeepLook`.
+- **Fuzis de luneta e binóculos** dão o zoom na hora, com a imagem da luneta inteira desde o primeiro quadro (`[Scope] InstantAds`).
+- **Caminhões:** os primeiros segundos são mais calmos (menos tremor de câmera, sem piscar da vinheta), e o analógico direito
+  gira você no banco em carros e caminhões.
+- **Metralhadora do jipe (United Offensive):** acompanha o controle sem ficar para trás em giros rápidos.
+- **Coldre do peito** começa mais perto do corpo, então uma arma encostada no peito conta. **HUD imersivo** esconde a barra de
+  vida inteira.
+- Pimax: sem mudanças desde a 1.7.0. Diagnóstico para o flash branco depois de levar dano (imagens de tela cheia no `cod_vr.log`).
 
 ### v1.7.1
 

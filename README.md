@@ -107,7 +107,8 @@ Buttons (editable in `[Buttons]` of `cod_vr.ini`):
 | Control | Action |
 |---|---|
 | Either trigger | Fire (with a grenade: hold to see its trajectory, release to throw). With a scoped rifle, the trigger of the hand not holding the gun zooms |
-| Grip of an empty hand, or of the free hand away from the gun | Use / pick up (doors, weapons on the floor). Planting explosives: with a gun in one hand, reach the other hand into the bomb and hold its grip |
+| Grip of an empty hand | Use / pick up (doors, weapons on the floor) |
+| Trigger of the free hand, with the hand on a bomb or switch | Use (plant explosives) while the other hand holds a gun |
 | Free hand's grip on the gun's handguard | Hold the gun with both hands |
 | Left stick | Move (relative to the head). With Blink or Shift (beta): push forward to aim a jump, let go to go |
 | Right stick | Turn (45° snap); up/down changes stance |
@@ -168,6 +169,32 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 - `[Mods]` `Difficulty`, `InfiniteAmmo`, `Gore`.
 
 ## Releases
+
+### v1.7.2
+
+- **Using things with the free hand is now its trigger:** with a gun in one hand, put the other hand on the bomb (a switch, a
+  door) and press its trigger; no need to look at it or to see the use hint. Away from such things that trigger still
+  aims and fires with the rifle. The free hand's grip no longer plants: it only holds the gun with both hands.
+- **Always armed (gunstock) mode:** CONTROLS > Weapon handling. The weapon stays in your dominant hand, it is never put away
+  or dropped, and there are no holsters. The free hand's X (A if left-handed) switches weapon by default, through
+  everything you carry. For gunstock controllers. "Free hands" is still the default.
+- **Binoculars (United Offensive)** are a holster item, at the chest by default; any zone of the body can hold them.
+- **Menu action** for any button (CONTROLS), for controllers without a menu button. The same button closes the menu.
+- **Tap action of X and Y** (A and B if left-handed) in CONTROLS: they can now be given an action that runs on a tap,
+  without pressing another button with them.
+- **Tanks:** the gun follows the controller of your dominant hand (Call of Duty and United Offensive); United Offensive's
+  Kursk tank is driven like Call of Duty's, with the head free of the tank's movement.
+- **Fire and smoke no longer vanish** when your gun points somewhere else (a burning tank while aiming at the floor):
+  the game dropped the effects outside the view of the aim. `[Graphics] FxAlways`.
+- **Scripted scenes and getting into a car or truck keep your view direction** instead of jumping (the ammunition scene and
+  the truck in Trenches). `[Comfort] KeepLook`.
+- **Scoped rifles and binoculars** zoom at once, with the scope picture full size from the first frame (`[Scope] InstantAds`).
+- **Trucks:** the first seconds are calmer (less camera shake, no vignette flicker), and the right stick turns you in your
+  seat in cars and trucks.
+- **United Offensive jeep gun:** follows the controller without lagging behind quick turns.
+- **Chest holster** starts closer to the body, so a weapon pressed to the chest counts. **Immersive HUD** hides the whole
+  health bar.
+- Pimax: unchanged since 1.7.0. Diagnostics added for the white flash after damage (full-screen pictures in `cod_vr.log`).
 
 ### v1.7.1
 
