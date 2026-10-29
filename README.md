@@ -170,6 +170,20 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.7.4
+
+- **Weapons on your body (holsters):** the pistol at your chest is no longer swapped for a rifle, and a hand at your neck
+  is no longer taken for a shoulder. The chest zone is shallower, so arms held out in front of you while walking no longer
+  make the controllers vibrate, and the waist holsters need the hand closer to your waist.
+- **A softer holster signal:** reaching a holster now gives two quick taps instead of a second of vibration.
+- **Taking a weapon from the floor:** a weapon lying near your hand is taken before any holster (crouching for it used to
+  draw a weapon from your body). The reach is longer, and the controller has to point at the weapon unless it is right at
+  your hand.
+- **Only the gun hand's trigger fires:** the other hand's trigger fires only while that hand holds the handguard.
+- **Immersive HUD:** the ammo count no longer shows.
+- **Objectives on a button:** hold the button to see them (a quick tap only made the screen flash). The objectives on the
+  back of your hand are a little bigger.
+
 ### v1.7.3
 
 - **No more white flash and white haze after explosions:** the game's shellshock effect (an explosion close to you)

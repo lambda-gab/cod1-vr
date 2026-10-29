@@ -878,6 +878,9 @@ static int g_faceDown[4];      // the buttons as read
 static int g_faceShortcut[4];  // 1 + the wildcard button a held button's shortcut belongs to (0 when none)
 static int g_shortcutHeld = -1;   // the wildcard held first
 static int g_shortcutUsed;        // something was pressed while it was held (so it is not a tap)
+static int g_wildHold;            // the wildcard's own "+" command is being held down (it was held long enough to be no tap)
+static DWORD g_wildAt;            // when the wildcard went down
+#define WILD_HOLD_MS 200
 
 static int IsWildcard(int f) { return cfg.rightHanded ? (f == FACE_X || f == FACE_Y) : (f == FACE_A || f == FACE_B); }
 static const char *ShortcutOf(int mod, int f) { return cfg.shortcut[mod][f]; }
@@ -892,6 +895,7 @@ static void UpdateFaceButtons(const int down[4])
         if (down[f]) {
             if (g_shortcutHeld >= 0 && f != g_shortcutHeld) {
                 const char *cmd = ShortcutOf(g_shortcutHeld, f);
+                if (g_wildHold) { SetButton(g_faceBt[g_shortcutHeld], 0); g_wildHold = 0; }   // it was a hold: a shortcut takes over
                 g_faceShortcut[f] = 1 + g_shortcutHeld;
                 g_shortcutUsed = 1;
                 Log("shortcut %s + %s: %s", names[g_shortcutHeld], names[f], cmd[0] ? cmd : "(nothing)");
@@ -899,6 +903,8 @@ static void UpdateFaceButtons(const int down[4])
             } else if (IsWildcard(f)) {
                 g_shortcutHeld = f;
                 g_shortcutUsed = 0;
+                g_wildHold = 0;
+                g_wildAt = GetTickCount();
             } else {
                 SetButton(g_faceBt[f], 1);
             }
@@ -908,13 +914,21 @@ static void UpdateFaceButtons(const int down[4])
                 g_faceShortcut[f] = 0;
             } else if (IsWildcard(f)) {
                 if (f == g_shortcutHeld) {
-                    if (!g_shortcutUsed) { RunBind(g_faceBt[f], 1); RunBind(g_faceBt[f], 0); }   // a tap: its own action
+                    if (g_wildHold) { SetButton(g_faceBt[f], 0); g_wildHold = 0; }   // a hold: the command is let go with the button
+                    else if (!g_shortcutUsed) { RunBind(g_faceBt[f], 1); RunBind(g_faceBt[f], 0); }   // a tap: its own action
                     g_shortcutHeld = -1;
                 }
             } else {
                 SetButton(g_faceBt[f], 0);
             }
         }
+    }
+    // A wildcard held alone for a moment whose bind is a "+" command (the objectives screen, +scores) is held down for as long as the
+    // button is: a tap sent +scores and -scores in the same frame, so the screen only flashed (a player's report)
+    if (g_shortcutHeld >= 0 && !g_shortcutUsed && !g_wildHold && cfg.bind[g_faceBt[g_shortcutHeld]][0] == '+' &&
+        g_faceDown[g_shortcutHeld] && GetTickCount() - g_wildAt >= WILD_HOLD_MS) {
+        g_wildHold = 1;
+        SetButton(g_faceBt[g_shortcutHeld], 1);
     }
 }
 
@@ -1885,12 +1899,17 @@ static int HandZone(int h)
     float dx = p[0] - g_head.pos[0], dy = p[1] - g_head.pos[1], up = p[2] - g_head.pos[2];
     float fwd = dx * c + dy * s, left = -dx * s + dy * c;
     float reach = sqrtf(fwd * fwd + left * left);   // how far the hand is from the body: reaching out for something on the floor is not a holster
-    if (up > cfg.backHeight && fwd < 0.05f && fabsf(left) < 0.5f) return left > 0 ? ZONE_SHOULDER_L : ZONE_SHOULDER_R;
+    // A short torso puts the chest within 30 cm of the eyes, where the shoulders started (a player's pistol at the chest drew the rifle) and
+    // the chest began only below: in the band just under the shoulder line a hand ahead of ChestNear is the chest, not a shoulder.
+    // A hand at the neck or the face (less than 12 cm off the middle) is no shoulder either.
+    float chestTop = cfg.backHeight + 0.15f;
+    if (up > cfg.backHeight && fwd < 0.05f && fabsf(left) < 0.5f && fabsf(left) > 0.12f && (up > chestTop || fwd < cfg.chestNear)) return left > 0 ? ZONE_SHOULDER_L : ZONE_SHOULDER_R;
     // the chest: in front of the body, between the shoulders and the waist
     // (the eyes stand ahead of the chest, so a hand pressed to it can be level with the eyes' plane or just behind it: the zone starts at
     // ChestNear, -0.12 by default. It began at +0.05, which a hand holding a pistol to its chest may never have reached: guess from a
     // player's report that the pistol could not be put away there, not measured)
-    if (up < cfg.backHeight && up > cfg.hipHeight + 0.2f && fwd > cfg.chestNear && fwd < 0.45f && fabsf(left) < cfg.chestWidth) return ZONE_CHEST;
+    // (fwd < 0.28: arms held out in front while walking are not at the chest; the zone used to reach 0.45 and hummed all the time)
+    if (up < chestTop && up > cfg.hipHeight + 0.2f && fwd > cfg.chestNear && fwd < 0.28f && fabsf(left) < cfg.chestWidth) return ZONE_CHEST;
     // behind the body from the waist line down to the lower back
     if (fabsf(up - cfg.lowerBackHeight) < 0.32f && fabsf(left) < 0.4f && fwd < -0.03f && fwd > -0.7f && reach < cfg.waistReach + 0.1f) return ZONE_WAIST_B;
     if (fabsf(up - cfg.hipHeight) < 0.2f && fwd > -0.15f && fwd < 0.5f && reach < cfg.waistReach) {
@@ -2403,14 +2422,16 @@ static void DropHeldWeapon(int h)
 // through the weapon slots). The game picks what to use by the way the head looks; with a hand that is the
 // wrong test, so the nearest dropped weapon within reach of the hand is handed to the game's use function.
 // Returns 1 when one was taken.
-static int HandPickup(int h)
+#define PICKUP_POINT_FREE 10.0f   // game units (about 25 cm): a weapon this close to the hand needs no pointing at
+static int HandPickupWithin(int h, float reachUnits)
 {
     HMODULE m = GetModuleHandleA(GAME_DLL);
     BYTE *gm = (BYTE *)m, *player, *best = NULL, *prevVM, *gameVM;
     int n, i;
-    float hand[3], bestD = 90.0f * 90.0f;
+    float hand[3], aim[3], bestD = reachUnits * reachUnits;
     if (!m || !PlayerClient() || !MapLoaded()) return 0;
     HandWorld(h, hand);
+    RotateZ(g_in.hand[h].axis[0], BodyYaw(g_lastViewAxis[0]), aim);   // where the controller points, in the game's world
     player = gm + G_OFS_entities;
     __try {
         n = *(int *)(gm + G_OFS_numEntities);
@@ -2427,6 +2448,10 @@ static int HandPickup(int h)
             o = (const float *)(e + GENT_OFS_currentOrigin);
             d[0] = o[0] - hand[0]; d[1] = o[1] - hand[1]; d[2] = o[2] - hand[2];
             dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            // the hand has to point at it (within about 45 degrees), unless the weapon is right at the hand: a weapon was taken
+            // from anywhere near, without aiming or looking at it
+            if (dd > PICKUP_POINT_FREE * PICKUP_POINT_FREE &&
+                (d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) < 0.7f * sqrtf(dd)) continue;
             if (dd < bestD) { bestD = dd; best = e; }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2448,6 +2473,12 @@ static int HandPickup(int h)
     MEM(BYTE *, ADDR_currentVM) = prevVM;
     return 1;
 }
+
+static int HandPickup(int h) { return HandPickupWithin(h, 90.0f); }
+
+// A weapon lying this close to the hand (game units, about 1.2 m) is what a closing grip wants, even when the hand is also in a
+// body zone (crouching to the floor puts it level with the waist holsters: a player's report, the holster won over the pickup).
+#define PICKUP_FIRST_REACH 48.0f
 
 // Controller vibration, scaled by Haptics (0.6 = the strengths written here).
 // Controller vibration of one kind (HapticsShots / Damage / Holsters; 0.6 = the strengths here).
@@ -2519,16 +2550,21 @@ static void UpdateHaptics(void)
     int mounted = g_onTurret || (g_inVehicle && g_gunVehicle);
     int h, health = -1, w = GameWeapon(cl), clip = GameClip(cl, w), shot;
     for (h = 0; h < 2; h++) {
-        static DWORD enteredAt[2];
+        static DWORD enteredAt[2], tapTwoAt[2];
         int zone = g_in.handValid[h] ? HandZone(h) : ZONE_NONE, useful = ZoneUseful(h, zone);
         // Reaching a holster it can use: one vibration of a second (HolsterHum; else just a tick), not again for 1.5 s
         // so a hand shivering on the edge does not keep buzzing. It used to hum for as long as the hand stayed there,
         // which in a walking posture (hands at the waist) was all the time.
         if (zone != lastZone[h] && useful) {
             if (!cfg.holsterHum) Buzz(h, 0.25f, 25, cfg.hapHolster);
-            else if (now - enteredAt[h] > 1500) { Buzz(h, 0.2f, 1000, cfg.hapHolster); enteredAt[h] = now; }
+            // two quick taps (the second of buzzing was too much, a player's and the maintainer's report); a take or stow still clicks harder
+            else if (now - enteredAt[h] > 1000) { Buzz(h, 0.35f, 45, cfg.hapHolster); enteredAt[h] = now; tapTwoAt[h] = now + 100; }
         }
         lastZone[h] = zone;
+        if (tapTwoAt[h] && now >= tapTwoAt[h]) {   // the cue is two taps of 45 ms
+            Buzz(h, 0.35f, 45, cfg.hapHolster);
+            tapTwoAt[h] = 0;
+        }
         if (g_clickTwoAt[h] && now >= g_clickTwoAt[h]) {   // the second click of a take or stow
             Buzz(h, 0.85f, 30, cfg.hapHolster);
             g_clickTwoAt[h] = 0;
@@ -2687,6 +2723,11 @@ static void GripPressed(int h)
     }
     zone = HandZone(h);
     if (g_gunHand < 0) {
+        if (HandPickupWithin(h, PICKUP_FIRST_REACH)) {   // WatchHeldWeapon puts what arrives into this hand
+            g_useHand = h;
+            g_useEnt = 0;
+            return;
+        }
         if (zone != ZONE_NONE) {
             DrawWeapon(h, zone);
             if (g_gunHand == h) return;
@@ -2868,7 +2909,7 @@ static void RealisticHands(void)
             lmgSetUp = lmgTrigger = 0;   // another weapon, or none in the hand
         }
         fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
-                                  (!scoped && !useTrig && Pressed(g_in.trigger[other], BT_PTRIGGER)));
+                                  (!scoped && !useTrig && g_twoHand && Pressed(g_in.trigger[other], BT_PTRIGGER)));   // the free hand fires only while it holds the handguard (a player's report: the right trigger fired a gun held in the left hand)
         if (g_slideShow) fire = Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER);   // "fire to skip"
 
         SetButton(BT_STRIGGER, lmg ? lmgSetUp : g_gunHand >= 0 && scoped && !useTrig && Pressed(g_in.trigger[other], BT_STRIGGER));
@@ -3462,6 +3503,24 @@ static void DrawScopeMask(GLuint fbo, int w, int h)
     }
     gl.MatrixMode(0x1700); gl.PopMatrix();
     gl.MatrixMode(0x1701); gl.PopMatrix();
+    gl.PopAttrib();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// Immersive HUD: the ammo numbers are not drawn as pictures (the LogHud log shows only the boxes behind them, which HiddenPicture
+// already cuts out), so they cannot be left out one by one. The HUD buffer's lower right corner (the part HiddenPicture hides:
+// x 440.., y 380.. of 640x480) is cleared to transparent once the game has drawn the frame. The buffer's bottom is GL y 0.
+static void EraseHudCorner(GLuint fbo, int w, int h)
+{
+    int x0 = (int)(w * 440.0f / 640.0f), ch = (int)(h * 100.0f / 480.0f + 1);
+    if (!fbo || !gl.Scissor || !gl.ClearColor || !gl.Clear || w <= 0 || h <= 0) return;
+    gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
+    gl.PushAttrib(0x000FFFFF);   // GL_ALL_ATTRIB_BITS
+    gl.Enable(GL_SCISSOR_TEST);
+    gl.Scissor(x0, 0, w - x0, ch);
+    gl.ColorMask(1, 1, 1, 1);
+    gl.ClearColor(0, 0, 0, 0);
+    gl.Clear(GL_COLOR_BUFFER_BIT);
     gl.PopAttrib();
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -6481,6 +6540,8 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
             }
         }
         if (drawn && g_vrFrame && g_scopeActive && hud.fbo && !g_scopeOverlay) DrawScopeMask(hud.fbo, fb_w, fb_h);
+        if (drawn && g_vrFrame && hud.fbo && hud.world && g_hudHide == HIDE_STATUS_CORNER && !g_scopeActive && !(MEM(int, ADDR_cls_keyCatchers) & 2))
+            EraseHudCorner(hud.fbo, fb_w, fb_h);
         {
             int menuUp = hud.fbo && hud.posed && !hud.world && !g_scopeActive && !g_slideFrame && (MEM(int, ADDR_cls_keyCatchers) & 2) && !MapLoaded();
         if (menuUp) {
@@ -6680,7 +6741,7 @@ static void LoadConfig(void)
     cfg.hapHolster       = IniFloat("Controllers", "HapticsHolsters", cfg.haptics, ini);
     cfg.holsterHum       = CfgInt("Controllers", "HolsterHum", 1, ini);
     cfg.objGesture       = CfgInt("HUD", "ObjectivesGesture", 1, ini);
-    cfg.objWatchWidth    = IniFloat("HUD", "ObjectivesWatchWidth", 0.34f, ini);
+    cfg.objWatchWidth    = IniFloat("HUD", "ObjectivesWatchWidth", 0.42f, ini);
     cfg.physCrouch       = CfgInt("Controllers", "PhysicalCrouch", 1, ini);
     cfg.crouchDepth      = IniFloat("Controllers", "CrouchDepth", 0.32f, ini);
     cfg.heightOffset     = IniFloat("VR", "HeightOffset", 0.0f, ini);
@@ -6749,7 +6810,7 @@ static void LoadConfig(void)
     cfg.vehicleSmooth = IniFloat("Comfort", "VehicleTurnSmooth", 0.5f, ini);
     ReloadTurretTuning();
     if (cfg.vehicleSmooth < 0.02f) cfg.vehicleSmooth = 0.02f;
-    cfg.waistReach    = IniFloat("Holsters", "WaistReach", 0.32f, ini);
+    cfg.waistReach    = IniFloat("Holsters", "WaistReach", 0.22f, ini);
     cfg.backHeight    = IniFloat("Holsters", "BackHeight", IniFloat("Realistic", "BackHeight", -0.30f, ini), ini);
     cfg.hipHeight     = IniFloat("Holsters", "HipHeight", IniFloat("Realistic", "HipHeight", -0.75f, ini), ini);
     cfg.lowerBackHeight = IniFloat("Holsters", "LowerBackHeight", IniFloat("Realistic", "LowerBackHeight", -0.70f, ini), ini);

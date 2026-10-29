@@ -170,6 +170,19 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.7.4
+
+- **Armas no corpo (coldres):** a pistola no peito não é mais trocada por um rifle, e uma mão no pescoço não é mais
+  tomada por um ombro. A zona do peito ficou mais rasa, então braços estendidos à frente enquanto você anda não fazem
+  mais os controles vibrarem, e os coldres da cintura pedem a mão mais perto da cintura.
+- **Aviso de coldre mais discreto:** ao chegar a um coldre agora são dois toques rápidos em vez de um segundo de vibração.
+- **Pegar uma arma do chão:** uma arma perto da sua mão é pega antes de qualquer coldre (agachar para pegá-la sacava uma
+  arma do corpo). O alcance é maior, e o controle precisa apontar para a arma, a menos que ela esteja bem na sua mão.
+- **Só o gatilho da mão da arma atira:** o gatilho da outra mão só atira enquanto ela segura o guarda-mão.
+- **HUD imersivo:** a munição não aparece mais.
+- **Objetivos num botão:** segure o botão para ver (um toque rápido só fazia a tela piscar). Os objetivos nas costas da
+  mão ficaram um pouco maiores.
+
 ### v1.7.3
 
 - **Sem clarão branco nem névoa branca depois de explosões:** o efeito de shellshock do jogo (uma explosão perto de você)
