@@ -170,6 +170,16 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.7.3
+
+- **Sem clarão branco nem névoa branca depois de explosões:** o efeito de shellshock do jogo (uma explosão perto de você)
+  mistura uma cópia da tela por cima da imagem; no VR essa cópia não era a imagem do headset e cobria os olhos de branco
+  por alguns segundos. Agora essa mistura fica de fora no VR (o som e a lentidão do shellshock continuam).
+  `[Comfort] ShellshockBlend=1` traz o efeito de volta.
+- **Árvores e objetos não somem mais em cenas carregadas (florestas do United Offensive, grandes explosões):** a lista de
+  modelos estáticos do jogo, feita para uma tela plana de 2003, enchia com a visão larga do VR e alguns modelos ficavam de
+  fora. Agora ela é 8 vezes maior (Call of Duty e United Offensive).
+
 ### v1.7.2
 
 - **Usar coisas com a mão livre agora é o gatilho dela:** com uma arma numa mão, ponha a outra na bomba (um interruptor, uma

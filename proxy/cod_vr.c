@@ -182,6 +182,7 @@ static struct {
     float chestNear;        // Holsters: how far in front of the eyes (metres, negative = behind them) the chest zone starts
     float chestWidth;       // Holsters: half the chest zone's width, metres
     int   armed;            // Controllers: 1 = always armed: the weapon stays in the dominant hand (no holsters, never dropped), for gunstock controllers
+    int   shockBlend;       // Comfort: 1 = the shellshock's screen blend is drawn (in VR it is a white haze over the eyes), 0 = left out
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -5628,10 +5629,63 @@ static PFN_Tramp Detour(DWORD target, const BYTE *prologue, int len, void *hook)
 // overflowed, the write hit the counter, and the next store crashed the game; on UO's forests
 // (bastogne1) the overwritten counter showed as trees flashing and turning black in the left eye. A
 // surface that does not fit is left out of that frame instead.
+// The cache itself is also moved to a buffer 8 times bigger (EnlargeStaticCache): the game's 0x20000 shorts were
+// sized for a flat view of 2003, and with the wide VR view the forests and the explosions of UO filled it every frame
+// (bastogne1: 28000 surfaces left out in one ride, 2026-10-29 player log).
 #define STATIC_CACHE_COUNT   ADDR_staticCacheCount
-#define STATIC_CACHE_SHORTS  0x20000
+#define STATIC_CACHE_GAME    0x20000             // the game's own cache, in shorts (its counter follows it)
+#define STATIC_CACHE_BIG     0x100000            // ours: 2 MB
+static int g_staticCacheShorts = STATIC_CACHE_GAME;
 typedef void (__cdecl *PFN_StaticModel)(void *arg);
 static PFN_StaticModel tramp_StaticModel;
+
+// The game names the cache by its address in 34 places (SP and UO alike, 2026-10-29): 32 'push cache' (the draws that
+// hand it to glDrawElements) and 2 'lea ecx, [reg*2 + cache]' (the two that append to it); the counter after it is
+// left where it is. All 34 are pointed at a bigger buffer, once, before the first frame; if the code does not show
+// exactly that, nothing is changed.
+static void EnlargeStaticCache(void)
+{
+    static int done;
+    BYTE *exe = (BYTE *)GetModuleHandleA(NULL), *buf, *sites[64];
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    DWORD old = STATIC_CACHE_COUNT - STATIC_CACHE_GAME * 2, prot, nb;
+    int i, n = 0, pushes = 0, leas = 0;
+    if (done || !STATIC_CACHE_COUNT) return;
+    __try {
+        if (MEM(int, STATIC_CACHE_COUNT) != 0) return;   // in the middle of a frame: next time
+        done = 1;
+        nt = (IMAGE_NT_HEADERS *)(exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew);
+        sec = IMAGE_FIRST_SECTION(nt);
+        for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+            BYTE *p, *end;
+            if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+            p = exe + sec->VirtualAddress;
+            end = p + sec->Misc.VirtualSize - 4;
+            for (p += 3; p < end; p++) {
+                if (*(DWORD *)p != old) continue;
+                if (p[-1] == 0x68) pushes++;                                                    // push imm32
+                else if (p[-3] == 0x8D && p[-2] == 0x0C && (p[-1] & 0xC7) == 0x45) leas++;   // lea ecx, [reg*2 + disp32]
+                else { Log("static models: the cache address is used in an unknown way at %p, left at its size", p); return; }
+                if (n < 64) sites[n] = p;
+                n++;
+            }
+        }
+        if (pushes != 32 || leas != 2) { Log("static models: %d / %d uses of the cache found (32 / 2 expected), left at its size", pushes, leas); return; }
+        buf = (BYTE *)VirtualAlloc(NULL, STATIC_CACHE_BIG * 2 + 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!buf) return;
+        for (i = 0; i < n; i++) {
+            if (!VirtualProtect(sites[i], 4, PAGE_EXECUTE_READWRITE, &prot)) { Log("static models: cannot patch %p", sites[i]); return; }
+            *(DWORD *)sites[i] = (DWORD)buf;
+            VirtualProtect(sites[i], 4, prot, &nb);
+        }
+        FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+        g_staticCacheShorts = STATIC_CACHE_BIG;
+        Log("static models: the index cache moved to %p, %d shorts instead of %d (%d places)", buf, STATIC_CACHE_BIG, STATIC_CACHE_GAME, n);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("static models: exception while moving the cache");
+    }
+}
 
 static void __cdecl hk_StaticModel(void *arg)
 {
@@ -5639,11 +5693,11 @@ static void __cdecl hk_StaticModel(void *arg)
         const BYTE *surf = *(const BYTE **)((const BYTE *)arg + 4);
         int n = *(const unsigned short *)(surf + 0x10);
         int count = *(const int *)STATIC_CACHE_COUNT;
-        if (count < 0 || count + n + 8 > STATIC_CACHE_SHORTS) {
+        if (count < 0 || count + n + 8 > g_staticCacheShorts) {
             static int skipped;
             if (skipped++ < 5 || skipped % 500 == 0)
                 Log("static models: the index cache is full (%d of %d, surface of %d), surface left out (%d so far)",
-                    count, STATIC_CACHE_SHORTS, n, skipped);
+                    count, g_staticCacheShorts, n, skipped);
             return;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -5713,6 +5767,7 @@ static void InstallDetours(void)
     memcpy(gl2d + 2, &ADDR_backEnd_projection2D, 4);
     memcpy(bdv + 2, &ADDR_det_bdv, 4);
     memcpy(joy + 1, &ADDR_det_joy, 4);
+    EnlargeStaticCache();
     if (!tramp_StaticModel) {
         // mov eax, dword ptr [ADDR_staticModelDet]; mov ecx, dword ptr [eax + 0x20]
         BYTE sm[] = { 0xA1, 0, 0, 0, 0, 0x8B, 0x48, 0x20 };
@@ -5737,6 +5792,32 @@ static int IsKnownExe(void)
     BYTE *base = (BYTE *)GetModuleHandleA(NULL);
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
     return (DWORD_PTR)base == 0x400000 && nt->FileHeader.TimeDateStamp == CODSP_TIMESTAMP;
+}
+
+// The shellshock's screen blend (explosions close by; scripts/*.shock cg_shock_screenBlendTime / FadeTime): every frame
+// of a shock the cgame has the renderer copy the screen (re SaveScreen, backend command 9) and draw the previous copy
+// over the whole screen in white with a fading alpha (re BlendScreen, command 10, straight through RB_StretchPic, so
+// hk_StretchPic never sees it). In VR the copy is not the eyes' picture (it is whatever buffer is bound in the 2D
+// phase) and the quad lands on the HUD layer in front of the eyes: the white flash and the haze after it that players
+// reported. With [Comfort] ShellshockBlend=0 (default) both calls do nothing; the rest of the shock is untouched.
+typedef void (__cdecl *PFN_SaveScreen)(void);
+typedef void (__cdecl *PFN_BlendScreen)(int ms);
+static PFN_SaveScreen orig_SaveScreen;
+static PFN_BlendScreen orig_BlendScreen;
+
+static void __cdecl hk_SaveScreen(void)
+{
+    if (cfg.shockBlend || !cfg.vr) orig_SaveScreen();
+}
+
+static void __cdecl hk_BlendScreen(int ms)
+{
+    static DWORD lastLog;
+    if (cfg.shockBlend || !cfg.vr) { orig_BlendScreen(ms); return; }
+    if (GetTickCount() - lastLog > 5000) {
+        lastLog = GetTickCount();
+        Log("shellshock: the screen blend is left out in VR (%d ms of it)", ms);
+    }
 }
 
 // Installs the hooks if they are missing. Runs at load and on every wglMakeCurrent, because
@@ -5814,6 +5895,14 @@ static void EnsureHooks(void)
             orig_EndFrame = (PFN_EndFrame)cur;
             PatchPointer(ADDR_re_client + RE_OFS_EndFrame, (void *)hk_EndFrame);
             Log("hooked re.SetColor, re.DrawStretchPic and re.EndFrame");
+        }
+        cur = MEM(void *, ADDR_re_client + RE_OFS_BlendScreen);
+        if (cur && cur != (void *)hk_BlendScreen && MEM(void *, ADDR_re_client + RE_OFS_SaveScreen) != (void *)hk_SaveScreen) {
+            orig_SaveScreen = MEM(PFN_SaveScreen, ADDR_re_client + RE_OFS_SaveScreen);
+            orig_BlendScreen = (PFN_BlendScreen)cur;
+            PatchPointer(ADDR_re_client + RE_OFS_SaveScreen, (void *)hk_SaveScreen);
+            PatchPointer(ADDR_re_client + RE_OFS_BlendScreen, (void *)hk_BlendScreen);
+            Log("hooked the shellshock screen blend (%s)", cfg.shockBlend ? "kept" : "left out in VR");
         }
     }
     cur = MEM(void *, ADDR_re_client + RE_OFS_AddRefEntityToScene);
@@ -6513,6 +6602,7 @@ static void LoadConfig(void)
     cfg.moveMode        = CfgInt("Controllers", "MoveMode", 2, ini);
     if (cfg.moveMode < 0 || cfg.moveMode > 2) cfg.moveMode = 2;
     cfg.fxAlways        = CfgInt("Graphics", "FxAlways", 1, ini);
+    cfg.shockBlend      = CfgInt("Comfort", "ShellshockBlend", 0, ini);
     cfg.keepLook        = CfgInt("Comfort", "KeepLook", 1, ini);
     cfg.chestNear       = IniFloat("Holsters", "ChestNear", -0.12f, ini);
     cfg.chestWidth      = IniFloat("Holsters", "ChestWidth", 0.30f, ini);

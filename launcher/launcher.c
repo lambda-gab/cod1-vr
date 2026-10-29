@@ -21,7 +21,7 @@
 #include "launcher_res.h"
 #include "../third_party/miniz/miniz.h"
 
-#define VERSION_TEXT L"v1.7.2"
+#define VERSION_TEXT L"v1.7.3"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"

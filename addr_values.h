@@ -158,3 +158,5 @@ X(ADDR_RB_SurfaceStaticModelCached, 0x004fabd0, 0x004ffda0)
 X(ADDR_staticCacheCount, 0x01830c94, 0x046d9854)
 X(ADDR_staticModelDet, 0x01534704, 0x047be044)
 X(WEAPDEF_OFS_adsTransInTime, 0x00000268, 0x000002c4)  /* int, ms: cgame and game field tables of both games (adsTransOutTime is the next int) */
+X(RE_OFS_SaveScreen, 0x00000090, 0x00000098)  /* void (void): render command 9, the screen copied for the shellshock blend (cgame syscall 0x48) */
+X(RE_OFS_BlendScreen, 0x00000094, 0x0000009c)  /* void (int ms): render command 10, that copy drawn over the screen in white with alpha (syscall 0x49) */

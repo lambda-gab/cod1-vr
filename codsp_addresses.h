@@ -17,6 +17,8 @@ extern int g_uo;   // 1 = CoDUOSP.exe
 #define ADDR_GetRefAPI              g_A.ADDR_GetRefAPI
 #define ADDR_refexport_renderer     g_A.ADDR_refexport_renderer  // table built by the renderer
 #define ADDR_re_client              g_A.ADDR_re_client  // client's copy (cl `re`), 0xec bytes; this is what the game calls
+#define RE_OFS_SaveScreen           g_A.RE_OFS_SaveScreen    // shellshock: copy the screen (backend command 9, 0x4ce5c0)
+#define RE_OFS_BlendScreen          g_A.RE_OFS_BlendScreen   // shellshock: draw that copy over the screen (command 10, 0x4ce650: RB_StretchPic, not re.DrawStretchPic)
 #define RE_OFS_RegisterShader       g_A.RE_OFS_RegisterShader    // qhandle_t RE_RegisterShader(const char *name, int type); the client registers "white" with type 2 (SP 0x40e28e, UO 0x40f443)
 #define RE_OFS_ClearScene           g_A.RE_OFS_ClearScene        // cgame trap 0x3d
 #define RE_OFS_AddRefEntityToScene  g_A.RE_OFS_AddRefEntityToScene        // cgame trap 0x3e

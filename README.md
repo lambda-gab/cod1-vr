@@ -170,6 +170,16 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.7.3
+
+- **No more white flash and white haze after explosions:** the game's shellshock effect (an explosion close to you)
+  blends a copy of the screen over the picture; in VR that copy was not the headset's image and it covered the eyes in
+  white for a few seconds. The blend is now left out in VR (the shellshock's sound and slowdown stay).
+  `[Comfort] ShellshockBlend=1` brings it back.
+- **Trees and props no longer go missing in busy scenes (United Offensive forests, big explosions):** the game's list
+  for static models, sized for a flat screen of 2003, filled up with the wide VR view and some models were left out.
+  It is now 8 times bigger (Call of Duty and United Offensive).
+
 ### v1.7.2
 
 - **Using things with the free hand is now its trigger:** with a gun in one hand, put the other hand on the bomb (a switch, a
