@@ -14,6 +14,7 @@
 #include <tlhelp32.h>
 #include <winhttp.h>
 #include <olectl.h>
+#include <commdlg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -21,7 +22,7 @@
 #include "launcher_res.h"
 #include "../third_party/miniz/miniz.h"
 
-#define VERSION_TEXT L"v1.7.4"
+#define VERSION_TEXT L"v1.8.0"
 #define URL_GITHUB   "https://github.com/lambda-gab/cod1-vr"
 #define URL_DISCORD  "https://discord.gg/SRsK2x5Tn"
 #define URL_RELEASES "https://github.com/lambda-gab/cod1-vr/releases/latest"
@@ -59,6 +60,7 @@ typedef struct {
     int showRes;  // RenderScale choices: show the eye resolution each one gives
     int reticle;  // crosshair styles: a small picture of each one beside its name
     const wchar_t *const *choiceHints;   // a hint for each choice (instead of hint), or NULL
+    int swatch;   // a colour: shown as a swatch with its hex value, the click opens the colour picker (PickCrosshairColor)
 } option_t;
 
 static const wchar_t *const g_hudHints[] = {
@@ -106,11 +108,26 @@ static option_t g_vrOpts[] = {
       "HUD", 4, { L"Small", L"Medium", L"Large", L"Extra Large" },
       { "SubtitleSize=1", "SubtitleSize=1.5", "SubtitleSize=2.2", "SubtitleSize=3" }, 1 },
     // right column
-    { L"Grenade line", L"A line that shows where a grenade will fly and land.",
-      "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
+    // not a setting of cod_vr.ini: the "no hands" pack in the game folder (HandsPack functions); the click is handled by Click
+    { L"Player hands", L"(Beta) Shown: turns the soldier's arms on in the game. With some weapons the arms can look distorted. If Weapon handling is Free hands, the arms disappear when you let go of the weapon and come back when you take it.\n\nHidden: self-explanatory XD  (Windows may ask for administrator rights.)",
+      "Launcher", 2, { L"Shown (beta)", L"Hidden" }, { "", "" }, 0 },
+    // not a plain setting either: [Controllers] AlwaysArmed of the active control profile (ChangeArmed); the click is handled by Click
+    { L"Weapon handling", L"Always in hand: the weapon stays in your dominant hand (never dropped) and a grip on your body (either hand) switches weapons. Free hands: only the gun is in your hand, taken from and put back on your body, dropped when you let go. Works with the player hands shown or hidden.",
+      "Launcher", 2, { L"Always in hand", L"Free hands" }, { "", "" }, 0 },
     { L"Crosshair", L"A crosshair where the gun is aimed, for playing without aiming down the sights.",
       "Controllers", 6, { L"None", L"Cross", L"Dot", L"Circle", L"Circle + dot", L"Cross + dot" },
       { "Crosshair=0", "Crosshair=1", "Crosshair=2", "Crosshair=3", "Crosshair=4", "Crosshair=5" }, 0, 0, 0, 1 },
+    { L"Crosshair color", L"Click to pick the crosshair's colour from the colour box: drag in the square and the bar, or type the numbers (it only shows when a crosshair style above is chosen).",
+      "Controllers", 8, { L"White", L"Red", L"Green", L"Yellow", L"Cyan", L"Blue", L"Orange", L"Magenta" },
+      { "CrosshairColor=white", "CrosshairColor=red", "CrosshairColor=green", "CrosshairColor=yellow", "CrosshairColor=cyan",
+        "CrosshairColor=blue", "CrosshairColor=orange", "CrosshairColor=magenta" }, 0, 0, 0, 0, NULL, 1 },
+    { L"Crosshair opacity", L"How solid the crosshair is: lower is gentler on the eyes, higher is easier to see.",
+      "Controllers", 4, { L"30%", L"50%", L"80%", L"100%" },
+      { "CrosshairOpacity=0.3", "CrosshairOpacity=0.5", "CrosshairOpacity=0.8", "CrosshairOpacity=1" }, 2 },
+    { L"Grenade line", L"A line that shows where a grenade will fly and land.",
+      "Grenade", 3, { L"Off", L"While aiming", L"Always" }, { "Trajectory=0", "Trajectory=1", "Trajectory=2" }, 1 },
+    { L"Scope", L"Original: the game's own scope (the view zooms in with a round picture when you aim down the sights). Realistic (beta): the zoomed picture shows inside the rifle's own scope and you look through it by bringing the gun to your eye. Tune it in the mod menu (hold Y, press B: Adjust scope).",
+      "Scope", 2, { L"Original", L"Realistic (beta)" }, { "Lens=0", "Lens=1" }, 1 },
     { L"Swing melee", L"Hit someone by swinging the gun at them, any part of it. Hard needs a faster swing.",
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Hard" },
       { "SwingMelee=0", "SwingMelee=1|MeleeSpeed=1.6", "SwingMelee=1|MeleeSpeed=2.2", "SwingMelee=1|MeleeSpeed=3" }, 2 },
@@ -133,14 +150,13 @@ static option_t g_vrOpts[] = {
     { L"Vibration: holsters", L"Reaching a holster, taking, putting away and dropping weapons, recentering.",
       "Controllers", 4, { L"Off", L"Light", L"Normal", L"Strong" },
       { "HapticsHolsters=0", "HapticsHolsters=0.35", "HapticsHolsters=0.6", "HapticsHolsters=1" }, 2 },
-    // not a setting of cod_vr.ini: the "no hands" pack in the game folder (HandsPack functions); the click is handled by Click
-    { L"Player hands", L"Hide the soldier's arms so only the gun is in your hand (recommended). Made from your game's own files; Windows may ask for administrator rights.",
-      "Launcher", 2, { L"Shown", L"Hidden" }, { "", "" }, 0 },
     // not a setting either: the Portuguese dub pack in the game folder (VoicePack functions); the click is handled by Click
     { L"Voice", L"Language of the soldiers' voices. Portuguese (Brazil) needs the dub pack made by Dublagem-para-PK3 (pakz_vr_dub_ptbr.pk3 in the main folder); English is the original game. Windows may ask for administrator rights.",
       "Launcher", 2, { L"English", L"Portuguese (Brazil)" }, { "", "" }, 0 },
 };
 #define VR_COL2 13
+#define VR_HANDS    VR_COL2          // the right column starts with Player hands, then Weapon handling
+#define VR_HANDLING (VR_COL2 + 1)
 
 static option_t g_gfxOpts[] = {
     { L"Headset resolution", L"Sharpness in the headset, per eye. Lower it if the game stutters; above Ultra needs a strong GPU.",
@@ -259,6 +275,62 @@ static void SaveOption(option_t *o)
     }
 }
 
+// Graphics profiles, one per game (United Offensive has more on screen and may need lower settings). The mod reads one set of
+// graphics keys, so the profile of the game that starts is written into them (GfxSelect); each profile is kept in its own section
+// of settings.ini as the index of the choice of every row of the GRAPHICS page (o<row>=<choice>).
+static int g_gfxProf;   // the profile the GRAPHICS page edits: 0 = Call of Duty, 1 = United Offensive
+
+static void GfxSection(int p, char *s) { strcpy(s, p ? "GfxProfile.UO" : "GfxProfile.SP"); }
+
+static int GfxProfileSaved(int p)
+{
+    char sec[32];
+    GfxSection(p, sec);
+    return GetPrivateProfileIntA(sec, "Saved", 0, g_userIni) == 1;
+}
+
+static void GfxSaveProfile(int p)
+{
+    char sec[32], key[16], val[16], dir[MAX_PATH], *slash;
+    int i;
+    strcpy(dir, g_userIni);
+    slash = strrchr(dir, '\\');
+    if (slash) { *slash = 0; CreateDirectoryA(dir, NULL); }
+    GfxSection(p, sec);
+    for (i = 0; i < NUM_GFX; i++) {
+        if (g_gfxOpts[i].cur < 0) continue;
+        _snprintf(key, sizeof(key), "o%d", i);
+        _snprintf(val, sizeof(val), "%d", g_gfxOpts[i].cur);
+        WritePrivateProfileStringA(sec, key, val, g_userIni);
+    }
+    WritePrivateProfileStringA(sec, "Saved", "1", g_userIni);
+}
+
+// Makes profile p the one in use: its choices go into the keys the mod reads. A profile never saved starts as what is set now.
+static void GfxApplyProfile(int p)
+{
+    char sec[32], key[16];
+    int i;
+    if (!GfxProfileSaved(p)) { GfxSaveProfile(p); return; }
+    GfxSection(p, sec);
+    for (i = 0; i < NUM_GFX; i++) {
+        int v;
+        _snprintf(key, sizeof(key), "o%d", i);
+        v = GetPrivateProfileIntA(sec, key, -1, g_userIni);
+        if (v < 0 || v >= g_gfxOpts[i].count) continue;
+        g_gfxOpts[i].cur = v;
+        SaveOption(&g_gfxOpts[i]);
+    }
+}
+
+static void GfxSelect(int p)
+{
+    if (p == g_gfxProf) { GfxApplyProfile(p); return; }
+    GfxSaveProfile(g_gfxProf);
+    g_gfxProf = p;
+    GfxApplyProfile(p);
+}
+
 // CONTROLS: what each body zone holds and what each controller button does, as drop-down lists.
 // The mod reads [Holsters] (zone = weapon) and [Buttons] (button = game command, "" = nothing) of
 // settings.ini; one never changed keeps its default, the one the mod uses when the key is missing.
@@ -297,11 +369,12 @@ static const choice_t g_actions[] = {
     { L"Switch weapon 1 & 2", "vr:switchweapon" },     // without reaching for the shoulders
     { L"Comfort vignette (next)", "vr:vignette" },      // Off, Low, Medium, High, Off...
     { L"Menu", "key:ESCAPE" },          // the game's menu, for controllers without a menu button (opens it, and closes it from inside)
+    { L"Mod menu (settings)", "vr:modmenu" },   // the mod's own menu in the middle of the game (height, ...)
     { L"Turn left", "vr:turnleft" },    // only for the free stick (the lists of the buttons stop before these)
     { L"Turn right", "vr:turnright" },
 };
-#define NUM_BTN_ACTS 22   // the entries of g_actions a button can have
-#define NUM_STK_ACTS 24   // and the free stick's directions
+#define NUM_BTN_ACTS 23   // the entries of g_actions a button can have
+#define NUM_STK_ACTS 25   // and the free stick's directions
 
 static const choice_t g_handActs[] = {
     { L"Right", "1" },
@@ -309,7 +382,8 @@ static const choice_t g_handActs[] = {
 };
 
 // What the hands do with the weapons: taken from the body and put away (free hands), or one weapon always in the dominant hand,
-// never dropped (for gunstock controllers: the free hand's X / A button then switches weapon).
+// never dropped, the free hand's grip on a shoulder switching it (always armed). Not shown in CONTROLS any more: the VR tab's
+// The VR tab's "Weapon handling" sets it (always in hand / free hands), whether the player hands are shown or not; see ChangeArmed.
 static const choice_t g_armedActs[] = {
     { L"Free hands", "0" },
     { L"Always armed (gunstock)", "1" },
@@ -347,7 +421,7 @@ static struct { const wchar_t *label; const char *section, *key, *def; const cho
     { L"X + B", "Buttons", "ShortcutXB", "", g_actions, NUM_BTN_ACTS, 0 },
     { L"X + Y", "Buttons", "ShortcutXY", "", g_actions, NUM_BTN_ACTS, 0 },
     { L"Y + A", "Buttons", "ShortcutYA", "vr:switchweapon", g_actions, NUM_BTN_ACTS, 0 },
-    { L"Y + B", "Buttons", "ShortcutYB", "", g_actions, NUM_BTN_ACTS, 0 },
+    { L"Y + B", "Buttons", "ShortcutYB", "vr:modmenu", g_actions, NUM_BTN_ACTS, 0 },
     { L"Y + X", "Buttons", "ShortcutYX", "", g_actions, NUM_BTN_ACTS, 0 },
     { L"A + X", "Buttons", "ShortcutAX", "", g_actions, NUM_BTN_ACTS, 0 },
     { L"A + Y", "Buttons", "ShortcutAY", "", g_actions, NUM_BTN_ACTS, 0 },
@@ -372,13 +446,15 @@ static int g_armed;      // the profile in use is always armed (the weapon never
 
 static const char *CtlDefFor(int i, int left)
 {
+    // always armed: both shoulders switch between weapon 1 and 2 (the free hand reaches back, the weapon stays in the other)
+    if (g_armed && (!strcmp(g_ctl[i].key, "LeftShoulder") || !strcmp(g_ctl[i].key, "RightShoulder"))) return "switch";
     // always armed: the free hand's X (right-handed) or A (left-handed) tapped switches weapon, so nothing needs the holsters
     if (g_armed && !strcmp(g_ctl[i].key, left ? "A" : "X")) return "vr:switchweapon";
     static const char *const mirrored[][2] = {
         { "LeftShoulder", "primary" }, { "RightShoulder", "primaryb" }, { "WaistRight", "pistol" }, { "WaistLeft", "none" },
         { "MoveStick", "1" }, { "A", "" }, { "B", "" }, { "X", "+gostand" }, { "Y", "+reload" },
         { "LeftStickClick", "toggleprone" }, { "RightStickClick", "vr:recenter" },
-        { "ShortcutYA", "" }, { "ShortcutBX", "vr:switchweapon" },
+        { "ShortcutYA", "" }, { "ShortcutBX", "vr:switchweapon" }, { "ShortcutYB", "" }, { "ShortcutBY", "vr:modmenu" },
     };
     int k;
     if (left)
@@ -554,6 +630,9 @@ static void SaveControl(int i)
     }
 }
 
+static int HandsPackExists(void);
+static void ChangeArmed(int armed);
+
 // The active profile's choices become the ones the mod reads.
 static void ApplyProfile(void)
 {
@@ -571,6 +650,7 @@ static void ApplyProfile(void)
     }
     WritePrivateProfileStringA("Launcher", "Profile", g_profNames[g_profile], g_userIni);
     LoadControls();
+    g_vrOpts[VR_HANDLING].cur = g_armed ? 0 : 1;   // the VR tab's "Weapon handling" shows the profile's AlwaysArmed
 }
 
 // Does choice a of control i hold the default?
@@ -813,9 +893,11 @@ static void LoadAll(void)
         }
     }
     for (i = 0; i < NUM_VR; i++) LoadOption(&g_vrOpts[i]);
-    g_vrOpts[NUM_VR - 2].cur = HandsPackExists();   // "Player hands": Hidden when the pack is there
+    g_vrOpts[VR_HANDS].cur = HandsPackExists();   // "Player hands": Hidden when the pack is there
     g_vrOpts[NUM_VR - 1].cur = VoicePackOn();       // "Voice": Portuguese when the dub pack is on
     for (i = 0; i < NUM_GFX; i++) LoadOption(&g_gfxOpts[i]);
+    g_gfxProf = g_playUO;
+    if (!GfxProfileSaved(g_gfxProf)) GfxSaveProfile(g_gfxProf);
     {
         // the first MODS had "Infinite health": now the God mode difficulty
         if (GetPrivateProfileIntA("Mods", "InfiniteHealth", 0, g_userIni) == 1 &&
@@ -924,6 +1006,7 @@ static int StartGame(HWND wnd)
                     L"Call of Duty VR", MB_ICONINFORMATION);
         return 0;
     }
+    GfxSelect(g_playUO);   // this game's graphics profile into the keys the mod and the lines below read
     _snprintf(exe, sizeof(exe), "%s\\%s", g_dir, g_playUO ? "CoDUOSP.exe" : "CoDSP.exe");
     GetPrivateProfileStringA("Launcher", "Picmip", "0", picmip, sizeof(picmip), g_userIni);
     GetPrivateProfileStringA("Launcher", "Gamma", "1", gamma, sizeof(gamma), g_userIni);
@@ -954,11 +1037,13 @@ static int StartGame(HWND wnd)
 // Drawing
 // ---------------------------------------------------------------------------
 enum { PAGE_HOME, PAGE_CONTROLS, PAGE_GRAPHICS, PAGE_VR, PAGE_MODS, PAGE_ABOUT };
-enum { HIT_NONE, HIT_PLAY, HIT_NAV, HIT_PREV, HIT_NEXT, HIT_ROW, HIT_LINK, HIT_GAME, HIT_RESET, HIT_PROFILE, HIT_NEWPROF, HIT_DELPROF };
+enum { HIT_NONE, HIT_PLAY, HIT_NAV, HIT_PREV, HIT_NEXT, HIT_ROW, HIT_LINK, HIT_GAME, HIT_RESET, HIT_PROFILE, HIT_NEWPROF, HIT_DELPROF, HIT_GFXPROF };
 
 typedef struct { RECT r; int type, arg; } hit_t;
 static hit_t   g_hits[256];   // a page of options has up to 3 areas each (row, left arrow, right arrow)
 static int     g_numHits, g_hover = -1, g_page = PAGE_HOME;
+static hit_t   g_hitsDone[256];   // the areas of the last COMPLETE paint: the hover is looked up here (g_hits is half built while a paint draws)
+static int     g_numHitsDone;
 static HBITMAP g_banner, g_bannerUO;   // the banner of each game
 static int     g_bannerW, g_bannerH, g_bannerUOW, g_bannerUOH;
 static HFONT   g_fTitle, g_fNav, g_fPlay, g_fText, g_fSmall, g_fBold;
@@ -975,7 +1060,7 @@ static void AddHit(int x0, int y0, int x1, int y1, int type, int arg)
 
 static int Hovered(int type, int arg)
 {
-    return g_hover >= 0 && g_hover < g_numHits && g_hits[g_hover].type == type && g_hits[g_hover].arg == arg;
+    return g_hover >= 0 && g_hover < g_numHitsDone && g_hitsDone[g_hover].type == type && g_hitsDone[g_hover].arg == arg;
 }
 
 static void Fill(HDC dc, int x0, int y0, int x1, int y1, COLORREF c)
@@ -1536,6 +1621,8 @@ static void DrawReticle(HDC dc, int style, int x0, int y0, int sz)
     DeleteObject(pen);
 }
 
+static int CrosshairRGB(COLORREF *out, wchar_t *label, int labelLen);
+
 // Rows in a column from x0 to x1 (label, then the value with its arrows); returns the hovered one.
 static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int top, int x0, int x1)
 {
@@ -1546,8 +1633,23 @@ static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int to
         int y0 = P(top + j * rowH), y1 = P(top + (j + 1) * rowH - 4);
         int hot = Hovered(HIT_ROW, i) || Hovered(HIT_PREV, i) || Hovered(HIT_NEXT, i);
         const wchar_t *val = o->cur >= 0 ? o->names[o->cur] : L"Custom";
-        if (hot) { Fill(dc, P(x0), y0, P(x1), y1, RGB(34, 30, 20)); hint = i; }
-        Text(dc, g_fText, COL_TEXT, P(x0 + 12), y0, vx0, y1, o->label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        if (hot) {
+            Fill(dc, P(x0), y0, P(x1), y1, RGB(66, 52, 22));
+            Fill(dc, P(x0), y0, P(x0) + P(3), y1, COL_GOLD);
+            hint = i;
+        }
+        Text(dc, g_fText, hot ? COL_GOLD : COL_TEXT, P(x0 + 12), y0, vx0, y1, o->label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        if (o->swatch) {   // a colour: the swatch and its hex value, no arrows (the click opens the picker)
+            COLORREF c;
+            wchar_t lab[16];
+            int sz = y1 - y0 - P(6);
+            CrosshairRGB(&c, lab, 16);
+            Fill(dc, vx0 + P(34), y0 + P(3), vx0 + P(34) + sz, y0 + P(3) + sz, hot ? COL_GOLD : RGB(120, 120, 120));
+            Fill(dc, vx0 + P(35), y0 + P(4), vx0 + P(34) + sz - P(1), y0 + P(3) + sz - P(1), c);
+            Text(dc, g_fBold, COL_STEEL, vx0 + P(42) + sz, y0, vx1 - P(10), y1, lab, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            AddHit(P(x0), y0, P(x1), y1, HIT_ROW, i);
+            continue;
+        }
         Text(dc, g_fBold, Hovered(HIT_PREV, i) ? COL_GOLD : COL_DIM, vx0, y0, vx0 + P(26), y1, L"\x25C0", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if (o->reticle && o->cur >= 0) {   // the picture, then the name
             int sz = y1 - y0 - P(6);
@@ -1563,15 +1665,34 @@ static int DrawColumn(HDC dc, option_t *opts, int first, int n, int rowH, int to
     return hint;
 }
 
-static void DrawHint(HDC dc, option_t *opts, int hint)
+static void DrawHintAt(HDC dc, option_t *opts, int hint, int y)
 {
     if (hint >= 0)
-        Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476),
+        Text(dc, g_fSmall, COL_DIM, P(50), P(y), P(950), P(y + 32),
              opts[hint].choiceHints && opts[hint].cur >= 0 ? opts[hint].choiceHints[opts[hint].cur] : opts[hint].hint,
              DT_SINGLELINE | DT_END_ELLIPSIS);
     else
-        Text(dc, g_fSmall, COL_DIM, P(50), P(444), P(950), P(476),
+        Text(dc, g_fSmall, COL_DIM, P(50), P(y), P(950), P(y + 32),
              L"Click a setting to change it. Changes are saved at once and used the next time the game starts.", DT_SINGLELINE);
+}
+
+static void DrawHint(HDC dc, option_t *opts, int hint) { DrawHintAt(dc, opts, hint, 444); }
+
+// The description of the option under the mouse, in a rounded box at the bottom of the page (VR tab). Empty page: a line of advice.
+static void DrawDescriptionBox(HDC dc, option_t *opts, int hint)
+{
+    int x0 = P(40), y0 = P(492), x1 = P(960), y1 = P(562);
+    const wchar_t *s = hint >= 0 ? (opts[hint].choiceHints && opts[hint].cur >= 0 ? opts[hint].choiceHints[opts[hint].cur] : opts[hint].hint)
+                                 : L"Move the mouse over an option to see what it does. Click it to change it: changes are saved at once and used the next time the game starts.";
+    HPEN pen = CreatePen(PS_SOLID, P(1) > 1 ? P(1) : 1, hint >= 0 ? COL_GOLD_DARK : RGB(80, 80, 80));
+    HBRUSH brush = CreateSolidBrush(RGB(18, 18, 18));
+    HGDIOBJ oldPen = SelectObject(dc, pen), oldBrush = SelectObject(dc, brush);
+    RoundRect(dc, x0, y0, x1, y1, P(16), P(16));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+    Text(dc, g_fSmall, hint >= 0 ? COL_TEXT : COL_DIM, x0 + P(14), y0 + P(7), x1 - P(14), y1 - P(6), s, DT_WORDBREAK);
 }
 
 static void DrawOptions(HDC dc, option_t *opts, int n, int rowH, int top)
@@ -1583,8 +1704,22 @@ static void DrawOptions(HDC dc, option_t *opts, int n, int rowH, int top)
 static void DrawGraphics(HDC dc)
 {
     int h1, h2;
-    DrawPageTitle(dc, L"GRAPHICS", L"The game's own options (Options in the game menu) still apply on top of these.");
-    h1 = DrawRows(dc, g_gfxOpts, 0, GFX_POST_FIRST, 30, 94);
+    int both = g_haveSP && g_haveUO;
+    DrawPageTitle(dc, L"GRAPHICS", both ? L"Each game keeps its own graphics: pick the game first. The game's own options (Options in the game menu) still apply on top."
+                                        : L"The game's own options (Options in the game menu) still apply on top of these.");
+    if (both) {
+        static const wchar_t *names[2] = { L"CALL OF DUTY", L"UNITED OFFENSIVE" };
+        int i;
+        for (i = 0; i < 2; i++) {
+            int x0 = P(560 + i * 200), x1 = P(750 + i * 200), y0 = P(26), y1 = P(54);
+            int on = g_gfxProf == i, hot = Hovered(HIT_GFXPROF, i);
+            Fill(dc, x0, y0, x1, y1, on ? COL_GOLD : hot ? COL_STEEL : RGB(80, 80, 80));
+            Fill(dc, x0 + P(1), y0 + P(1), x1 - P(1), y1 - P(1), on ? RGB(52, 40, 12) : RGB(24, 24, 24));
+            Text(dc, g_fBold, on ? COL_GOLD : hot ? COL_TEXT : COL_DIM, x0, y0, x1, y1, names[i], DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            AddHit(x0, y0, x1, y1, HIT_GFXPROF, i);
+        }
+    }
+    h1 =DrawRows(dc, g_gfxOpts, 0, GFX_POST_FIRST, 30, 94);
     Text(dc, g_fBold, COL_GOLD, P(50), P(278), P(950), P(300), L"POST-PROCESSING", DT_SINGLELINE | DT_VCENTER);
     Text(dc, g_fSmall, COL_DIM, P(50), P(300), P(950), P(318),
          L"Test options: if the image looks worse, leave them off.", DT_SINGLELINE | DT_VCENTER);
@@ -1631,11 +1766,11 @@ static void DrawControls(HDC dc)
         Text(dc, g_fBold, g_profile == 0 ? COL_DIM : hotD ? COL_GOLD : COL_TEXT, P(822), y0, P(930), y1, L"Delete", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if (g_profile > 0) AddHit(P(822), y0, P(930), y1, HIT_DELPROF, 0);
     }
-    // the dominant hand is the most important choice: a row of its own across the page, with what the hands do with the weapons beside it
+    // the dominant hand is the most important choice: a row of its own across the page (what the hands do with the weapons
+    // follows the VR tab's Weapon handling)
     DrawDropDown(dc, NUM_HOLSTERS, P(92), P(118), P(60), P(230), P(40), P(470));
-    DrawDropDown(dc, NUM_HOLSTERS + 1, P(92), P(118), P(520), P(690), P(500), P(960));
     // left column: the weapons on the body, then the sticks; right column: the buttons, then their shortcuts
-    Text(dc, g_fBold, COL_GOLD, P(50), P(130), P(480), P(154), L"Take weapons from your body (grip)", DT_SINGLELINE);
+    Text(dc, g_fBold, COL_GOLD, P(50), P(130), P(480), P(154), g_armed ? L"Grip on your body (either hand): weapon to your hand" : L"Take weapons from your body (grip)", DT_SINGLELINE);
     for (i = 0; i < NUM_HOLSTERS; i++) {
         int y0 = P(158 + i * 30);
         DrawDropDown(dc, i, y0, y0 + P(26), P(60), P(230), P(40), P(480));
@@ -1764,8 +1899,8 @@ static void Paint(HWND wnd, HDC wdc)
             Text(dc, g_fBold, COL_GOLD, P(40), P(66), P(480), P(90), L"COMFORT AND MOVEMENT", DT_SINGLELINE | DT_VCENTER);
             Text(dc, g_fBold, COL_GOLD, P(510), P(66), P(960), P(90), L"WEAPONS AND VIBRATION", DT_SINGLELINE | DT_VCENTER);
             h1 = DrawColumn(dc, g_vrOpts, 0, VR_COL2, 26, 94, 40, 480);
-            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR_SHOWN - VR_COL2, 28, 94, 510, 960);
-            if (h1 >= 0 || h2 >= 0) DrawHint(dc, g_vrOpts, h1 >= 0 ? h1 : h2);   // only a hovered option's own hint
+            h2 = DrawColumn(dc, g_vrOpts, VR_COL2, NUM_VR_SHOWN - VR_COL2, 26, 94, 510, 960);   // 13 rows: 26 px each, like the left column
+            DrawDescriptionBox(dc, g_vrOpts, h1 >= 0 ? h1 : h2);
         } else if (g_page == PAGE_MODS) {
             DrawPageTitle(dc, L"MODS", L"Things the original game does not have. Used the next time the game starts.");
             DrawOptions(dc, g_modOpts, NUM_MOD, 40, 100);
@@ -1775,6 +1910,8 @@ static void Paint(HWND wnd, HDC wdc)
         } else if (g_page == PAGE_ABOUT) DrawAbout(dc);
     }
     DrawBar(dc);
+    memcpy(g_hitsDone, g_hits, sizeof(g_hits));   // the list is complete now: this is what the hover is looked up in
+    g_numHitsDone = g_numHits;
 
     BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
@@ -1935,6 +2072,58 @@ static void ChangeArmed(int armed)
     ApplyProfile();
 }
 
+// The crosshair's colour: [Controllers] CrosshairColor is a name (the presets) or RRGGBB (the colour picker). The mod reads both.
+static COLORREF g_custColors[16];
+static int CrosshairRGB(COLORREF *out, wchar_t *label, int labelLen)
+{
+    static const struct { const char *name; BYTE r, g, b; } cols[] = {
+        { "white", 255, 255, 255 }, { "red", 255, 38, 31 }, { "green", 51, 255, 64 }, { "yellow", 255, 230, 26 },
+        { "cyan", 26, 242, 255 }, { "blue", 64, 115, 255 }, { "orange", 255, 140, 26 }, { "magenta", 255, 51, 230 },
+    };
+    char v[64];
+    int i;
+    ReadSetting("Controllers", "CrosshairColor", v, sizeof(v));
+    if (!v[0]) strcpy(v, "white");
+    if (strlen(v) == 6 && strspn(v, "0123456789abcdefABCDEF") == 6) {
+        unsigned long rgb = strtoul(v, NULL, 16);
+        *out = RGB((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+        _snwprintf(label, labelLen, L"#%06lX", rgb & 0xFFFFFF);
+        label[labelLen - 1] = 0;
+        return 1;
+    }
+    for (i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); i++)
+        if (!_stricmp(v, cols[i].name)) {
+            *out = RGB(cols[i].r, cols[i].g, cols[i].b);
+            _snwprintf(label, labelLen, L"#%02X%02X%02X", cols[i].r, cols[i].g, cols[i].b);
+            label[labelLen - 1] = 0;
+            return 1;
+        }
+    *out = RGB(255, 255, 255);
+    _snwprintf(label, labelLen, L"#FFFFFF");
+    return 0;
+}
+
+static void PickCrosshairColor(HWND wnd)
+{
+    CHOOSECOLORW cc;
+    COLORREF cur;
+    wchar_t label[16];
+    char hex[16], dir[MAX_PATH], *slash;
+    CrosshairRGB(&cur, label, 16);
+    memset(&cc, 0, sizeof(cc));
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = wnd;
+    cc.rgbResult = cur;
+    cc.lpCustColors = g_custColors;
+    cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if (!ChooseColorW(&cc)) return;
+    strcpy(dir, g_userIni);
+    slash = strrchr(dir, '\\');
+    if (slash) { *slash = 0; CreateDirectoryA(dir, NULL); }
+    _snprintf(hex, sizeof(hex), "%02X%02X%02X", GetRValue(cc.rgbResult), GetGValue(cc.rgbResult), GetBValue(cc.rgbResult));
+    WritePrivateProfileStringA("Controllers", "CrosshairColor", hex, g_userIni);
+}
+
 static void Click(HWND wnd, int idx)
 {
     hit_t *h;
@@ -1951,6 +2140,10 @@ static void Click(HWND wnd, int idx)
     case HIT_GAME:
         g_playUO = h->arg;
         if (g_userIni[0]) WritePrivateProfileStringA("Launcher", "Game", g_playUO ? "UO" : "SP", g_userIni);
+        if (g_haveSP && g_haveUO) GfxSelect(g_playUO);   // the game's own graphics, also for a start through Steam
+        break;
+    case HIT_GFXPROF:
+        GfxSelect(h->arg);
         break;
     case HIT_PREV:
     case HIT_NEXT:
@@ -1976,6 +2169,7 @@ static void Click(HWND wnd, int idx)
         }
         o = PageOption(h->arg);
         if (!o) break;
+        if (o->swatch) { PickCrosshairColor(wnd); break; }
         if (g_page == PAGE_VR && o == &g_vrOpts[NUM_VR - 1]) {
             // Voice: switch the dub pack on or off (elevated when the game folder is not writable)
             int pt = !VoicePackOn();
@@ -1995,7 +2189,11 @@ static void Click(HWND wnd, int idx)
                             L"CoD VR", MB_OK | MB_ICONWARNING);
             break;
         }
-        if (g_page == PAGE_VR && o == &g_vrOpts[NUM_VR - 2]) {
+        if (g_page == PAGE_VR && o == &g_vrOpts[VR_HANDLING]) {
+            ChangeArmed(!g_armed);   // Weapon handling: always in hand <-> free hands (buttons still at the old default take the new one's)
+            break;
+        }
+        if (g_page == PAGE_VR && o == &g_vrOpts[VR_HANDS]) {
             // Player hands: make or remove the pack (elevated when the game folder is not writable)
             int hide = !HandsPackExists();
             int done = hide ? BuildHandsPack() : RemoveHandsPack();
@@ -2012,6 +2210,7 @@ static void Click(HWND wnd, int idx)
         else if (h->type == HIT_PREV) o->cur = (o->cur + o->count - 1) % o->count;
         else o->cur = (o->cur + 1) % o->count;
         SaveOption(o);
+        if (g_page == PAGE_GRAPHICS) GfxSaveProfile(g_gfxProf);
         break;
     case HIT_RESET:
         if (MessageBoxW(wnd, L"Put every weapon zone and button of this profile back to its default?", L"CoD VR", MB_YESNO | MB_ICONQUESTION) == IDYES) {

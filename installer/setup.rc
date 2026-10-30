@@ -1,4 +1,5 @@
 #include "setup_res.h"
+IDI_SETUP         ICON   "..\\launcher\\res\\launcher.ico"
 // Mod files embedded in the setup; build.bat produces them in ..\proxy\out
 IDR_OPENGL32      RCDATA "..\proxy\out\opengl32.dll"
 IDR_OPENXR_LOADER RCDATA "..\proxy\out\openxr_loader.dll"
@@ -6,10 +7,12 @@ IDR_COD_VR_INI    RCDATA "..\proxy\cod_vr.ini"
 // the launcher, built by ..\launcher\build_launcher.bat
 IDR_LAUNCHER      RCDATA "..\launcher\out\CoD-VR-Launcher.exe"
 IDR_SUPPORTERS    RCDATA "..\launcher\supporters.ini"
+// where each weapon sits in the hand and its scope's picture: the release's tuning, written to the game folder on every install
+IDR_WEAPONS       RCDATA "..\\proxy\\cod_vr_weapons.ini"
 
 1 VERSIONINFO
-FILEVERSION 1,7,4,0
-PRODUCTVERSION 1,7,4,0
+FILEVERSION 1,8,0,0
+PRODUCTVERSION 1,8,0,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -17,8 +20,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "Call of Duty VR setup"
       VALUE "ProductName", "Call of Duty VR"
-      VALUE "FileVersion", "1.7.4"
-      VALUE "ProductVersion", "1.7.4"
+      VALUE "FileVersion", "1.8.0"
+      VALUE "ProductVersion", "1.8.0"
     END
   END
   BLOCK "VarFileInfo"

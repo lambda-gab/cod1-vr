@@ -158,5 +158,11 @@ X(ADDR_RB_SurfaceStaticModelCached, 0x004fabd0, 0x004ffda0)
 X(ADDR_staticCacheCount, 0x01830c94, 0x046d9854)
 X(ADDR_staticModelDet, 0x01534704, 0x047be044)
 X(WEAPDEF_OFS_adsTransInTime, 0x00000268, 0x000002c4)  /* int, ms: cgame and game field tables of both games (adsTransOutTime is the next int) */
+X(REFENT_OFS_dobj, 0x00000090, 0x00000090)  /* xmodel entities: the DObj (word 36); UO verified 2026-10-29: R_AddDObjSurfaces 0x50bf43 reads [esi+0x90] */
+X(REFENT_OFS_skelArg, 0x00000094, 0x00000094)  /* passed to the cgame for the skeleton; 0 = the renderer computes none; UO verified: 0x50c01e */
+X(ADDR_ri_DObjSkel, 0x0154968c, 0x047bccec)  /* ri + 0x8c: cdecl (int arg, dobj, mask) -> VM_Call(cgvm, 9, ...) builds the skeleton; UO = ri table 0x47bcc60 + 0x8c (wrapper 0x40f5c0), called at 0x50c041 */
+X(ADDR_clientFrame, 0x014e43f4, 0x04805ed0)  /* the frame a DObj's skeleton belongs to (dobj + 8); UO: the frame counter bumped at 0x4018e0, compared at 0x401936/0x4019c0 */
+X(ADDR_scrStrings, 0x008d8bf8, 0x008f72f0)  /* script strings: string n at [it] + n * 8 + 4 (bone names); UO read by DObjGetBoneName 0x47bcd0 at 0x47bd1e */
+X(DOBJ_OFS_models, 0x00000018, 0x0000001c)  /* DObj: the xmodel pointers (nModels at +0x16, nBones at +0x17 in both); UO has one more field before them (DObjCalcSkel 0x47ae20 reads ebx+0x1c) */
 X(RE_OFS_SaveScreen, 0x00000090, 0x00000098)  /* void (void): render command 9, the screen copied for the shellshock blend (cgame syscall 0x48) */
 X(RE_OFS_BlendScreen, 0x00000094, 0x0000009c)  /* void (int ms): render command 10, that copy drawn over the screen in white with alpha (syscall 0x49) */

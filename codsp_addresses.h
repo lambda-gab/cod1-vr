@@ -153,6 +153,14 @@ extern int g_uo;   // 1 = CoDUOSP.exe
 #define REFENT_OFS_axis             g_A.REFENT_OFS_axis
 #define REFENT_OFS_origin           g_A.REFENT_OFS_origin
 #define REFENT_OFS_oldorigin        g_A.REFENT_OFS_oldorigin
+#define REFENT_OFS_dobj            g_A.REFENT_OFS_dobj  // DObj* of an xmodel entity (the view weapon: hands + gun)
+#define REFENT_OFS_skelArg         g_A.REFENT_OFS_skelArg
+// Skeletons (SP, 2026-10-28, static analysis): dobj + 4 = skeleton (0x30 bytes of bone masks, the 'computed' mask at +0x20,
+// then a 4x4 float matrix per bone in model space: axes at 0-2, 4-6, 8-10, origin at 12-14), dobj + 8 = its frame.
+#define ADDR_ri_DObjSkel           g_A.ADDR_ri_DObjSkel
+#define ADDR_clientFrame           g_A.ADDR_clientFrame
+#define ADDR_scrStrings            g_A.ADDR_scrStrings
+#define DOBJ_OFS_models            g_A.DOBJ_OFS_models  // DObj: xmodel pointer array (SP +0x18, UO +0x1c)
 #define RF_DEPTHHACK                0x08        // view weapon / hands / muzzle flash
 #define REFENT_TYPE_MODEL           1           // reType of xmodels (the view weapon); flashes are 4 and 13
 #define RF_LIGHTING_ORIGIN          0x80

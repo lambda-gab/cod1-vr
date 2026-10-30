@@ -170,6 +170,37 @@ abra o editor (Bloco de Notas) como administrador para conseguir salvar. As mais
 
 ## Releases
 
+### v1.8.0
+
+- **Um instalador novo:** o instalador é uma janela só, limpa (a pasta do jogo, os dois jogos que ele achou, um atalho na
+  área de trabalho, o progresso e "Tudo pronto"). Ele não pergunta mais sobre as mãos.
+- **Os braços do soldado (beta):** eles seguem os seus controles: a outra mão vai até o guarda-mão, a mão da arma
+  segura a arma. É o padrão, no Call of Duty e no United Offensive (aba VR, Player hands: Shown (beta); Hidden mostra só a
+  arma). Com algumas armas os braços podem ficar distorcidos.
+- **Weapon handling (aba VR):** Always in hand (a arma fica na sua mão dominante, um grip no corpo com qualquer mão troca de
+  arma) ou Free hands (as armas são tiradas do corpo e guardadas de volta). Não depende mais dos braços.
+- **O menu do próprio mod:** segure Y e aperte B (B e Y se você é canhoto) para ajustar a sua altura, a arma na mão, a outra
+  mão, os braços e a luneta.
+- **Uma luneta realista (beta):** agora é o padrão. Ao levar a luneta de um rifle ao olho, a imagem com zoom aparece dentro da
+  própria luneta, e os tiros vão para onde está a cruz dela. "Original" (aba VR, Scope) devolve a luneta do jogo.
+- **Todas as armas ficam certas na mão, e os rifles com luneta têm a imagem da luneta no lugar:** isso já vem com o mod
+  (cod_vr_weapons.ini); o que você ajustar no menu vale mais.
+- **A cor e a opacidade da mira** agora são opções (uma caixa de cores para escolher e quatro níveis de opacidade).
+- **As metralhadoras do United Offensive (DP-28, MG34, .30 cal) são usadas como estão na mão:** sem montar no chão, começam
+  na pose de tiro, você anda mais devagar com uma delas e o DP-28 tem o som dele em todas as missões.
+- **Os binóculos do United Offensive** miram para onde você olha: o gatilho da outra mão (segurado) dá o zoom e o gatilho da
+  mão da arma dá o comando, como na artilharia de Kharkov.
+- **Usar coisas:** o grip também usa o que é feito para ser usado (caixas de munição, a caixa de panzerfaust), e qualquer mão
+  pega uma arma do chão.
+- **Objetivos:** também ao virar o pulso da mão que segura a arma para os olhos; um pouco maiores na mão; num botão, segurando,
+  não só piscam.
+- **Sem balanço:** o balanço do andar do jogo está desligado, e as mãos e a arma mantêm o lugar quando você corre.
+- **O clarão branco e a névoa depois de levar dano acabaram** nos headsets que olhavam a transparência da imagem (Virtual
+  Desktop): o tom vermelho do dano deixava a imagem dos olhos transparente.
+- **Gráficos para cada jogo:** a página Graphics guarda uma configuração para o Call of Duty e outra para o United Offensive.
+- **O launcher:** uma caixa com a descrição de cada opção sob o mouse (aba VR), um destaque claro no que o mouse está em
+  cima (isso nunca aparecia), as opções de VR numa ordem melhor e o ícone novo.
+
 ### v1.7.4
 
 - **Armas no corpo (coldres):** a pistola no peito não é mais trocada por um rifle, e uma mão no pescoço não é mais

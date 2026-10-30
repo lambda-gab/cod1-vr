@@ -170,6 +170,37 @@ Everything else is in `cod_vr.ini`, in the game folder, with a comment on each s
 
 ## Releases
 
+### v1.8.0
+
+- **A new setup window:** the installer is one clean window (the game folder, the two games it found, a desktop shortcut, the
+  progress, then "All set"). It no longer asks about the hands.
+- **The soldier's arms (beta):** they follow your controllers: the other hand reaches for the handguard, the gun hand holds
+  the gun. It is the default, in Call of Duty and in United Offensive (VR tab, Player hands: Shown (beta); Hidden shows only
+  the gun). With some weapons the arms can look distorted.
+- **Weapon handling (VR tab):** Always in hand (the weapon stays in your dominant hand, a grip on your body with either hand
+  switches weapons) or Free hands (weapons are taken from your body and put back). It no longer depends on the arms.
+- **The mod's own menu:** hold Y and press B (B and Y if you are left-handed) to adjust your height, the weapon in your hand,
+  your other hand, the arms and the scope.
+- **A realistic scope (beta):** now the default. Bringing a rifle's scope to your eye shows the zoomed picture inside the
+  scope itself, and the shots go where its cross is. "Original" (VR tab, Scope) gives the game's own scope back.
+- **Every weapon sits right in the hand, and the scoped rifles have their scope picture in place:** this comes with the mod
+  (cod_vr_weapons.ini); what you adjust yourself in the menu wins.
+- **The crosshair's colour and opacity** are options now (a colour box to pick from, four levels of opacity).
+- **United Offensive's machine guns (DP-28, MG34, .30 cal) are used as they are held:** no setting up on the floor, they start
+  in the firing pose, you walk slower with one in your hands, and the DP-28 has its sound in every mission.
+- **United Offensive's binoculars** are aimed where you look: the other hand's trigger (held) zooms and the gun hand's trigger
+  gives the command, as for the artillery of Kharkov.
+- **Using things:** the grip also uses what is made to be used (ammo boxes, the panzerfaust crate), and either hand takes a
+  weapon from the floor.
+- **Objectives:** also by turning the wrist of the hand that holds the gun to your eyes; a little bigger on the hand; held on a
+  button they no longer only flash.
+- **No more bobbing:** the game's walking bob is off, and the hands and the gun keep their place while you run.
+- **The white flash and haze after taking damage are gone** on headsets that looked at the picture's transparency (Virtual
+  Desktop): the red hit tint had left the eyes' image see-through.
+- **Graphics for each game:** the Graphics page keeps one set of settings for Call of Duty and one for United Offensive.
+- **The launcher:** a box with the description of each option under the mouse (VR tab), a clear highlight on what the mouse is
+  over (it never showed before), the VR options in a better order and the new icon.
+
 ### v1.7.4
 
 - **Weapons on your body (holsters):** the pistol at your chest is no longer swapped for a rifle, and a hand at your neck

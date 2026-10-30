@@ -51,6 +51,8 @@ static struct {
     uint32_t   imageCount[7];
     XrSwapchainImageOpenGLKHR images[7][MAX_IMAGES];
     int        laserOn;
+    int        axesOn;          // three coloured axes (X forward red, Y right green, Z up blue) at a point: XR_SetAxes
+    float      axes[4][3];      // the centre and the three ends, XR coordinates
     int64_t    format;           // the swapchain format picked at start (the panel's swapchain is made later)
     int        panelOn;          // a flat panel in the room this frame (XR_SetPanel): fbo, size, pose in Quake axes, width in metres
     GLuint     panelFbo;
@@ -685,6 +687,7 @@ int XR_BeginFrame(vr_pose_t eyes[2], vr_pose_t *head)
     if (!xr.session) return 0;
     if (xr.frameOpen) XR_EndFrame(NULL, 0, 0, 0, 0, NULL, NULL);   // previous frame never reached SwapBuffers
     xr.laserOn = 0;
+    xr.axesOn = 0;
     xr.reticleOn = 0;
     xr.progressOn = 0;
     xr.panelOn = 0;
@@ -801,6 +804,21 @@ static int CopySwapchainImage(int eye, GLuint srcFbo, int sx, int sy, int w, int
 
 // Quake 3 axes (x forward, y left, z up) -> XR (x right, y up, -z forward)
 static void FromQ3(const float v[3], float out[3]) { out[0] = -v[1]; out[1] = v[2]; out[2] = -v[0]; }
+
+// Three axes from a point, each 'len' metres long, along fwd (red), right (green) and up (blue); tracking space, Quake axes.
+void XR_SetAxes(const float c[3], const float fwd[3], const float right[3], const float up[3], float len)
+{
+    float e[3];
+    int i;
+    FromQ3(c, xr.axes[0]);
+    for (i = 0; i < 3; i++) e[i] = c[i] + fwd[i] * len;
+    FromQ3(e, xr.axes[1]);
+    for (i = 0; i < 3; i++) e[i] = c[i] + right[i] * len;
+    FromQ3(e, xr.axes[2]);
+    for (i = 0; i < 3; i++) e[i] = c[i] + up[i] * len;
+    FromQ3(e, xr.axes[3]);
+    xr.axesOn = 1;
+}
 
 void XR_SetLine(const float (*pts)[3], int n, const float rgba[4], float ring)
 {
@@ -1012,6 +1030,17 @@ static int DrawLaser(int eye)
             gl.End();
         }
     }
+    if (xr.axesOn) {
+        static const float col[3][3] = { { 1.0f, 0.2f, 0.2f }, { 0.2f, 1.0f, 0.3f }, { 0.3f, 0.5f, 1.0f } };
+        int k;
+        gl.Begin(0x0001);   // GL_LINES
+        for (k = 0; k < 3; k++) {
+            gl.Color4f(col[k][0], col[k][1], col[k][2], 1.0f);
+            gl.Vertex3f(xr.axes[0][0], xr.axes[0][1], xr.axes[0][2]);
+            gl.Vertex3f(xr.axes[k + 1][0], xr.axes[k + 1][1], xr.axes[k + 1][2]);
+        }
+        gl.End();
+    }
     gl.MatrixMode(0x1701); gl.PopMatrix();
     gl.MatrixMode(0x1700); gl.PopMatrix();
     gl.PopAttrib();
@@ -1088,6 +1117,7 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
         FromQ3(scope->lens.pos, &lens.pose.position.x);   // XrVector3f is three packed floats
         lens.pose.orientation = MatrixToQuat(c0, c1, c2);
         lens.space = xr.local;
+        lens.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // round: transparent outside the circle
         lens.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         lens.subImage.swapchain = xr.swapchain[3];
         lens.subImage.imageRect.extent.width = xr.scW[3];
@@ -1125,6 +1155,10 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
 
     // A panel beside the menu (the supporters), above the menu screen and under the pointer
     if (render && xr.panelOn) {
+        if (xr.swapchain[6] && (xr.panelW != xr.scW[6] || xr.panelH != xr.scH[6])) {   // another panel (the mod's menu): its own size
+            xrDestroySwapchain(xr.swapchain[6]);
+            xr.swapchain[6] = 0;
+        }
         if (!xr.swapchain[6] && xr.format && !CreateSwapchain(6, xr.format, xr.panelW, xr.panelH)) xr.panelOn = 0;
         if (xr.panelOn && xr.swapchain[6] && xr.panelW == xr.scW[6] && xr.panelH == xr.scH[6] &&
             CopySwapchainImage(6, xr.panelFbo, 0, 0, xr.panelW, xr.panelH)) {
@@ -1148,7 +1182,7 @@ void XR_EndFrame(const GLuint eyeFbo[2], int w, int h, int hudW, int hudH, const
     }
 
     // Menu pointer beam, above the menu screen
-    if (render && (xr.laserOn || xr.reticleOn || xr.progressOn) && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
+    if (render && (xr.laserOn || xr.axesOn || xr.reticleOn || xr.progressOn) && xr.swapchain[4] && DrawLaser(0) && DrawLaser(1)) {
         for (i = 0; i < 2; i++) {
             bv[i].pose = xr.views[i].pose;
             bv[i].fov = xr.views[i].fov;

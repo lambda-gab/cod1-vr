@@ -1,5 +1,5 @@
-// CoD VR setup: installs the mod into a Call of Duty folder, optionally builds the "no hands"
-// data pack from the player's own pak files, and uninstalls.
+// CoD VR setup: installs the mod into a Call of Duty folder (one window, drawn by hand), builds the optional data
+// packs from the player's own pak files, and uninstalls.
 //
 // The mod files (opengl32.dll, openxr_loader.dll, cod_vr.ini) and the launcher are embedded as resources. No game
 // file is shipped: the hands pack is made here from the installed game's pak*.pk3, the same way
@@ -823,6 +823,166 @@ static int BuildShockPack(const wchar_t *game)
 }
 
 // ---------------------------------------------------------------------------
+// LMG pack (United Offensive): the DP-28, MG34 and .30 cal are made to be set up on the floor, and until then they are held in the carry
+// pose. In VR they are fired as held: their idle / fire / last-shot animations become the deployed (firing) ones, and the walk is slower
+// (the slower walk is the mod's, LmgWalkScale). Same change as tools-dev/lmgpack.py. Written to uo\pakz_vr_lmg.pk3 from the player's own paks.
+// ---------------------------------------------------------------------------
+static int LmgField(const char *d, size_t n, const char *key, size_t *vs, size_t *vl)
+{
+    size_t kl = strlen(key), i;
+    for (i = 0; i + kl + 2 < n; i++) {
+        if (d[i] == '\\' && !memcmp(d + i + 1, key, kl) && d[i + 1 + kl] == '\\') {
+            size_t s = i + kl + 2, e = s;
+            while (e < n && d[e] != '\\') e++;
+            *vs = s;
+            *vl = e - s;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// soundaliases/wep_gmi_sound.csv: the DP-28's sounds (weap_dp28_*) are only loaded in kharkov1, kharkov2, kursk, kursk2, ponyri and trenches
+// (the last column of their lines): without that column they load in every mission, so the gun is not silent in the others.
+static char *LmgSound(const char *d, size_t n, size_t *outLen)
+{
+    char *out = malloc(n + 1);
+    size_t i = 0, len = 0;
+    if (!out) return NULL;
+    while (i < n) {
+        size_t j = i, e, c;
+        while (j < n && d[j] != '\n') j++;
+        e = j;
+        if (e > i && d[e - 1] == '\r') e--;
+        if (e - i > 10 && !memcmp(d + i, "weap_dp28_", 10)) {
+            c = e;
+            while (c > i && d[c - 1] != ',') c--;   // just after the last comma
+            memcpy(out + len, d + i, c - i); len += c - i;
+            memcpy(out + len, d + e, j - e); len += j - e;
+        } else {
+            memcpy(out + len, d + i, j - i); len += j - i;
+        }
+        if (j < n) out[len++] = '\n';
+        i = j + 1;
+    }
+    *outLen = len;
+    return out;
+}
+
+// the weapon file with the animations of the firing pose, class rifle (not lmg) and the lmg set-up fields emptied;
+// NULL when it is not a deployable LMG. {field, copied from this other field (NULL: the constant)}, in this order.
+static char *LmgCarry(const char *d, size_t n, size_t *outLen)
+{
+    static const struct { const char *key, *from, *value; } ops[7] = {
+        { "idleAnim", "lmgDeployedAnim", NULL }, { "fireAnim", "adsFireAnim", NULL }, { "lastShotAnim", "adsLastShotAnim", NULL },
+        { "weaponClass", NULL, "rifle" },
+        { "lmgDeployedAnim", NULL, "" }, { "lmgDeployAnim", NULL, "" }, { "lmgBreakdownAnim", NULL, "" } };
+    size_t vs, vl, cs, cl;
+    char *cur, *tmp;
+    int k;
+    if (!LmgField(d, n, "weaponClass", &cs, &cl) || cl != 3 || memcmp(d + cs, "lmg", 3)) return NULL;
+    if (!LmgField(d, n, "lmgDeployedAnim", &vs, &vl) || !vl) return NULL;
+    cur = malloc(n + 1);
+    if (!cur) return NULL;
+    memcpy(cur, d, n);
+    *outLen = n;
+    for (k = 0; k < 7; k++) {
+        const char *key = ops[k].key;
+        char val[200];
+        size_t ts, tl, fs, fl;
+        if (ops[k].from) {
+            if (!LmgField(cur, *outLen, ops[k].from, &fs, &fl) || !fl || fl >= sizeof(val)) continue;
+            memcpy(val, cur + fs, fl);
+            val[fl] = 0;
+        } else {
+            strcpy(val, ops[k].value);
+        }
+        if (!LmgField(cur, *outLen, key, &ts, &tl)) continue;
+        tmp = malloc(*outLen - tl + strlen(val) + 1);
+        if (!tmp) { free(cur); return NULL; }
+        memcpy(tmp, cur, ts);
+        memcpy(tmp + ts, val, strlen(val));
+        memcpy(tmp + ts + strlen(val), cur + ts + tl, *outLen - ts - tl);
+        *outLen = *outLen - tl + strlen(val);
+        free(cur);
+        cur = tmp;
+    }
+    return cur;
+}
+
+static int BuildLmgPack(const wchar_t *game)
+{
+    static const wchar_t *const dirs[2] = { L"main", L"uo" };
+    wchar_t pattern[MAX_PATH], (*paks)[MAX_PATH] = NULL, out[MAX_PATH], tmp[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    char utf8[MAX_PATH * 3], names[192][64];
+    void *files[192] = { 0 };
+    size_t sizes[192];
+    int d, count, cap, i, e, numFiles = 0, ok = 1, written = 0;
+    mz_zip_archive zw;
+
+    Join(path, game, L"uo");
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return 0;   // no United Offensive here
+    for (d = 0; d < 2; d++) {   // main first, then uo: the last pak with each file wins
+        HANDLE h;
+        count = cap = 0;
+        paks = NULL;
+        _snwprintf(pattern, MAX_PATH, L"%s\\%s\\pak*.pk3", game, dirs[d]);
+        h = FindFirstFileW(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!_wcsnicmp(fd.cFileName, L"pakz_vr", 7)) continue;
+            if (count == cap) { cap = cap ? cap * 2 : 32; paks = realloc(paks, cap * sizeof(*paks)); }
+            _snwprintf(paks[count++], MAX_PATH, L"%s", fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+        qsort(paks, count, sizeof(*paks), CmpW);
+        for (i = 0; i < count; i++) {
+            mz_zip_archive z;
+            memset(&z, 0, sizeof(z));
+            _snwprintf(path, MAX_PATH, L"%s\\%s\\%s", game, dirs[d], paks[i]);
+            WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), NULL, NULL);
+            if (!mz_zip_reader_init_file(&z, utf8, 0)) continue;
+            for (e = 0; e < (int)mz_zip_reader_get_num_files(&z); e++) {
+                char fn[260];
+                int k;
+                size_t len = 0, nl;
+                mz_zip_reader_get_filename(&z, e, fn, sizeof(fn));
+                nl = strlen(fn);
+                if ((_strnicmp(fn, "weapons/sp/", 11) && _stricmp(fn, "soundaliases/wep_gmi_sound.csv")) || nl >= 64 || fn[nl - 1] == '/') continue;
+                for (k = 0; k < numFiles && _stricmp(names[k], fn); k++) ;
+                if (k == numFiles) { if (numFiles == 192) continue; strcpy(names[numFiles++], fn); }
+                free(files[k]);
+                files[k] = mz_zip_reader_extract_to_heap(&z, e, &len, 0);
+                sizes[k] = files[k] ? len : 0;
+            }
+            mz_zip_reader_end(&z);
+        }
+        free(paks);
+    }
+    Join(out, game, L"uo\\pakz_vr_lmg.pk3");
+    _snwprintf(tmp, MAX_PATH, L"%s.tmp", out);
+    WideCharToMultiByte(CP_UTF8, 0, tmp, -1, utf8, sizeof(utf8), NULL, NULL);
+    memset(&zw, 0, sizeof(zw));
+    if (!mz_zip_writer_init_file(&zw, utf8, 0)) ok = 0;
+    for (i = 0; ok && i < numFiles; i++) {
+        size_t len = 0;
+        char *changed;
+        if (!files[i]) continue;
+        changed = !_stricmp(names[i], "soundaliases/wep_gmi_sound.csv") ? LmgSound(files[i], sizes[i], &len) : LmgCarry(files[i], sizes[i], &len);
+        if (!changed) continue;
+        ok = mz_zip_writer_add_mem(&zw, names[i], changed, len, MZ_DEFAULT_COMPRESSION);
+        free(changed);
+        written++;
+    }
+    for (i = 0; i < numFiles; i++) free(files[i]);
+    if (ok) ok = mz_zip_writer_finalize_archive(&zw);
+    mz_zip_writer_end(&zw);
+    if (!ok || !written) { DeleteFileW(tmp); return 0; }
+    return MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING);
+}
+
+// ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
 // The desktop shortcut to the launcher.
@@ -871,6 +1031,8 @@ static int Install(const wchar_t *game, int *keptIni)
     if (!WriteResource(IDR_LAUNCHER, p)) return 0;
     Join(p, game, L"supporters.ini");   // the Patreon supporters shown beside the main menu: always the release's list
     WriteResource(IDR_SUPPORTERS, p);
+    Join(p, game, L"cod_vr_weapons.ini");   // where each weapon sits in the hand and its scope's picture: always the release's tuning
+    WriteResource(IDR_WEAPONS, p);
     Join(p, game, L"cod_vr.ini");
     *keptIni = FileExists(p);
     if (*keptIni) {
@@ -891,11 +1053,13 @@ static void Uninstall(const wchar_t *game)
     Join(p, game, L"cod_vr.ini");          DeleteFileW(p);
     Join(p, game, L"cod_vr.ini.default");  DeleteFileW(p);
     Join(p, game, L"supporters.ini");      DeleteFileW(p);
+    Join(p, game, L"cod_vr_weapons.ini");  DeleteFileW(p);
     Join(p, game, HANDS_PACK);             DeleteFileW(p);
     Join(p, game, TEXT_PACK);              DeleteFileW(p);
     Join(p, game, GORE_PACK);              DeleteFileW(p);
     Join(p, game, FONT_PACK);              DeleteFileW(p);
     Join(p, game, SHOCK_PACK);             DeleteFileW(p);
+    Join(p, game, L"uo\\pakz_vr_lmg.pk3");   DeleteFileW(p);
     Join(p, game, LAUNCHER_EXE);           DeleteFileW(p);
     if (ShortcutPath(p)) DeleteFileW(p);
 }
@@ -945,6 +1109,7 @@ static int Silent(const wchar_t *cmd)
     BuildGorePack(game);
     BuildFontPack(game);
     BuildShockPack(game);
+    BuildLmgPack(game);
     ExportSupportersPanel(game);
     if (wcsstr(cmd, L"/shortcut")) CreateShortcut(game);
     Join(pack, game, HANDS_PACK);
@@ -953,89 +1118,448 @@ static int Silent(const wchar_t *cmd)
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// The setup window: one dark window in the launcher's colours (a welcome page, the progress, the end), drawn by hand.
+// ---------------------------------------------------------------------------
+#define SETUP_VERSION L"v1.8.0"
+#define BASE_W 640
+#define BASE_H 420
+
+#define C_BG    RGB(14, 14, 14)
+#define C_PANEL RGB(28, 28, 28)
+#define C_GOLD  RGB(214, 170, 62)
+#define C_GOLDD RGB(150, 112, 30)
+#define C_TEXT  RGB(225, 225, 225)
+#define C_DIM   RGB(140, 140, 140)
+#define C_STEEL RGB(170, 205, 220)
+#define C_OK    RGB(120, 200, 120)
+#define C_WARN  RGB(232, 150, 64)
+#define C_BAD   RGB(235, 90, 80)
+
+enum { PG_WELCOME, PG_WORKING, PG_DONE, PG_REMOVED, PG_FAILED };
+enum { B_PRIMARY = 1, B_SECOND, B_CHANGE, B_SHORTCUT, B_CLOSE };
+
+typedef struct { RECT r; int id; } button_t;
+
+static HWND    g_wnd;
+static float   g_sc = 1.0f;
+static HFONT   g_fTitle, g_fHead, g_fText, g_fSmall, g_fBold, g_fBtn;
+static HICON   g_icon;
+static button_t g_btn[8];
+static int     g_nBtn, g_page, g_shortcut = 1, g_installed, g_unsupported, g_haveSP, g_haveUO, g_keptIni;
+static wchar_t g_game[MAX_PATH], g_status[200], g_error[300];
+static int     g_step, g_steps = 7;
+static POINT   g_mouse = { -1, -1 };
+
+#define S(v) ((int)((v) * g_sc + 0.5f))
+
+static void Refresh(void)
+{
+    wchar_t dll[MAX_PATH];
+    g_haveSP = g_haveUO = g_installed = g_unsupported = 0;
+    if (!g_game[0]) return;
+    g_haveSP = HasExe(g_game, L"CoDSP.exe");
+    g_haveUO = HasExe(g_game, L"CoDUOSP.exe");
+    Join(dll, g_game, L"opengl32.dll");
+    g_installed = (g_haveSP || g_haveUO) && FileExists(dll) && IsOurDll(dll);
+    // every game exe in the folder has to be the version the mod knows (CoDSP.exe 1.3, CoDUOSP.exe 1.51)
+    g_unsupported = (g_haveSP && ExeTimestamp(g_game, L"CoDSP.exe") != CODSP_TIMESTAMP) ||
+                    (g_haveUO && ExeTimestamp(g_game, L"CoDUOSP.exe") != CODUO_TIMESTAMP);
+}
+
+static void FillR(HDC dc, int x0, int y0, int x1, int y1, COLORREF c)
+{
+    HBRUSH b = CreateSolidBrush(c);
+    RECT r = { x0, y0, x1, y1 };
+    FillRect(dc, &r, b);
+    DeleteObject(b);
+}
+
+static void Txt(HDC dc, HFONT f, COLORREF c, int x0, int y0, int x1, int y1, const wchar_t *s, UINT flags)
+{
+    RECT r = { x0, y0, x1, y1 };
+    SelectObject(dc, f);
+    SetTextColor(dc, c);
+    DrawTextW(dc, s, -1, &r, flags | DT_NOPREFIX);
+}
+
+static void RoundBox(HDC dc, int x0, int y0, int x1, int y1, int rad, COLORREF fill, COLORREF edge)
+{
+    HPEN pen = CreatePen(PS_SOLID, S(1) > 1 ? S(1) : 1, edge);
+    HBRUSH br = CreateSolidBrush(fill);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+    RoundRect(dc, x0, y0, x1, y1, rad, rad);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(br);
+    DeleteObject(pen);
+}
+
+static int Hot(const RECT *r) { return PtInRect(r, g_mouse); }
+
+// primary: gold, filled; otherwise an outline. disabled buttons are drawn dim and get no area.
+static void Button(HDC dc, int id, int x0, int y0, int x1, int y1, const wchar_t *label, int primary, int enabled)
+{
+    RECT r = { x0, y0, x1, y1 };
+    int hot = enabled && Hot(&r);
+    if (primary) {
+        COLORREF fill = !enabled ? RGB(60, 52, 30) : hot ? RGB(236, 192, 80) : C_GOLD;
+        RoundBox(dc, x0, y0, x1, y1, S(12), fill, fill);
+        Txt(dc, g_fBtn, enabled ? RGB(20, 16, 6) : C_DIM, x0, y0, x1, y1, label, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    } else {
+        RoundBox(dc, x0, y0, x1, y1, S(12), hot ? RGB(40, 34, 20) : C_PANEL, hot ? C_GOLD : RGB(80, 80, 80));
+        Txt(dc, g_fBtn, !enabled ? C_DIM : hot ? C_GOLD : C_TEXT, x0, y0, x1, y1, label, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    }
+    if (enabled && g_nBtn < 8) { g_btn[g_nBtn].r = r; g_btn[g_nBtn].id = id; g_nBtn++; }
+}
+
+static void Header(HDC dc)
+{
+    wchar_t sub[160];
+    if (g_icon) DrawIconEx(dc, S(32), S(20), g_icon, S(72), S(72), 0, NULL, DI_NORMAL);
+    Txt(dc, g_fTitle, C_GOLD, S(122), S(22), S(620), S(64), L"CALL OF DUTY VR", DT_SINGLELINE | DT_VCENTER);
+    _snwprintf(sub, 160, T(L"Setup  %s  \x00b7  Call of Duty and United Offensive in virtual reality",
+                           L"Instalador  %s  \x00b7  Call of Duty e United Offensive em realidade virtual"), SETUP_VERSION);
+    sub[159] = 0;
+    Txt(dc, g_fSmall, C_DIM, S(122), S(66), S(620), S(90), sub, DT_SINGLELINE | DT_VCENTER);
+    FillR(dc, 0, S(110), S(BASE_W), S(112), C_GOLDD);
+}
+
+static void Footer(HDC dc) { FillR(dc, 0, S(340), S(BASE_W), S(342), RGB(40, 40, 40)); }
+
+static void DrawWelcome(HDC dc)
+{
+    int ok = g_game[0] && (g_haveSP || g_haveUO);
+    wchar_t line[300];
+    Txt(dc, g_fBold, C_GOLD, S(32), S(126), S(400), S(148), T(L"GAME FOLDER", L"PASTA DO JOGO"), DT_SINGLELINE | DT_VCENTER);
+    RoundBox(dc, S(32), S(152), S(470), S(190), S(10), C_PANEL, RGB(70, 70, 70));
+    Txt(dc, g_fText, ok ? C_TEXT : C_WARN, S(46), S(152), S(458), S(190),
+        g_game[0] ? g_game : T(L"Not found: click Change and pick the folder with CoDSP.exe or CoDUOSP.exe",
+                               L"Não encontrada: clique em Alterar e escolha a pasta com o CoDSP.exe ou o CoDUOSP.exe"),
+        DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
+    Button(dc, B_CHANGE, S(482), S(152), S(608), S(190), T(L"Change...", L"Alterar..."), 0, 1);
+
+    Txt(dc, g_fText, g_haveSP ? C_OK : C_DIM, S(32), S(202), S(320), S(224),
+        g_haveSP ? T(L"\x2714  Call of Duty (CoDSP.exe)", L"\x2714  Call of Duty (CoDSP.exe)") : T(L"\x2013  Call of Duty not here", L"\x2013  Call of Duty não está aqui"),
+        DT_SINGLELINE | DT_VCENTER);
+    Txt(dc, g_fText, g_haveUO ? C_OK : C_DIM, S(330), S(202), S(620), S(224),
+        g_haveUO ? T(L"\x2714  United Offensive (CoDUOSP.exe)", L"\x2714  United Offensive (CoDUOSP.exe)") : T(L"\x2013  United Offensive not here", L"\x2013  United Offensive não está aqui"),
+        DT_SINGLELINE | DT_VCENTER);
+
+    if (g_error[0]) {
+        Txt(dc, g_fText, C_BAD, S(32), S(238), S(608), S(290), g_error, DT_WORDBREAK);
+    } else if (ok && g_unsupported) {
+        Txt(dc, g_fText, C_WARN, S(32), S(238), S(608), S(290),
+            T(L"The game here is not the version the mod supports (CoDSP.exe 1.3, CoDUOSP.exe 1.51). The mod stays inactive in the other versions.",
+              L"O jogo desta pasta não é a versão que o mod suporta (CoDSP.exe 1.3, CoDUOSP.exe 1.51). Nas outras versões o mod fica inativo."),
+            DT_WORDBREAK);
+    } else if (ok && g_installed) {
+        Txt(dc, g_fText, C_STEEL, S(32), S(238), S(608), S(290),
+            T(L"The VR mod is already installed in this folder. Installing again updates it; your settings are kept.",
+              L"O mod de VR já está instalado nesta pasta. Instalar de novo atualiza; suas configurações são mantidas."),
+            DT_WORDBREAK);
+    } else if (ok) {
+        Txt(dc, g_fText, C_DIM, S(32), S(238), S(608), S(290),
+            T(L"Installs the VR mod, the launcher and the optional packs (made from your own game files). No game file is changed.",
+              L"Instala o mod de VR, o launcher e os pacotes opcionais (gerados a partir dos seus arquivos do jogo). Nenhum arquivo do jogo é alterado."),
+            DT_WORDBREAK);
+    }
+
+    {   // the shortcut checkbox
+        RECT cb = { S(32), S(298), S(420), S(324) };
+        int hot = Hot(&cb);
+        RoundBox(dc, S(32), S(301), S(52), S(321), S(6), g_shortcut ? C_GOLD : C_PANEL, hot ? C_GOLD : RGB(110, 110, 110));
+        if (g_shortcut) Txt(dc, g_fBold, RGB(20, 16, 6), S(32), S(301), S(52), S(321), L"\x2714", DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        Txt(dc, g_fText, hot ? C_GOLD : C_TEXT, S(64), S(298), S(420), S(324), T(L"Create a desktop shortcut to the launcher", L"Criar um atalho do launcher na área de trabalho"),
+            DT_SINGLELINE | DT_VCENTER);
+        if (g_nBtn < 8) { g_btn[g_nBtn].r = cb; g_btn[g_nBtn].id = B_SHORTCUT; g_nBtn++; }
+    }
+
+    Footer(dc);
+    Button(dc, B_CLOSE, S(32), S(356), S(150), S(398), T(L"Cancel", L"Cancelar"), 0, 1);
+    if (g_installed && ok) Button(dc, B_SECOND, S(290), S(356), S(430), S(398), T(L"Uninstall", L"Desinstalar"), 0, 1);
+    _snwprintf(line, 300, g_installed ? T(L"UPDATE", L"ATUALIZAR") : g_unsupported ? T(L"INSTALL ANYWAY", L"INSTALAR MESMO ASSIM") : T(L"INSTALL", L"INSTALAR"));
+    line[299] = 0;
+    Button(dc, B_PRIMARY, S(442), S(356), S(608), S(398), line, 1, ok);
+}
+
+static void DrawWorking(HDC dc)
+{
+    int w = S(608) - S(32), done = (int)((double)w * g_step / g_steps);
+    Txt(dc, g_fHead, C_GOLD, S(32), S(140), S(608), S(176), T(L"Installing...", L"Instalando..."), DT_SINGLELINE | DT_VCENTER);
+    Txt(dc, g_fText, C_TEXT, S(32), S(190), S(608), S(220), g_status, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    RoundBox(dc, S(32), S(236), S(608), S(254), S(10), C_PANEL, RGB(70, 70, 70));
+    if (done > S(10)) RoundBox(dc, S(32), S(236), S(32) + done, S(254), S(10), C_GOLD, C_GOLD);
+    Txt(dc, g_fSmall, C_DIM, S(32), S(270), S(608), S(296), T(L"Please wait: some packs take a few seconds to build.", L"Aguarde: alguns pacotes levam alguns segundos para serem gerados."),
+        DT_SINGLELINE | DT_VCENTER);
+}
+
+static void DrawDone(HDC dc)
+{
+    wchar_t msg[900];
+    Txt(dc, g_fHead, C_GOLD, S(32), S(130), S(608), S(170), T(L"ALL SET!", L"TUDO PRONTO!"), DT_SINGLELINE | DT_VCENTER);
+    _snwprintf(msg, 900,
+               T(L"Connect your headset (Virtual Desktop or Quest Link: the game needs a 32-bit OpenXR runtime) and start the game with the Call of Duty VR launcher, "
+                 L"which also has the settings.%s\n\nRun this setup again to update or uninstall.",
+                 L"Conecte o headset (Virtual Desktop ou Quest Link: o jogo precisa de um runtime OpenXR de 32 bits) e abra o jogo pelo launcher do Call of Duty VR, "
+                 L"que também tem as configurações.%s\n\nExecute este instalador de novo para atualizar ou desinstalar."),
+               g_keptIni ? T(L"\n\nYour existing cod_vr.ini was kept (the new defaults are in cod_vr.ini.default).",
+                             L"\n\nSeu cod_vr.ini foi mantido (os novos padrões estão em cod_vr.ini.default).") : L"");
+    msg[899] = 0;
+    Txt(dc, g_fText, C_TEXT, S(32), S(184), S(608), S(330), msg, DT_WORDBREAK);
+    Footer(dc);
+    Button(dc, B_CLOSE, S(32), S(356), S(150), S(398), T(L"Close", L"Fechar"), 0, 1);
+    Button(dc, B_PRIMARY, S(390), S(356), S(608), S(398), T(L"OPEN THE LAUNCHER", L"ABRIR O LAUNCHER"), 1, 1);
+}
+
+static void DrawEnd(HDC dc, const wchar_t *title, const wchar_t *text, COLORREF col, const wchar_t *primary)
+{
+    Txt(dc, g_fHead, col, S(32), S(130), S(608), S(170), title, DT_SINGLELINE | DT_VCENTER);
+    Txt(dc, g_fText, C_TEXT, S(32), S(184), S(608), S(330), text, DT_WORDBREAK);
+    Footer(dc);
+    Button(dc, B_CLOSE, S(32), S(356), S(150), S(398), T(L"Close", L"Fechar"), 0, 1);
+    if (primary) Button(dc, B_PRIMARY, S(442), S(356), S(608), S(398), primary, 1, 1);
+}
+
+static void Paint(HWND wnd)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(wnd, &ps), dc;
+    RECT rc;
+    HBITMAP bmp;
+    HGDIOBJ old;
+    GetClientRect(wnd, &rc);
+    dc = CreateCompatibleDC(wdc);
+    bmp = CreateCompatibleBitmap(wdc, rc.right, rc.bottom);
+    old = SelectObject(dc, bmp);
+    SetBkMode(dc, TRANSPARENT);
+    FillR(dc, 0, 0, rc.right, rc.bottom, C_BG);
+    g_nBtn = 0;
+    Header(dc);
+    switch (g_page) {
+    case PG_WELCOME: DrawWelcome(dc); break;
+    case PG_WORKING: DrawWorking(dc); break;
+    case PG_DONE:    DrawDone(dc); break;
+    case PG_REMOVED:
+        DrawEnd(dc, T(L"REMOVED", L"REMOVIDO"), T(L"The VR mod was removed from the game folder. Your game files were not touched.",
+                                                  L"O mod de VR foi removido da pasta do jogo. Os arquivos do jogo não foram alterados."), C_GOLD, NULL);
+        break;
+    case PG_FAILED:
+        DrawEnd(dc, T(L"COULD NOT INSTALL", L"NÃO FOI POSSÍVEL INSTALAR"), g_error, C_BAD, T(L"BACK", L"VOLTAR"));
+        break;
+    }
+    BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+    EndPaint(wnd, &ps);
+}
+
+static void Pump(void)
+{
+    MSG m;
+    while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
+}
+
+// one line of progress; the window is drawn at once (the packs are built on this thread)
+static void Step(const wchar_t *text)
+{
+    wcsncpy(g_status, text, 199);
+    g_status[199] = 0;
+    InvalidateRect(g_wnd, NULL, FALSE);
+    UpdateWindow(g_wnd);
+    Pump();
+    g_step++;
+}
+
+static void DoInstall(void)
+{
+    int models = 0;
+    (void)models;
+    g_error[0] = 0;
+    g_step = 0;
+    g_page = PG_WORKING;
+    Step(T(L"Copying the mod and the launcher...", L"Copiando o mod e o launcher..."));
+    if (!Install(g_game, &g_keptIni)) {
+        _snwprintf(g_error, 300, T(L"Could not write the files to:\n\n%s\n\nIs the game running?", L"Não foi possível gravar os arquivos em:\n\n%s\n\nO jogo está aberto?"), g_game);
+        g_error[299] = 0;
+        g_page = PG_FAILED;
+        InvalidateRect(g_wnd, NULL, FALSE);
+        return;
+    }
+    Step(T(L"Building the text pack...", L"Gerando o pacote de textos..."));
+    BuildTextPack(g_game);   // English game only; the mod works without it
+    Step(T(L"Building the blood pack...", L"Gerando o pacote de sangue..."));
+    BuildGorePack(g_game);   // used only when MODS > Gore is set to Gore
+    Step(T(L"Building the font pack...", L"Gerando o pacote de fontes..."));
+    BuildFontPack(g_game);   // used only when GRAPHICS > Text font is Modern
+    Step(T(L"Building the no-shake pack...", L"Gerando o pacote sem tremor..."));
+    BuildShockPack(g_game);  // explosions without the view shake
+    BuildLmgPack(g_game);    // United Offensive: the machine guns are fired as held (no set-up on the floor)
+    Step(T(L"Preparing the supporters' panel...", L"Preparando o painel de apoiadores..."));
+    ExportSupportersPanel(g_game);
+    if (g_shortcut) {
+        Step(T(L"Creating the desktop shortcut...", L"Criando o atalho..."));
+        CreateShortcut(g_game);
+    } else {
+        g_step++;
+    }
+    g_step = g_steps;
+    g_page = PG_DONE;
+    InvalidateRect(g_wnd, NULL, FALSE);
+}
+
+static void DoUninstall(void)
+{
+    if (MessageBoxW(g_wnd, T(L"Remove the VR mod from this game folder?", L"Remover o mod de VR desta pasta do jogo?"), TITLE,
+                    MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    Uninstall(g_game);
+    g_page = PG_REMOVED;
+    InvalidateRect(g_wnd, NULL, FALSE);
+}
+
+static void Click(int id)
+{
+    wchar_t exe[MAX_PATH], picked[MAX_PATH];
+    switch (id) {
+    case B_CLOSE:
+        DestroyWindow(g_wnd);
+        break;
+    case B_CHANGE:
+        picked[0] = 0;
+        if (PickFolder(picked)) {
+            if (HasGame(picked)) {
+                wcscpy(g_game, picked);
+                g_error[0] = 0;
+                Refresh();
+            } else {
+                _snwprintf(g_error, 300, T(L"CoDSP.exe or CoDUOSP.exe was not found in:\n%s", L"CoDSP.exe ou CoDUOSP.exe não foi encontrado em:\n%s"), picked);
+                g_error[299] = 0;
+            }
+        }
+        break;
+    case B_SHORTCUT:
+        g_shortcut = !g_shortcut;
+        break;
+    case B_SECOND:
+        if (g_page == PG_WELCOME && g_installed) DoUninstall();
+        break;
+    case B_PRIMARY:
+        if (g_page == PG_WELCOME) {
+            if (g_game[0] && (g_haveSP || g_haveUO)) DoInstall();
+        } else if (g_page == PG_FAILED) {
+            g_page = PG_WELCOME;
+            g_error[0] = 0;
+        } else if (g_page == PG_DONE) {
+            Join(exe, g_game, LAUNCHER_EXE);
+            ShellExecuteW(NULL, L"open", exe, NULL, g_game, SW_SHOWNORMAL);
+            DestroyWindow(g_wnd);
+        }
+        break;
+    }
+    InvalidateRect(g_wnd, NULL, FALSE);
+}
+
+static LRESULT CALLBACK SetupProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    int i;
+    switch (msg) {
+    case WM_PAINT:
+        Paint(wnd);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, wnd, 0 };
+        TrackMouseEvent(&tme);
+        g_mouse.x = (short)LOWORD(lp);
+        g_mouse.y = (short)HIWORD(lp);
+        InvalidateRect(wnd, NULL, FALSE);
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        g_mouse.x = g_mouse.y = -1;
+        InvalidateRect(wnd, NULL, FALSE);
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            int hand = 0;
+            for (i = 0; i < g_nBtn; i++) if (PtInRect(&g_btn[i].r, g_mouse)) hand = 1;
+            SetCursor(LoadCursor(NULL, hand ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+        }
+        break;
+    case WM_LBUTTONDOWN: {
+        POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        if (g_page == PG_WORKING) return 0;
+        for (i = 0; i < g_nBtn; i++)
+            if (PtInRect(&g_btn[i].r, p)) { Click(g_btn[i].id); break; }
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (g_page == PG_WORKING) return 0;
+        if (wp == VK_ESCAPE) DestroyWindow(wnd);
+        else if (wp == VK_RETURN) Click(B_PRIMARY);
+        return 0;
+    case WM_CLOSE:
+        if (g_page == PG_WORKING) return 0;
+        DestroyWindow(wnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(wnd, msg, wp, lp);
+}
+
+static HFONT MakeFont(int px, int weight)
+{
+    return CreateFontW(-S(px), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 {
-    wchar_t game[MAX_PATH] = L"", dll[MAX_PATH], pack[MAX_PATH];
-    int r, keptIni = 0, models = 0, installed;
+    WNDCLASSW wc = { 0 };
+    RECT rc;
+    MSG m;
+    HDC screen;
+    int w, h, style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
     pt = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_PORTUGUESE;
     CoInitialize(NULL);
     if (cmd && wcsstr(cmd, L"/silent")) return Silent(cmd);
 
-    if (FindGame(game)) {
-        r = Ask(MB_YESNOCANCEL | MB_ICONQUESTION,
-                T(L"Call of Duty found in:\n\n%s\n\nUse this folder? (No = choose another one)",
-                  L"Call of Duty encontrado em:\n\n%s\n\nUsar esta pasta? (Não = escolher outra)"), game);
-        if (r == IDCANCEL) return 0;
-        if (r == IDNO) game[0] = 0;
-    }
-    while (!game[0] || !HasGame(game)) {
-        if (game[0])
-            Ask(MB_OK | MB_ICONWARNING, T(L"CoDSP.exe or CoDUOSP.exe was not found in:\n\n%s", L"CoDSP.exe ou CoDUOSP.exe não foi encontrado em:\n\n%s"), game);
-        if (!PickFolder(game)) return 0;
-    }
+    screen = GetDC(NULL);
+    g_sc = GetDeviceCaps(screen, LOGPIXELSX) / 96.0f;
+    ReleaseDC(NULL, screen);
+    g_fTitle = MakeFont(30, FW_BOLD);
+    g_fHead = MakeFont(26, FW_BOLD);
+    g_fText = MakeFont(15, FW_NORMAL);
+    g_fSmall = MakeFont(13, FW_NORMAL);
+    g_fBold = MakeFont(13, FW_BOLD);
+    g_fBtn = MakeFont(15, FW_SEMIBOLD);
+    g_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_SETUP), IMAGE_ICON, S(72), S(72), LR_DEFAULTCOLOR);
 
-    Join(dll, game, L"opengl32.dll");
-    installed = FileExists(dll) && IsOurDll(dll);
-    if (installed) {
-        r = Ask(MB_YESNOCANCEL | MB_ICONQUESTION,
-                T(L"The VR mod is already installed.\n\nYes = update / reinstall\nNo = uninstall",
-                  L"O mod de VR já está instalado.\n\nSim = atualizar / reinstalar\nNão = desinstalar"));
-        if (r == IDCANCEL) return 0;
-        if (r == IDNO) {
-            Uninstall(game);
-            Ask(MB_OK | MB_ICONINFORMATION, T(L"The VR mod was removed.", L"O mod de VR foi removido."));
-            return 0;
-        }
-    }
+    FindGame(g_game);   // the folder this runs from, the Activision keys, Steam; empty when none
+    Refresh();
 
-    // every game exe in the folder has to be the version the mod knows (CoDSP.exe 1.3, CoDUOSP.exe 1.51)
-    if (((HasExe(game, L"CoDSP.exe") && ExeTimestamp(game, L"CoDSP.exe") != CODSP_TIMESTAMP) ||
-         (HasExe(game, L"CoDUOSP.exe") && ExeTimestamp(game, L"CoDUOSP.exe") != CODUO_TIMESTAMP)) &&
-        Ask(MB_YESNO | MB_ICONWARNING,
-            T(L"The game here is not the version the mod supports (CoDSP.exe 1.3, CoDUOSP.exe 1.51). The mod stays inactive in the other versions.\n\nInstall anyway?",
-              L"O jogo desta pasta não é a versão que o mod suporta (CoDSP.exe 1.3, CoDUOSP.exe 1.51). Nas outras versões o mod fica inativo.\n\nInstalar mesmo assim?")) != IDYES)
-        return 0;
-
-    if (!Install(game, &keptIni)) {
-        Ask(MB_OK | MB_ICONERROR,
-            T(L"Could not write the files to:\n\n%s\n\nIs the game running?", L"Não foi possível gravar os arquivos em:\n\n%s\n\nO jogo está aberto?"), game);
-        return 1;
-    }
-
-    BuildTextPack(game);   // English game only; the mod works without it
-    BuildGorePack(game);   // used only when MODS > Gore is set to Gore
-    BuildFontPack(game);   // used only when GRAPHICS > Text font is Modern
-    BuildShockPack(game);  // explosions without the view shake
-    ExportSupportersPanel(game);
-    Join(pack, game, HANDS_PACK);
-    r = Ask(MB_YESNO | MB_ICONQUESTION,
-            T(L"Hide the player's hands and show only the gun?\n\n(The models are made from your own game files.)",
-              L"Esconder as mãos do personagem e mostrar só a arma?\n\n(Os modelos são gerados a partir dos arquivos do seu jogo.)"));
-    if (r == IDYES) {
-        if (!BuildHandsPack(game, &models))
-            Ask(MB_OK | MB_ICONWARNING, T(L"Could not build the hands pack. The mod works without it.",
-                                          L"Não foi possível gerar o pacote das mãos. O mod funciona sem ele."));
-    } else {
-        DeleteFileW(pack);
-    }
-
-    if (Ask(MB_YESNO | MB_ICONQUESTION,
-            T(L"Create a desktop shortcut to the Call of Duty VR launcher?\n\n(The launcher starts the game and has the VR and graphics settings.)",
-              L"Criar um atalho na área de trabalho para o launcher do Call of Duty VR?\n\n(O launcher abre o jogo e tem as configurações de VR e gráficos.)")) == IDYES &&
-        !CreateShortcut(game))
-        Ask(MB_OK | MB_ICONWARNING, T(L"Could not create the shortcut. The launcher is %s in the game folder.",
-                                      L"Não foi possível criar o atalho. O launcher é o %s na pasta do jogo."), LAUNCHER_EXE);
-
-    Ask(MB_OK | MB_ICONINFORMATION,
-        T(L"Done!\n\nConnect your headset (Virtual Desktop or Quest Link: the game needs a 32-bit OpenXR runtime) and start the game "
-          L"with the Call of Duty VR launcher (CoD-VR-Launcher.exe in the game folder), which also has the settings.%s%s\n\n"
-          L"Run this setup again to update or uninstall.",
-          L"Pronto!\n\nConecte o headset (Virtual Desktop ou Quest Link: o jogo precisa de um runtime OpenXR de 32 bits) e abra o jogo "
-          L"pelo launcher do Call of Duty VR (CoD-VR-Launcher.exe na pasta do jogo), que também tem as configurações.%s%s\n\n"
-          L"Execute este instalador de novo para atualizar ou desinstalar."),
-        keptIni ? T(L"\nYour existing cod_vr.ini was kept (new defaults: cod_vr.ini.default).",
-                    L"\nSeu cod_vr.ini foi mantido (novos padrões: cod_vr.ini.default).") : L"",
-        models ? T(L"\nHands hidden.", L"\nMãos escondidas.") : L"");
+    wc.lpfnWndProc = SetupProc;
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_SETUP), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    wc.lpszClassName = L"CoDVRSetup";
+    RegisterClassW(&wc);
+    SetRect(&rc, 0, 0, S(BASE_W), S(BASE_H));
+    AdjustWindowRect(&rc, style, FALSE);
+    w = rc.right - rc.left;
+    h = rc.bottom - rc.top;
+    g_wnd = CreateWindowExW(0, wc.lpszClassName, TITLE, style, (GetSystemMetrics(SM_CXSCREEN) - w) / 2, (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h,
+                            NULL, NULL, inst, NULL);
+    if (!g_wnd) return 1;
+    ShowWindow(g_wnd, show);
+    UpdateWindow(g_wnd);
+    while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
     return 0;
 }

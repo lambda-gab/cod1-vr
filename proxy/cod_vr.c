@@ -181,8 +181,15 @@ static struct {
     int   keepLook;         // Comfort: 1 = a scripted scene or a car / truck taking over the view does not turn the picture away from where you look
     float chestNear;        // Holsters: how far in front of the eyes (metres, negative = behind them) the chest zone starts
     float chestWidth;       // Holsters: half the chest zone's width, metres
+    float eyeHeight;        // VR: the player's eye height in metres from the in-game menu (0 = not set); WorldScale = 60 / this
     int   armed;            // Controllers: 1 = always armed: the weapon stays in the dominant hand (no holsters, never dropped), for gunstock controllers
     int   shockBlend;       // Comfort: 1 = the shellshock's screen blend is drawn (in VR it is a white haze over the eyes), 0 = left out
+    int   objGunHand;       // HUD: 1 = the objectives also show when the wrist of the hand holding the gun is turned to the eyes (set in the ini reader)
+    float crosshairColor[3];   // Controllers: the crosshair's colour (CrosshairColor, a name; set in the ini reader)
+    float crosshairAlpha;      // Controllers: its opacity 0.1 .. 1 (CrosshairOpacity)
+    int   noRunBob;            // Comfort: 1 = the hands and the gun keep their standing place in the view while the player moves (FlushHeldEntities)
+    int   noWalkBob;           // Comfort: 1 = the game's walking bob (the view going up and down with each step) is set to 0 (cg_bob*)
+    float lmgWalk;             // Comfort: the stick's walking speed with a United Offensive machine gun in the hand (0.5 = half)
 } cfg = { 1, 2.5f, 0, 1, 39.37f, 1, 1, 1, { 0, 0, 0, 1, 1.5f, -0.05f, 1.0f, 1.8f },
           1, 1, 45.0f, 150.0f, 15.0f, 1, { 10.0f, 5.0f, -7.0f }, 1, 0.7f, 0.04f, { { 0 } },
           1, 35.0f, 1.4f, 0.7f, 1, 1, { 0.0f, 0.0f }, 1, { 0.0f, 0.0f }, 0.0f, 0, 1, 800.0f, 0.6f, 0.15f, CONTENTS_SOLID };
@@ -264,6 +271,7 @@ static struct { float rect[8]; int shader; float color[4]; int hasColor; } g_fs[
 static int       g_fsCount;
 static float     g_curColor[4];
 static int       g_curColorSet;
+static DWORD     g_fsKeptAt;           // when a full-screen picture (damage tint, fade) was last kept to be drawn in both eyes
 static int       g_fxTarget;              // backend: 1/2 = 2D goes to the left/right eye
 static int       g_statScenes, g_statFlags, g_statMaxEnt, g_statMaxPoly;
 static DWORD     g_statTick;
@@ -335,6 +343,9 @@ static signed char g_moveForward, g_moveRight;   // added to the next usercmd
 static int       g_crosshairOff;
 static vr_pose_t g_gun;                // gun pose (dominant hand, or both hands), tracking space
 static int       g_gunValid;
+static DWORD     g_lensAimAt;          // when the scope's view was last drawn (the eye behind the eyepiece)
+static float     g_lensAimTrk[2][3];   // its line then: the eyepiece and the direction, tracking space
+static float     g_lensAimWorld[2][3]; // the same in the world (for the trace)
 static int       g_twoHand;            // off hand is holding the gun
 static DWORD     g_gunSeen;            // last tick the gun hand was tracked
 static float     g_gunFwdSmooth[3], g_gunUpSmooth[3];
@@ -378,6 +389,8 @@ static int       g_pitchSampled;       // first world scene of the frame measure
 
 static void StartVR(void);
 static signed char ClampMove(float v);
+static const char *HeldWeaponName(void);
+static float HeavyGunWalk(void);
 static void (__cdecl *Detour(DWORD target, const BYTE *prologue, int len, void *hook))(void);
 static void FlushHeldEntities(const cod_refdef_t *fd);
 static void ProcessControllers(void);
@@ -388,6 +401,15 @@ static void InitColorTexture(GLuint tex, int w, int h);
 static void UpdateAutoAds(void);
 static void UpdateGrenadeArc(void);
 static void UpdateHudMode(int objectivesHeld);
+static int  g_mmRequest;   // the "Mod menu" action was pressed (the mod's own in-game menu, ModMenuUpdate)
+static int  ModMenuUpdate(float dt, int dom);
+static void ModMenuFrame(void);
+// Where the held weapon sits in the hand, per weapon: [WeaponOffsets] <weapon name> = forward right up (game units) in cod_vr.ini /
+// settings.ini, else [Controllers] WeaponOffsetForward / Right / Up. g_wOff is the one in use for the weapon the game holds.
+static float g_wOff[3];
+static int   g_wOffWeapon = -1;
+static char  g_wOffName[64];
+static void  UpdateWeaponOffset(void);
 static void QueueEvent(int type, int value, int value2);
 static void HookKeyBindingText(void);
 static void BindHud(void);
@@ -834,6 +856,10 @@ static void RunCommand(int b, const char *cmd, int down)
     if ((g_onTurret || g_turretInView) && !_stricmp(cmd, "+activate")) return;   // turrets: both grips (UpdateTurret)
     if (!_stricmp(cmd, "vr:recenter")) {
         if (down) Recenter();
+        return;
+    }
+    if (!_stricmp(cmd, "vr:modmenu")) {        // the mod's own menu (settings in the middle of the game)
+        if (down) g_mmRequest = 1;
         return;
     }
     if (!_stricmp(cmd, "vr:switchweapon")) {   // weapon 1 <-> weapon 2 without reaching for the shoulders
@@ -1769,7 +1795,11 @@ static const float *EntBox(const BYTE *e, const float **mx)
 }
 
 // The usable entity whose box (grown by `reach`) holds the tracking-space point `at`, the nearest by centre; 0 if none.
-static int UsableNear(const float at[3], float reach)
+static int UsableNearEx(const float at[3], float reach, int onlyUsable);
+static int UsableNear(const float at[3], float reach) { return UsableNearEx(at, reach, 0); }
+
+// onlyUsable: only the things made to be used (contents 0x200000: the ammo box, an item), not the area triggers around them
+static int UsableNearEx(const float at[3], float reach, int onlyUsable)
 {
     BYTE *gm = (BYTE *)GetModuleHandleA(GAME_DLL);
     float hand[3], best = 1e9f;
@@ -1787,6 +1817,7 @@ static int UsableNear(const float at[3], float reach)
             int k;
             if (!e[GENT_OFS_inuse] || *(void **)(e + GENT_OFS_turretInfo)) continue;   // turrets have their own mount
             if (!(contents & CONTENTS_USABLE) && !(contents & CONTENTS_TRIGGER_BIT)) continue;
+            if (onlyUsable && !(contents & CONTENTS_USABLE)) continue;
             for (k = 0; k < 3; k++) if (mx[k] - mn[k] > size) size = mx[k] - mn[k];
             if (size <= 0 || size > 5000.0f) continue;
             if (!(contents & CONTENTS_USABLE) && size > 160.0f) continue;   // an area trigger, not something to use
@@ -1901,7 +1932,6 @@ static int HandZone(int h)
     float reach = sqrtf(fwd * fwd + left * left);   // how far the hand is from the body: reaching out for something on the floor is not a holster
     // A short torso puts the chest within 30 cm of the eyes, where the shoulders started (a player's pistol at the chest drew the rifle) and
     // the chest began only below: in the band just under the shoulder line a hand ahead of ChestNear is the chest, not a shoulder.
-    // A hand at the neck or the face (less than 12 cm off the middle) is no shoulder either.
     float chestTop = cfg.backHeight + 0.15f;
     if (up > cfg.backHeight && fwd < 0.05f && fabsf(left) < 0.5f && fabsf(left) > 0.12f && (up > chestTop || fwd < cfg.chestNear)) return left > 0 ? ZONE_SHOULDER_L : ZONE_SHOULDER_R;
     // the chest: in front of the body, between the shoulders and the waist
@@ -1993,6 +2023,19 @@ static void DrawWeapon(int h, int zone)
 // Always armed (Controllers AlwaysArmed): the hand is never empty. Whatever the game holds is in the dominant hand: at the start,
 // after a grenade was thrown, after a pickup. A weapon the game holds that is in none of the slots 1-5 (the binoculars) is taken as it is.
 static int ArmedHand(void) { return cfg.rightHanded ? 1 : 0; }
+
+// United Offensive's binoculars are in the gun hand (a spotter weapon: its own deploy animation, an overlay, a command with the attack
+// button). Held up to the eyes the controller points high, so they are aimed with the head (what the player looks at), and the other
+// hand's trigger is the zoom whatever that hand is near (a "use" trigger box around it took the press: the zoom came and went).
+static int BinocularsHeld(void)
+{
+    const BYTE *d;
+    const char *wn;
+    if (g_gunHand < 0) return 0;
+    d = CurrentWeaponDef();
+    wn = d ? WeaponName(d) : NULL;
+    return wn && strstr(wn, "binocular") != NULL;
+}
 
 static void ArmedUpdate(void)
 {
@@ -2449,7 +2492,7 @@ static int HandPickupWithin(int h, float reachUnits)
             d[0] = o[0] - hand[0]; d[1] = o[1] - hand[1]; d[2] = o[2] - hand[2];
             dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             // the hand has to point at it (within about 45 degrees), unless the weapon is right at the hand: a weapon was taken
-            // from anywhere near, without aiming or looking at it
+            // from anywhere near, without aiming or looking at it (the maintainer's report)
             if (dd > PICKUP_POINT_FREE * PICKUP_POINT_FREE &&
                 (d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) < 0.7f * sqrtf(dd)) continue;
             if (dd < bestD) { bestD = dd; best = e; }
@@ -2476,9 +2519,9 @@ static int HandPickupWithin(int h, float reachUnits)
 
 static int HandPickup(int h) { return HandPickupWithin(h, 90.0f); }
 
-// A weapon lying this close to the hand (game units, about 1.2 m) is what a closing grip wants, even when the hand is also in a
+// A weapon lying this close to the hand (game units, about 70 cm) is what a closing grip wants, even when the hand is also in a
 // body zone (crouching to the floor puts it level with the waist holsters: a player's report, the holster won over the pickup).
-#define PICKUP_FIRST_REACH 48.0f
+#define PICKUP_FIRST_REACH 48.0f   // about 1.2 m: crouching for it leaves the hand further from the item
 
 // Controller vibration, scaled by Haptics (0.6 = the strengths written here).
 // Controller vibration of one kind (HapticsShots / Damage / Holsters; 0.6 = the strengths here).
@@ -2506,7 +2549,17 @@ static int GameClip(const BYTE *cl, int w)
 static int ZoneUseful(int h, int zone)
 {
     BYTE *cl = PlayerClient();
-    if (zone == ZONE_NONE || !cl || cfg.armed) return 0;
+    if (zone == ZONE_NONE || !cl) return 0;
+    if (cfg.armed) {   // always armed: either hand uses the body (the weapon goes to the dominant one); not the free hand on the gun
+        if (g_twoHand) return 0;   // both hands on the gun: no holster hum for either
+        switch (cfg.zoneAct[zone]) {
+        case ACT_W1: case ACT_W2: case ACT_SWITCH: return SlotWeapon(cl, 1) || SlotWeapon(cl, 2);
+        case ACT_PISTOL: return SlotWeapon(cl, 3) != 0;
+        case ACT_GRENADE: return SlotWeapon(cl, 4) || SlotWeapon(cl, 5);
+        case ACT_BINOCULAR: return BinocularWeapon(cl) != 0;
+        }
+        return 0;
+    }
     if (h == g_gunHand)
         return g_heldKind == HELD_GRENADE ? cfg.zoneAct[zone] == ACT_GRENADE :
                g_heldKind == HELD_BINOCULAR ? cfg.zoneAct[zone] == ACT_BINOCULAR : ZoneHome(zone, g_heldKind);
@@ -2556,8 +2609,8 @@ static void UpdateHaptics(void)
         // so a hand shivering on the edge does not keep buzzing. It used to hum for as long as the hand stayed there,
         // which in a walking posture (hands at the waist) was all the time.
         if (zone != lastZone[h] && useful) {
+            // a tap (the second of buzzing was too much, a player's and the maintainer's report); a take or stow still clicks harder
             if (!cfg.holsterHum) Buzz(h, 0.25f, 25, cfg.hapHolster);
-            // two quick taps (the second of buzzing was too much, a player's and the maintainer's report); a take or stow still clicks harder
             else if (now - enteredAt[h] > 1000) { Buzz(h, 0.35f, 45, cfg.hapHolster); enteredAt[h] = now; tapTwoAt[h] = now + 100; }
         }
         lastZone[h] = zone;
@@ -2717,8 +2770,39 @@ static void GripPressed(int h)
 {
     int zone;
     if (cfg.armed) {
-        // always armed: no holsters, the dominant hand keeps its weapon; its grip picks up what lies at the hand
-        if (h == (cfg.rightHanded ? 1 : 0)) HandPickup(h);
+        // always armed (Player hands shown): the weapon stays in the dominant hand. Either hand's grip on a body zone (a shoulder:
+        // Switch by default) puts that zone's weapon into the dominant hand; the free hand not when it takes the handguard (a
+        // rifle's handguard can be in the chest zone). The dominant hand's grip anywhere else picks up what lies at it.
+        int ah = ArmedHand(), drew = 0;
+        // Both hands on the gun: the body is not a holster (a rifle brought to the chest hummed for the pistol and the grip drew it)
+        if (g_twoHand && g_gunHand >= 0) return;
+        // Either hand picks up a weapon lying at it (it goes to the dominant hand all the same)
+        if (HandPickupWithin(h, PICKUP_FIRST_REACH)) return;
+        // ... and uses what is made to be used (the ammo box of the infinite panzerfausts: a "use" trigger, not a weapon on the floor):
+        // the grip is "use" there as it is in free-hands mode, the free hand's trigger being the other way
+        if (g_in.handValid[h]) {
+            int ent = UsableNearEx(g_in.hand[h].pos, USE_REACH, 1);
+            if (ent) { g_useHand = h; g_useEnt = ent; return; }
+        }
+        zone = HandZone(h);
+        if (zone != ZONE_NONE && g_in.handValid[ah] && (h == ah || !(g_gunHand >= 0 && OffHandOnGun(&g_in.hand[ah], &g_in.hand[h])))) {
+            BYTE *cl = PlayerClient();
+            int kind, slot, w = cl ? GameWeapon(cl) : 0;
+            // "Switch" gives the other long gun than the one in the hand: the one in the hand now (a weapon picked up from the
+            // floor changes it without a draw, and the last drawn one then pointed at the weapon already held: nothing happened)
+            if (cl && w && w == SlotWeapon(cl, 1)) g_lastLong = 1;
+            else if (cl && w && w == SlotWeapon(cl, 2)) g_lastLong = 2;
+            slot = cl ? ZoneSlot(cl, zone, &kind) : 0;
+            if (slot && cl && SlotWeapon(cl, slot) != w) {
+                DrawWeapon(ah, zone);
+                if (h != ah) HolsterClick(h);   // the free hand did it: it feels the click too
+                drew = 1;
+            } else {
+                Log("armed: hand %d in zone %d: nothing to change (slot %d, weapon there %d, in the hand %d; slots 1 %d, 2 %d)",
+                    h, zone, slot, cl && slot ? SlotWeapon(cl, slot) : 0, w, cl ? SlotWeapon(cl, 1) : 0, cl ? SlotWeapon(cl, 2) : 0);
+            }
+        }
+        if (!drew && h == ah && zone == ZONE_NONE) HandPickup(h);
         return;
     }
     zone = HandZone(h);
@@ -2862,11 +2946,12 @@ static void RealisticHands(void)
         // Offensive's LMGs (.30 cal, MG34, DP28) are set up on their bipod with aim down the sights
         // ("Press [..] to setup your weapon"), held for as long as it stays set up: there a press of
         // the other hand's trigger sets it up and the next one takes it down.
-        static int lmgSetUp, lmgTrigger, useTrig;
+        static int lmgSetUp, lmgTrigger, useTrig, binocPrev;
+        static DWORD binocHoldUntil;
         const BYTE *def = CurrentWeaponDef();
-        int scoped = 0, lmg = 0, other = 1 - g_gunHand;
+        int scoped = 0, lmg = 0, binoc = BinocularsHeld(), other = 1 - g_gunHand;
         int fire;
-        if (g_gunHand >= 0 && !g_inVehicle) {
+        if (g_gunHand >= 0 && !g_inVehicle && !binoc) {
             // The other hand's trigger is also "use" (plant a bomb, switches, doors) when that HAND is at something usable
             // (no looking at it, no use hint needed). It then does nothing else (no fire, zoom or set-up); anywhere else it
             // keeps aiming and firing with the rifle.
@@ -2896,6 +2981,15 @@ static void RealisticHands(void)
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             scoped = lmg = 0;
         }
+        {
+            // United Offensive's binoculars (a spotter weapon with its own deploy animation, so it looked like an LMG): the other
+            // hand's trigger HELD zooms (aims), the gun hand's trigger gives the command (the missions poll +attack every 0.1 s)
+            // United Offensive's LMGs (.30 cal, MG34, DP28) used to be set up on their bipod with the other hand's trigger. No more: in VR
+            // they are fired as they are held (the installer's lmg pack gives them the firing pose and a slower walk), so that trigger
+            // is an ordinary free-hand trigger for them and the toggle below never runs (2026-10-30, the maintainer's request)
+            lmg = 0;
+            if (binoc) scoped = 1;
+        }
         if (lmg && g_gunHand >= 0) {
             float v = useTrig ? 0 : g_in.trigger[other];
             int down = lmgTrigger ? v > 0.35f : v > 0.65f;
@@ -2910,6 +3004,19 @@ static void RealisticHands(void)
         }
         fire = g_gunHand >= 0 && (Pressed(g_in.trigger[g_gunHand], BT_PTRIGGER) ||
                                   (!scoped && !useTrig && g_twoHand && Pressed(g_in.trigger[other], BT_PTRIGGER)));   // the free hand fires only while it holds the handguard (a player's report: the right trigger fired a gun held in the left hand)
+        if (binoc && g_gunHand >= 0) {
+            // the command of the binoculars: the mission's script looks at the attack button every 0.1 s, a quick squeeze can fall
+            // between two looks, so a press is held for 0.3 s at least
+            DWORD now = GetTickCount();
+            if (fire && !binocPrev) {
+                binocHoldUntil = now + 300;
+                Log("binoculars: command trigger of hand %d pressed (zoom %s)", g_gunHand, g_btnDown[BT_STRIGGER] ? "on" : "OFF");
+            }
+            binocPrev = fire;
+            if (now < binocHoldUntil) fire = 1;
+        } else {
+            binocPrev = 0;
+        }
         if (g_slideShow) fire = Pressed(g_in.trigger[0], BT_PTRIGGER) || Pressed(g_in.trigger[1], BT_PTRIGGER);   // "fire to skip"
 
         SetButton(BT_STRIGGER, lmg ? lmgSetUp : g_gunHand >= 0 && scoped && !useTrig && Pressed(g_in.trigger[other], BT_STRIGGER));
@@ -3004,9 +3111,11 @@ static void DrawPointer(int h)
 // the centre of the head-locked HUD, not where the gun points, so this one is put in the world
 // where the shot goes (the map along the aim, at most 30 m away), facing the eyes, the same size
 // whatever the distance. Not with a scope or a grenade.
+static int g_lensOn;   // (the working scope, defined with it below)
+
 static void UpdateCrosshair(void)
 {
-    static const float color[4] = { 1.0f, 1.0f, 1.0f, 0.8f };
+    float color[4] = { cfg.crosshairColor[0], cfg.crosshairColor[1], cfg.crosshairColor[2], cfg.crosshairAlpha };   // [Controllers] CrosshairColor / CrosshairOpacity
     float body, dir[3], end[3], hit[3], c[3], f[3], l[3], u[3], up[3] = { 0, 0, 1 }, d, frac, len;
     const BYTE *def;
     int i;
@@ -3019,6 +3128,16 @@ static void UpdateCrosshair(void)
         rocket = wn && (strstr(wn, "panzerfaust") || strstr(wn, "Panzerfaust"));
     }
     if (!onGun && !rocket && (!cfg.crosshair || !g_gunValid)) return;
+    if (!onGun && def && g_lensOn) {   // a scoped rifle with the working scope: its own cross is the sight
+        int scoped = 0;
+        __try {
+            const char *ov = *(const char * const *)(def + WEAPDEF_OFS_adsOverlayShader);
+            scoped = ov && ov[0];
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            scoped = 0;
+        }
+        if (scoped) return;
+    }
     if (g_pointerOn || g_scopeActive || !MapLoaded() || !g_lastHudWorld) return;
     __try {
         if (def && *(const int *)(def + WEAPDEF_OFS_weaponType) == WEAPTYPE_GRENADE) return;
@@ -3175,6 +3294,8 @@ static void PlaceMenuQuad(void)
 // The objectives are held on the hand that does not hold the gun: the other one than the dominant
 // hand chosen in the launcher.
 static int ObjHand(void) { return cfg.rightHanded ? 0 : 1; }
+static int g_objShownHand = -1;   // the gun hand when its wrist was turned to the eyes (WatchGesture), else -1: the off hand
+static int ObjShownHand(void) { return g_objShownHand >= 0 ? g_objShownHand : ObjHand(); }
 
 // The back of that hand: the controller's palm faces the hand's thumb side inwards, so the back
 // is the controller's left on the left hand (axis[1]) and its right on the right hand.
@@ -3188,10 +3309,10 @@ static void HandBack(int h, float out[3])
 // controller, a little towards the wrist, flat on the hand, its text upright for the eyes.
 static void ObjectivesPose(vr_pose_t *p)
 {
-    const vr_pose_t *h = &g_in.hand[ObjHand()];
+    const vr_pose_t *h = &g_in.hand[ObjShownHand()];
     float back[3], pos[3], fw[3], up[3], l[3], d;
     int i;
-    HandBack(ObjHand(), back);
+    HandBack(ObjShownHand(), back);
     for (i = 0; i < 3; i++) {
         pos[i] = h->pos[i] + back[i] * 0.04f - h->axis[0][i] * 0.06f;
         fw[i] = -back[i];   // away from the viewer: into the hand
@@ -3962,6 +4083,19 @@ static void UpdateMods(void)
         if (cfg.fxAlways) Cbuf("set fx_cull 0\n");
         bloodSet = 1;
     }
+    {
+        // The walking bob moves the view up and down with every step (and the gun, and the scope's picture with it). The headset
+        // is the camera: the bob only gets in the way (the maintainer, 2026-10-30). Sent again when a map loads, as the cgame
+        // registers its variables then.
+        static int mapWas;
+        int m = MapLoaded();
+        if (cfg.noWalkBob && m && !mapWas) {
+            Cbuf("set cg_bobAmplitudeStanding 0; set cg_bobAmplitudeDucked 0; set cg_bobAmplitudeProne 0; set cg_bobMax 0; "
+                 "set cg_bobWeaponAmplitude 0; set cg_bobWeaponRollAmplitude 0; set cg_bobWeaponMax 0\n");
+            Log("walking bob: cg_bob* set to 0");
+        }
+        mapWas = m;
+    }
     if (deathHandled && GetTickCount() - deathTime > 2500) {   // after the death has been seen
         Cbuf("disconnect\n");
         deathHandled = 0;
@@ -4012,29 +4146,52 @@ static void UpdateMods(void)
 // turning it away hides them (HandBack). Not while that hand holds a weapon.
 static int g_watchScores, g_watchSent;   // the gesture shows the objectives / it pressed +scores itself
 
-static int WatchGesture(void)
+// The hand holding the gun counts too (ObjectivesGunHand): turning the wrist of a gun held with both hands shows them without letting
+// go, with stricter limits (the back of a gun hand faces the eyes less by accident than a free hand's) and a longer wait.
+static int WatchGestureHand(int hh, int *state)
 {
-    static DWORD since;
-    static int on;
-    int oh = ObjHand();
-    const vr_pose_t *h = &g_in.hand[oh];
-    float d[3], back[3], len, facing, ahead;
+    static DWORD since[2];
+    const vr_pose_t *h = &g_in.hand[hh];
+    int *on = state;
+    int gun = hh != ObjHand();
+    float d[3], back[3], len, facing, ahead, onAt = gun ? 0.88f : 0.8f, offAt = gun ? 0.7f : 0.55f;
     int i, want;
-    if (!cfg.objGesture || !g_in.handValid[oh] || g_gunHand == oh || g_onTurret) { since = 0; on = 0; return 0; }
+    if (!g_in.handValid[hh] || (gun ? !(cfg.objGunHand && g_gunHand == hh) : g_gunHand == hh) || g_onTurret) { since[hh] = 0; *on = 0; return 0; }
     for (i = 0; i < 3; i++) d[i] = g_head.pos[i] - h->pos[i];
     len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    if (len < 0.05f || len > 0.55f) { since = 0; on = 0; return 0; }
+    if (len < 0.05f || len > 0.55f) { since[hh] = 0; *on = 0; return 0; }
     for (i = 0; i < 3; i++) d[i] /= len;
-    HandBack(oh, back);
+    HandBack(hh, back);
     facing = back[0] * d[0] + back[1] * d[1] + back[2] * d[2];         // back of the hand to the eyes
     ahead = -(g_head.axis[0][0] * d[0] + g_head.axis[0][1] * d[1] + g_head.axis[0][2] * d[2]);   // the hand in front of the face
-    want = on ? facing > 0.55f && ahead > 0.2f : facing > 0.8f && ahead > 0.4f;
-    if (!want) { since = 0; if (on) Log("objectives: the back of the hand turned away"); on = 0; return 0; }
-    if (!on) {
-        if (!since) since = GetTickCount();
-        else if (GetTickCount() - since > 250) { on = 1; Log("objectives: shown by looking at the back of the hand"); }
+    want = *on ? facing > offAt && ahead > 0.2f : facing > onAt && ahead > 0.4f;
+    if (!want) { since[hh] = 0; if (*on) Log("objectives: the back of hand %d turned away", hh); *on = 0; return 0; }
+    if (!*on) {
+        if (!since[hh]) since[hh] = GetTickCount();
+        else if (GetTickCount() - since[hh] > (gun ? 400u : 250u)) { *on = 1; Log("objectives: shown by looking at the back of hand %d", hh); }
     }
-    return on;
+    return *on;
+}
+
+static int WatchGesture(void)
+{
+    static int on[2];
+    int oh = ObjHand();
+    g_objShownHand = -1;
+    if (!cfg.objGesture) { on[0] = on[1] = 0; return 0; }
+    if (WatchGestureHand(oh, &on[oh])) { g_objShownHand = oh; on[1 - oh] = 0; return 1; }
+    if (WatchGestureHand(1 - oh, &on[1 - oh])) { g_objShownHand = 1 - oh; return 1; }
+    return 0;
+}
+
+// United Offensive's machine guns (DP-28, MG34, .30 cal) are heavy: the stick walks slower while one is in the hand.
+static float HeavyGunWalk(void)
+{
+    const char *n;
+    if (g_gunHand < 0 || cfg.lmgWalk >= 0.999f) return 1.0f;
+    n = HeldWeaponName();
+    if (n && (!_stricmp(n, "dp28") || !_stricmp(n, "mg34") || !_stricmp(n, "mg30cal"))) return cfg.lmgWalk < 0.1f ? 0.1f : cfg.lmgWalk;
+    return 1.0f;
 }
 
 // Reads the controllers once per frame (left eye): buttons, turning, movement and aim.
@@ -4073,6 +4230,13 @@ static void ProcessControllers(void)
         return;
     }
     LeaveMenuMode();
+    if (ModMenuUpdate(dt, dom)) {   // the mod's own menu is open: the game's controls are off
+        ReleaseAllButtons();
+        g_realSync = 1;
+        g_moveForward = g_moveRight = 0;
+        g_vigAmount = 0;
+        return;
+    }
 
     if (!g_in.active) {
         ReleaseAllButtons();
@@ -4302,9 +4466,19 @@ static void ProcessControllers(void)
                     }
                 }
             }
-            if (h) {
+            if (h && !BinocularsHeld()) {
             int i;
             for (i = 0; i < 3; i++) t[i] = handDir ? h->axis[0][i] : h->pos[i] + h->axis[0][i] * cfg.converge - g_head.pos[i];
+            if (h == &g_gun && !handDir && g_lensAimAt && GetTickCount() - g_lensAimAt < 100) {
+                // Looking through the working scope: the shots leave the game's eye (the head), so they are aimed at the point
+                // under the scope's cross (a trace along its line from the eyepiece, the idle sway included). Through the
+                // barrel's convergence point (ConvergeDistance) they missed far targets by up to a metre at 9x.
+                float end[3], f, dist;
+                for (i = 0; i < 3; i++) end[i] = g_lensAimWorld[0][i] + g_lensAimWorld[1][i] * 8192.0f;
+                f = WorldTrace(g_lensAimWorld[0], end);
+                dist = (f > 0 && f <= 1 ? f : 1.0f) * 8192.0f / cfg.worldScale;   // metres
+                for (i = 0; i < 3; i++) t[i] = g_lensAimTrk[0][i] + g_lensAimTrk[1][i] * dist - g_head.pos[i];
+            }
             len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
             if (len > 0.01f) {
                 for (i = 0; i < 3; i++) t[i] /= len;
@@ -4392,6 +4566,7 @@ static void ProcessControllers(void)
             float slow = (fa * (f < 0 ? 0.7f : 1.0f) > la * 0.8f ? fa * (f < 0 ? 0.7f : 1.0f) : la * 0.8f) / (fa > la ? fa : la);
             float f2 = f * cosf(d) - l * sinf(d), l2 = f * sinf(d) + l * cosf(d);
             float big = fabsf(f2) > fabsf(l2) ? fabsf(f2) : fabsf(l2);
+            slow *= HeavyGunWalk();
             g_moveForward = ClampMove(f2 / big * tilt * slow);
             g_moveRight = ClampMove(-l2 / big * tilt * slow);
         } else {
@@ -4447,7 +4622,7 @@ static void ProcessControllers(void)
                 g_watchSent = g_watchScores = 0;
             }
             held |= look;
-            g_objOnHand = cfg.objOnHand && held && g_in.handValid[ObjHand()];
+            g_objOnHand = cfg.objOnHand && held && g_in.handValid[ObjShownHand()];
             UpdateHudMode(held);
         }
     }
@@ -4650,14 +4825,14 @@ static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3],
     for (k = 0; k < 3; k++) local[k] = d[0] * fd->viewaxis[k][0] + d[1] * fd->viewaxis[k][1] + d[2] * fd->viewaxis[k][2];
     if (isPoint) {
         // the gun sits at weaponOffset from the eye in the game; put that spot in the hand
-        local[0] -= cfg.weaponOffset[0];
-        local[1] += cfg.weaponOffset[1];   // right -> -left
-        local[2] -= cfg.weaponOffset[2];
+        local[0] -= g_wOff[0];
+        local[1] += g_wOff[1];   // right -> -left
+        local[2] -= g_wOff[2];
     }
     if (kind == 3) {
         // local[0] already has WeaponOffsetForward taken off
-        local[0] = WORLD_FLASH_START - cfg.weaponOffset[0] +
-                   (local[0] + cfg.weaponOffset[0] - WORLD_FLASH_START) * cfg.worldFlashLength;
+        local[0] = WORLD_FLASH_START - g_wOff[0] +
+                   (local[0] + g_wOff[0] - WORLD_FLASH_START) * cfg.worldFlashLength;
         kind = 2;
     }
     if (kind == 2) {
@@ -4671,6 +4846,1006 @@ static void ViewToHand(float *p, const cod_refdef_t *fd, const float handOrg[3],
     if (g_mirrorGun) local[1] = -local[1];   // left hand: the right-handed model mirrored (see hook_glDepthRange)
     for (i = 0; i < 3; i++)
         p[i] = (isPoint ? handOrg[i] : 0.0f) + local[0] * handAxis[0][i] + local[1] * handAxis[1][i] + local[2] * handAxis[2][i];
+}
+
+// The weapon the game holds, by its name (0 = none / unknown).
+static const char *HeldWeaponName(void)
+{
+    HMODULE gm = GetModuleHandleA(GAME_DLL);
+    BYTE *cl = PlayerClient();
+    const char *name = NULL;
+    int w;
+    if (!gm || !cl) return NULL;
+    w = GameWeapon(cl);
+    __try {
+        BYTE **defs = *(BYTE ***)((BYTE *)gm + G_OFS_weaponDefs);
+        if (defs && w > 0 && w <= *(int *)((BYTE *)gm + G_OFS_numWeaponDefs) && defs[w]) name = WeaponName(defs[w]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        name = NULL;
+    }
+    return name;
+}
+
+// Once per frame: g_wOff follows the weapon in use (the table of [WeaponOffsets], else the general offset).
+static void UpdateWeaponOffset(void)
+{
+    BYTE *cl = PlayerClient();
+    int w = cl ? GameWeapon(cl) : 0;
+    if (w == g_wOffWeapon && g_wOffWeapon >= 0) return;
+    g_wOffWeapon = w;
+    memcpy(g_wOff, cfg.weaponOffset, sizeof(g_wOff));
+    g_wOffName[0] = 0;
+    if (w > 0) {
+        const char *name = HeldWeaponName();
+        if (name && name[0] && strlen(name) < sizeof(g_wOffName)) {
+            char ini[MAX_PATH], v[96];
+            strcpy(g_wOffName, name);
+            _snprintf(ini, sizeof(ini), "%s\\cod_vr_weapons.ini", g_dir);   // the release's tuning, then cod_vr.ini, then the player's
+            GetPrivateProfileStringA("WeaponOffsets", name, "", v, sizeof(v), ini);
+            _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+            GetPrivateProfileStringA("WeaponOffsets", name, v, v, sizeof(v), ini);
+            if (g_userIni[0]) GetPrivateProfileStringA("WeaponOffsets", name, v, v, sizeof(v), g_userIni);
+            if (v[0]) {
+                float a, b, c;
+                if (sscanf(v, "%f %f %f", &a, &b, &c) == 3) { g_wOff[0] = a; g_wOff[1] = b; g_wOff[2] = c; }
+            }
+        }
+        Log("weapon offset for %s: %.2f %.2f %.2f%s", g_wOffName[0] ? g_wOffName : "?", g_wOff[0], g_wOff[1], g_wOff[2],
+            g_wOff[0] == cfg.weaponOffset[0] && g_wOff[1] == cfg.weaponOffset[1] && g_wOff[2] == cfg.weaponOffset[2] ? " (the general one)" : "");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The off hand of the view model follows the off-hand controller (SP, [Hands] OffHandBones=1, step 1 of the
+// bone-driven hands; see HANDS_EXPERIMENT.md). The hands model of a view weapon has both arms as bone chains
+// (bip01 l/r upperarm -> forearm -> hand -> fingers); the right hand holds the gun, the left one is posed by the
+// weapon's animation on the handguard. The renderer asks the cgame for a DObj's skeleton (ri + 0x8c) before it
+// draws it; right after that the left arm's matrices are rewritten: the hand at the off controller (its
+// orientation relative to the controller is the animation's relative to the gun's controller, taken once per
+// weapon, so a controller held parallel to the gun gives the animation's grip), the elbow by two-bone IK from the
+// animated shoulder, the fingers carried along. Not while the off hand holds the handguard (the animation is
+// right there). [Hands] OffHandX/Y/Z (cm, controller forward/left/up) and OffHandPitch/Yaw/Roll (degrees) tune it,
+// read every second.
+// ---------------------------------------------------------------------------
+#define HB_MAXBONES 128   // the skeleton's bone masks are 16 bytes
+enum { HB_NONE, HB_UPPER, HB_FORE, HB_HAND };
+
+typedef void (__cdecl *PFN_DObjSkel)(int arg, BYTE *dobj, int *mask);
+static PFN_DObjSkel orig_DObjSkel;
+
+static int    g_hbOn = 1;             // [Hands] OffHandBones
+static float  g_hbOfs[3] = { -10.0f, 0.0f, -2.0f }, g_hbRot[3] = { 0.0f, 0.0f, 180.0f };   // cm (fwd, left, up); pitch, yaw, roll
+static BYTE  *g_hbDobj;               // the view model's DObj given to the renderer this frame
+static int    g_hbFrame;              // and the client frame it was noted in
+static float  g_hbEntOrg[3], g_hbEntInv[3][3];   // world -> the entity's model space: m = inv * (w - org)
+static float  g_hbEntAxis[3][3];      // and back for directions: w = axis * m (columns = the entity's axes)
+static float  g_hbBody;               // the body yaw the entity was placed with
+static int    g_hbTagWeapon = -1;     // the hands model's tag_weapon (global bone index): the gun model hangs from it
+static int    g_hbHandsBones;         // the hands model's bone count (the gun model's bones come after them)
+static int    g_hbSteady = 0;         // [Hands] GunSteady: the weapon's idle sway taken out (off: it made the arms misbehave, 2026-10-29)
+static float  g_hbSteadyTime = 6.0f;  // [Hands] GunSteadyTime: seconds of the average the gun is held to
+static float  g_tagTrk[4][3];         // that tag this frame in the tracking space: origin, then its three axes
+static int    g_tagTrkFrame = -1;     // the client frame it is from
+static float  g_hbOff[4][3], g_hbGun[4][3];      // controller frames in the world: origin, forward, left, up
+static int    g_hbWeapon = -1;        // weapon of the snapshot below
+static DWORD  g_hbWeaponSince;
+static int    g_hbHaveRel = 1;        // the off hand's reference below is set (always: a default, or the calibration's)
+static float  g_hbShoulder[2][3], g_hbPole[2][3];   // per arm of the model (0 'l' = the off hand, 1 'r' = the gun hand):
+                                                    // the player's shoulder on that side and the elbow's bend, world
+static int    g_hbOffValid;           // the off controller is tracked this frame
+static float  g_hbSh[3] = { 20.0f, 18.0f, 5.0f };   // [Hands] ShoulderDown / ShoulderSide / ShoulderBack, cm from the eyes
+static float  g_hbRel[3][3] = {       // the animated left hand's axes in the gun controller's frame; until the first
+    { 0.58f, -0.82f, 0.05f }, { -0.12f, -0.03f, 0.99f }, { -0.81f, -0.58f, -0.12f } };   // is taken: the M1 carbine's
+static float  g_hbTwist = 0.4f;       // [Hands] ForearmTwist: share of the hand's roll the forearm takes
+static int    g_hbFingerBase[2][3] = { { -1, -1, -1 }, { -1, -1, -1 } };   // per arm: the index, middle and little fingers' first bones
+static float  g_hbRelA[3][3];         // the off hand's ANATOMY on its controller (see HandAnatomy): fingers' way, across the palm, palm
+static int    g_hbHaveRelA;           // set (from settings.ini, or made once from the bone reference)
+static float  g_hbWrist = 0.0f;       // [Hands] WristStraight: 1 = the forearm always along the hand (the shoulder gives)
+static float  g_hbElbowHand = 0.3f;   // [Hands] ElbowFollowsHand: how much the hand's turn chooses the elbow's side
+static float  g_hbOffStraight = 1.0f; // [Hands] OffHandStraight: the off hand's wrist straightened along the controller
+static int    g_hbTuning;             // the mod menu adjusts the hands: its values are kept until saved
+static float  g_hbArmCm;              // [Hands] ArmLength: the player's shoulder to wrist, cm (0 = from the eye height)
+static float  g_hbArmLen;             // that length in model units, this frame
+static float  g_hbSleeve[3] = { 3.0f, 0.0f, 0.0f };   // [Hands] OffHandSleeveBack/Left/Up: the off hand moved inside its sleeve, cm (forearm frame)
+static float  g_hbRelax = 0.6f;       // [Hands] OffFingersRelaxed: 0 = the animation's grip, 1 = straight fingers
+static float  g_hbRollRef[2] = { 180.0f, 0.0f };   // [Hands] OffHandTwistRef (degrees): the hand's roll about the forearm
+                                     // (from the animation's grip) that is no twist; taken by "Adjust off hand"
+static float  g_hbRawRoll[2];        // that roll this frame (degrees), for the calibration
+static float  g_hbNeutralTwist = 0.0f;   // [Hands] ForearmNeutralTwist: share of that neutral roll the forearm takes (0.7 was worse, 2026-10-29)
+static int    g_hbParent[2][HB_MAXBONES];   // per arm: each bone's parent (global index, -1 none) and its finger kind:
+static BYTE   g_hbFinger[2][HB_MAXBONES];   // 0 not a finger (or the thumb's base), 1 a finger's base, 2 a finger's segment
+static const char *g_hbWhy = "nothing yet";   // diagnostics: why the last frame was left alone
+static int    g_hbCalls, g_hbCallsOurs, g_hbPosed;   // hook calls, of them with the view model's DObj, frames posed
+
+// A line every 2 s for the first minute of play (then quiet): what the left-arm posing did.
+static void HandBonesDiag(const BYTE *e)
+{
+    static DWORD next, first;
+    static int lines;
+    DWORD now = GetTickCount();
+    const BYTE *dobj = e ? *(BYTE * const *)(e + REFENT_OFS_dobj) : NULL;
+    if (lines >= 30 || now < next) return;
+    if (!first) first = now;
+    next = now + 2000;
+    lines++;
+    __try {
+        Log("hands bones diag: %s | skelArg %d dobj %p frame %d/%d skel %p | hook calls %d, ours %d, posed %d",
+            g_hbWhy, e ? *(const int *)(e + REFENT_OFS_skelArg) : -1, dobj, dobj ? *(const int *)(dobj + 8) : -1,
+            MEM(int, ADDR_clientFrame), dobj ? *(BYTE * const *)(dobj + 4) : NULL, g_hbCalls, g_hbCallsOurs, g_hbPosed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+static int Invert3(const float m[3][3], float out[3][3])
+{
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    float id;
+    if (fabsf(det) < 1e-9f) return 0;
+    id = 1.0f / det;
+    out[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * id;
+    out[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * id;
+    out[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * id;
+    out[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * id;
+    out[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * id;
+    out[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * id;
+    out[2][0] = (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * id;
+    out[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * id;
+    out[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * id;
+    return 1;
+}
+
+static void Mul3(const float m[3][3], const float v[3], float out[3])
+{
+    int i;
+    for (i = 0; i < 3; i++) out[i] = m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2];
+}
+
+// The coordinates of v in the basis b[0..2] (not necessarily orthonormal): v = c0 b0 + c1 b1 + c2 b2.
+static int InBasis(const float b[3][3], const float v[3], float c[3])
+{
+    float m[3][3], inv[3][3];
+    int i, j;
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) m[i][j] = b[j][i];   // columns = the basis
+    if (!Invert3(m, inv)) return 0;
+    Mul3(inv, v, c);
+    return 1;
+}
+
+// Rotation about the unit axis a by 'ang' radians (Rodrigues), as a 3x3 matrix acting on column vectors.
+static void AxisAngle(const float a[3], float ang, float r[3][3])
+{
+    float c = cosf(ang), s = sinf(ang), t = 1.0f - c;
+    r[0][0] = t * a[0] * a[0] + c;        r[0][1] = t * a[0] * a[1] - s * a[2]; r[0][2] = t * a[0] * a[2] + s * a[1];
+    r[1][0] = t * a[0] * a[1] + s * a[2]; r[1][1] = t * a[1] * a[1] + c;        r[1][2] = t * a[1] * a[2] - s * a[0];
+    r[2][0] = t * a[0] * a[2] - s * a[1]; r[2][1] = t * a[1] * a[2] + s * a[0]; r[2][2] = t * a[2] * a[2] + c;
+}
+
+// The smallest rotation taking the direction 'from' to the direction 'to'.
+static void RotFromTo(const float from[3], const float to[3], float r[3][3])
+{
+    float a[3], b[3], ax[3], d;
+    int i;
+    for (i = 0; i < 3; i++) { a[i] = from[i]; b[i] = to[i]; }
+    Normalize(a); Normalize(b);
+    Cross(a, b, ax);
+    d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    if (Normalize(ax) < 1e-6f) {   // parallel (or opposite: then leave it, the IK never asks for a half turn)
+        memset(r, 0, sizeof(float) * 9);
+        r[0][0] = r[1][1] = r[2][2] = 1.0f;
+        return;
+    }
+    AxisAngle(ax, acosf(d > 1.0f ? 1.0f : d < -1.0f ? -1.0f : d), r);
+}
+
+static void Mul33(const float a[3][3], const float b[3][3], float out[3][3])
+{
+    int i, j;
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++) out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+}
+
+// The arm settings the mod menu's "Adjust arms" page changes (each saved as [Hands] <key> in the player's settings.ini,
+// which wins over the game folder's cod_vr.ini). step = change per second at full stick.
+static const struct { const char *label, *key; float *v; float step, lo, hi; } g_hbParams[] = {
+    { "Upper arm: shoulder down (cm)", "ShoulderDown", &g_hbSh[0], 10.0f, 0.0f, 50.0f },
+    { "Upper arm: shoulder to the side (cm)", "ShoulderSide", &g_hbSh[1], 10.0f, 0.0f, 40.0f },
+    { "Upper arm: shoulder back (cm)", "ShoulderBack", &g_hbSh[2], 10.0f, -20.0f, 30.0f },
+    { "Upper arm: your arm length (cm, 0 = auto)", "ArmLength", &g_hbArmCm, 15.0f, 0.0f, 90.0f },
+    { "Forearm: share of the hand's roll", "ForearmTwist", &g_hbTwist, 0.4f, 0.0f, 1.0f },
+    { "Forearm: share of the off hand's neutral turn", "ForearmNeutralTwist", &g_hbNeutralTwist, 0.4f, 0.0f, 1.0f },
+    { "Elbow: follows the hand's turn", "ElbowFollowsHand", &g_hbElbowHand, 0.4f, 0.0f, 1.0f },
+    { "Wrist: kept straight (both arms)", "WristStraight", &g_hbWrist, 0.4f, 0.0f, 1.0f },
+    { "Off wrist: straight along the controller", "OffHandStraight", &g_hbOffStraight, 0.4f, 0.0f, 1.0f },
+    { "Off hand: forward (cm)", "OffHandX", &g_hbOfs[0], 10.0f, -30.0f, 30.0f },
+    { "Off hand: left (cm)", "OffHandY", &g_hbOfs[1], 10.0f, -30.0f, 30.0f },
+    { "Off hand: up (cm)", "OffHandZ", &g_hbOfs[2], 10.0f, -30.0f, 30.0f },
+    { "Off hand: into the sleeve (cm)", "OffHandSleeveBack", &g_hbSleeve[0], 3.0f, -6.0f, 6.0f },
+    { "Off hand: in the sleeve, left (cm)", "OffHandSleeveLeft", &g_hbSleeve[1], 3.0f, -6.0f, 6.0f },
+    { "Off hand: in the sleeve, up (cm)", "OffHandSleeveUp", &g_hbSleeve[2], 3.0f, -6.0f, 6.0f },
+    { "Off hand: fingers relaxed", "OffFingersRelaxed", &g_hbRelax, 0.4f, 0.0f, 1.0f },
+};
+#define HB_NPARAMS (int)(sizeof(g_hbParams) / sizeof(g_hbParams[0]))
+
+static void ReloadHandBoneTuning(void)
+{
+    static DWORD last;
+    char ini[MAX_PATH];
+    if (g_hbTuning || (last && GetTickCount() - last < 1000)) return;
+    last = GetTickCount();
+    _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+    g_hbOn = CfgInt("Hands", "OffHandBones", 1, ini);
+    g_hbOfs[0] = IniFloat("Hands", "OffHandX", -10.0f, ini);
+    g_hbOfs[1] = IniFloat("Hands", "OffHandY", 0.0f, ini);
+    g_hbOfs[2] = IniFloat("Hands", "OffHandZ", -2.0f, ini);
+    g_hbSh[0] = IniFloat("Hands", "ShoulderDown", 20.0f, ini);
+    g_hbSh[1] = IniFloat("Hands", "ShoulderSide", 18.0f, ini);
+    g_hbSh[2] = IniFloat("Hands", "ShoulderBack", 5.0f, ini);
+    g_hbTwist = IniFloat("Hands", "ForearmTwist", 0.4f, ini);
+    g_hbNeutralTwist = IniFloat("Hands", "ForearmNeutralTwist", 0.0f, ini);
+    g_hbWrist = IniFloat("Hands", "WristStraight", 0.0f, ini);
+    g_hbElbowHand = IniFloat("Hands", "ElbowFollowsHand", 0.3f, ini);
+    g_hbOffStraight = IniFloat("Hands", "OffHandStraight", 1.0f, ini);
+    g_hbSteady = CfgInt("Hands", "GunSteady", 0, ini);
+    g_hbSteadyTime = IniFloat("Hands", "GunSteadyTime", 6.0f, ini);
+    g_hbArmCm = IniFloat("Hands", "ArmLength", 0.0f, ini);
+    g_hbSleeve[0] = IniFloat("Hands", "OffHandSleeveBack", 3.0f, ini);   // the hand model's base reaches past the wrist: into the cuff
+    g_hbSleeve[1] = IniFloat("Hands", "OffHandSleeveLeft", 0.0f, ini);
+    g_hbSleeve[2] = IniFloat("Hands", "OffHandSleeveUp", 0.0f, ini);
+    g_hbRelax = IniFloat("Hands", "OffFingersRelaxed", 0.6f, ini);
+    g_hbRot[0] = IniFloat("Hands", "OffHandPitch", 0.0f, ini);
+    g_hbRot[1] = IniFloat("Hands", "OffHandYaw", 0.0f, ini);
+    g_hbRot[2] = IniFloat("Hands", "OffHandRoll", 180.0f, ini);   // with the straightened wrist: a controller held palm in = palm in (2026-10-28 test)
+    if (g_userIni[0]) {   // the mod menu saves the hands' settings in the player's settings.ini
+        int k;
+        for (k = 0; k < HB_NPARAMS; k++) *g_hbParams[k].v = IniFloat("Hands", g_hbParams[k].key, *g_hbParams[k].v, g_userIni);
+        g_hbRollRef[0] = IniFloat("Hands", "OffHandTwistRef", g_hbRollRef[0], g_userIni);
+        {
+            char v[256];
+            float r[9];
+            GetPrivateProfileStringA("Hands", "OffHandReference", "", v, sizeof(v), g_userIni);
+            if (sscanf(v, "%f %f %f %f %f %f %f %f %f", &r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 9)
+                memcpy(g_hbRel, r, sizeof(r));
+            GetPrivateProfileStringA("Hands", "OffHandAnatomy", "", v, sizeof(v), g_userIni);
+            if (sscanf(v, "%f %f %f %f %f %f %f %f %f", &r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 9) {
+                memcpy(g_hbRelA, r, sizeof(r));
+                g_hbHaveRelA = 1;
+            }
+        }
+        g_hbRot[0] = IniFloat("Hands", "OffHandPitch", g_hbRot[0], g_userIni);
+        g_hbRot[1] = IniFloat("Hands", "OffHandYaw", g_hbRot[1], g_userIni);
+        g_hbRot[2] = IniFloat("Hands", "OffHandRoll", g_hbRot[2], g_userIni);
+    }
+}
+
+// The bones of one arm of the DObj's hands model (side 'l' or 'r'): which bones hang under its upper arm, forearm
+// and hand (HB_*) and the global indices of those three (idx[0] = the model's first bone). 0 when the DObj has no
+// such arm. Cached per side and model.
+static int HandBoneGroups(const BYTE *dobj, int side, BYTE group[HB_MAXBONES], int idx[4])
+{
+    static const BYTE *lastModel[2];
+    static BYTE cGroup[2][HB_MAXBONES];
+    static int cIdx[2][4], cFirst[2] = { -1, -1 };
+    char nUp[24], nFore[24], nHand[24];
+    int c = side == 'r', m, nModels, first = 0;
+    _snprintf(nUp, sizeof(nUp), "bip01 %c upperarm", side);
+    _snprintf(nFore, sizeof(nFore), "bip01 %c forearm", side);
+    _snprintf(nHand, sizeof(nHand), "bip01 %c hand", side);
+    __try {
+        nModels = dobj[0x16];
+        for (m = 0; m < nModels && m < 8; m++) {
+            const BYTE *xm = *(const BYTE * const *)(dobj + DOBJ_OFS_models + 4 * m);
+            const BYTE *parts = *(const BYTE * const *)(**(const BYTE * const * const *)(xm + 4) + 4);
+            const BYTE *b = *(const BYTE * const *)parts;           // { short *names; byte parentOffsets[] }
+            const short *names = *(const short * const *)b;         // count, then a string index per bone
+            int n = names[0], root = *(const short *)(parts + 4), k, parent[HB_MAXBONES];
+            BYTE grp[HB_MAXBONES], sleeve[HB_MAXBONES], fk[HB_MAXBONES];
+            int up = -1, fore = -1, hand = -1, fbase[3] = { -1, -1, -1 };
+            if (first + n > HB_MAXBONES) break;
+            if (xm == lastModel[c] && first == cFirst[c]) {   // same model at the same place: same answer
+                memcpy(group, cGroup[c], HB_MAXBONES); memcpy(idx, cIdx[c], sizeof(cIdx[c]));
+                return 1;
+            }
+            for (k = 0; k < n; k++) {
+                const char *s = names[1 + k] ? (const char *)(MEM(BYTE *, ADDR_scrStrings) + (WORD)names[1 + k] * 8 + 4) : "";
+                parent[k] = k < root ? -1 : k - b[4 + k - root];
+                if (!_stricmp(s, nUp)) up = k;
+                else if (!_stricmp(s, nFore)) fore = k;
+                else if (!_stricmp(s, nHand)) hand = k;
+                {
+                    char fn[32];
+                    int f;
+                    static const char digit[3] = { '1', '2', '4' };   // index, middle, little
+                    for (f = 0; f < 3; f++) {
+                        _snprintf(fn, sizeof(fn), "bip01 %c finger%c", side, digit[f]);
+                        if (!_stricmp(s, fn)) fbase[f] = k;
+                    }
+                }
+                if (!_stricmp(s, "tag_weapon")) g_hbTagWeapon = first + k;
+                sleeve[k] = strstr(s, "cuff") || strstr(s, "wrist");   // 'r cuff', 'r cuff01', 'r wrist', 'r wrist01'
+                {   // 'bip01 l finger1' a base, 'bip01 l finger12' / 'finger1nub' a segment; finger0 is the thumb
+                    const char *f = strstr(s, "finger");
+                    fk[k] = 0;
+                    if (f && f[6] >= '0' && f[6] <= '9') fk[k] = f[7] == 0 ? (f[6] == '0' ? 0 : 1) : 2;
+                }
+            }
+            if (up < 0 || fore < 0 || hand < 0) { first += n; continue; }
+            memset(grp, 0, sizeof(grp));
+            for (k = 0; k < n; k++) {
+                int p = k, g = HB_NONE, guard = 0;
+                while (p >= 0 && guard++ < HB_MAXBONES) {   // the nearest of hand / forearm / upper arm above it
+                    if (p == hand) { g = HB_HAND; break; }
+                    if (p == fore) { g = HB_FORE; break; }
+                    if (p == up) { g = HB_UPPER; break; }
+                    p = parent[p];
+                }
+                if (g == HB_HAND && sleeve[k]) g = HB_FORE;   // the sleeve's end: it turns with the forearm, not the hand
+                grp[k] = (BYTE)g;
+            }
+            memset(group, 0, HB_MAXBONES);
+            memcpy(group + first, grp, n);
+            for (k = 0; k < HB_MAXBONES; k++) { g_hbParent[c][k] = -1; g_hbFinger[c][k] = 0; }
+            for (k = 0; k < n; k++) {
+                g_hbParent[c][first + k] = parent[k] >= 0 ? first + parent[k] : -1;
+                g_hbFinger[c][first + k] = grp[k] == HB_HAND ? fk[k] : 0;
+            }
+            idx[0] = first; idx[1] = first + up; idx[2] = first + fore; idx[3] = first + hand;
+            for (k = 0; k < 3; k++) g_hbFingerBase[c][k] = fbase[k] >= 0 ? first + fbase[k] : -1;
+            if (first == 0) g_hbHandsBones = n;
+            lastModel[c] = xm; cFirst[c] = first;
+            memcpy(cGroup[c], group, HB_MAXBONES); memcpy(cIdx[c], idx, sizeof(cIdx[c]));
+            Log("hands bones: model %d of the view weapon has the %s arm (bones %d / %d / %d of %d)", m, c ? "right" : "left", up, fore, hand, n);
+            return 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return 0;
+}
+
+// Applies a rigid move to a bone matrix: axes a' = R a, origin o' = to + R (o - from).
+static void MoveBone(float *mat, const float r[3][3], const float from[3], const float to[3])
+{
+    float a[3], d[3];
+    int k, i;
+    for (k = 0; k < 3; k++) {
+        Mul3(r, mat + 4 * k, a);
+        for (i = 0; i < 3; i++) mat[4 * k + i] = a[i];
+    }
+    for (i = 0; i < 3; i++) d[i] = mat[12 + i] - from[i];
+    Mul3(r, d, a);
+    for (i = 0; i < 3; i++) mat[12 + i] = to[i] + a[i];
+}
+
+static int IsComputed(const BYTE *skel, int k) { return (skel[0x20 + (k >> 3)] & (1 << (k & 7))) != 0; }
+
+// A bone's frame from the direction it points (x) and the arm's bend axis (y, made square to x); z = x cross y.
+static void BendFrame(const float x[3], const float n[3], float f[3][3])
+{
+    float dp = n[0] * x[0] + n[1] * x[1] + n[2] * x[2];
+    int i;
+    for (i = 0; i < 3; i++) { f[0][i] = x[i]; f[1][i] = n[i] - dp * x[i]; }
+    Normalize(f[1]);
+    Cross(f[0], f[1], f[2]);
+}
+
+// The rotation taking the frame a onto the frame b (rows = the axes): R v = sum_i (a_i . v) b_i.
+static void FrameToFrame(const float a[3][3], const float b[3][3], float r[3][3])
+{
+    int i, j, k;
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++) {
+            r[i][j] = 0;
+            for (k = 0; k < 3; k++) r[i][j] += b[k][i] * a[k][j];
+        }
+}
+
+static float g_hbLastPole[2][3];   // per arm: the last bend direction (world), so it cannot flip from one frame to the next
+static int   g_hbHavePole[2];
+static float g_hbLastRoll[2];      // and the last hand roll about the forearm (radians, unwrapped)
+static int   g_hbHaveRoll[2];
+
+// One arm by two-bone IK, everything in model space: the upper arm starts at the shoulder S0, the elbow bends towards
+// 'pole', the hand ends at Wt with the axes Ht (the bones under the hand are carried along). The upper arm and the
+// forearm are rebuilt from the plane the arm bends in, keeping the animation's relation to it, so the elbow stays a
+// hinge (no twist there); the hand's own roll is shared between the wrist and the forearm. 0 if it could not.
+static int ArmIK(BYTE *skel, int nb, const BYTE group[HB_MAXBONES], const int idx[4], const float S0[3],
+                 const float pole[3], const float Wt[3], float Ht[3][3], int arm, const float sleeveCm[3])
+{
+    float *mUp = (float *)(skel + 0x30 + idx[1] * 0x40), *mFore = (float *)(skel + 0x30 + idx[2] * 0x40);
+    float *mHand = (float *)(skel + 0x30 + idx[3] * 0x40);
+    float S[3], E[3], W[3], shoulder0[3], Hold[3][3], Hinv[3][3], Ho[3], q[3], c[3];
+    float L1, L2, d, a, h, u[3], p[3], Et[3], v1[3], v2[3], w1[3], w2[3], n0[3], n1[3];
+    float U0[3][3], U1[3][3], F0[3][3], F1[3][3], Rup[3][3], Rfo[3][3], shift[3];
+    int i, j, k;
+
+    for (i = 0; i < 3; i++) { S[i] = S0[i]; shoulder0[i] = mUp[12 + i]; E[i] = mFore[12 + i]; W[i] = mHand[12 + i]; Ho[i] = W[i]; }
+    for (i = 0; i < 3; i++) { v1[i] = E[i] - shoulder0[i]; v2[i] = W[i] - E[i]; u[i] = Wt[i] - S[i]; }
+    L1 = Normalize(v1); L2 = Normalize(v2);
+    {
+        static DWORD nextLog[2];
+        static int lines;
+        if (lines < 12 && GetTickCount() >= nextLog[arm]) {   // to check the arm scale against the player's
+            float sd[3], dd;
+            for (i = 0; i < 3; i++) sd[i] = Wt[i] - S0[i];
+            dd = sqrtf(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
+            nextLog[arm] = GetTickCount() + 10000;
+            lines++;
+            Log("hands bones: %s arm: upper %.1f + fore %.1f model units, the player's %.1f, shoulder to hand now %.1f",
+                arm ? "right" : "left", L1, L2, g_hbArmLen, dd);
+        }
+    }
+    if (g_hbArmLen > 1.0f) {
+        // The model's arm is longer than the player's: the shoulder-hand line is stretched by their ratio, so a
+        // stretched real arm is a stretched arm in the game and a bent one bends as much.
+        float ratio = (L1 + L2) / g_hbArmLen;
+        if (ratio < 0.5f) ratio = 0.5f;
+        if (ratio > 3.0f) ratio = 3.0f;
+        for (i = 0; i < 3; i++) { S[i] = Wt[i] + (S0[i] - Wt[i]) * ratio; u[i] = Wt[i] - S[i]; }
+    }
+    d = Normalize(u);
+    if (L1 < 0.1f || L2 < 0.1f || d < 0.1f) return 0;
+    if (d > L1 + L2 - 0.05f) {   // out of reach: the whole arm goes along, the shoulder follows the hand
+        float s2 = d - (L1 + L2 - 0.05f);
+        for (i = 0; i < 3; i++) S[i] += u[i] * s2;
+        d = L1 + L2 - 0.05f;
+    }
+    a = (L1 * L1 - L2 * L2 + d * d) / (2.0f * d);
+    h = L1 * L1 - a * a;
+    h = h > 0 ? sqrtf(h) : 0;
+
+    for (k = 0; k < 3; k++) for (i = 0; i < 3; i++) Hold[k][i] = mHand[4 * k + i];
+    {
+        float m[3][3];
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) m[i][j] = Hold[j][i];
+        if (!Invert3(m, Hinv)) return 0;
+    }
+
+    // The bend side: where the elbow would be with the wrist straight (the animation's elbow seen from its hand,
+    // carried to the hand's new frame), a little of the default down-and-out, and the last frame's side, all taken
+    // square to the shoulder-hand line. The last one keeps it from flipping when the others line up with the arm.
+    {
+        float pref[3], qd[3], last[3], dp;
+        for (i = 0; i < 3; i++) q[i] = E[i] - W[i];
+        Mul3(Hinv, q, c);
+        for (i = 0; i < 3; i++) pref[i] = Wt[i] + c[0] * Ht[0][i] + c[1] * Ht[1][i] + c[2] * Ht[2][i] - S[i];
+        for (i = 0; i < 3; i++) qd[i] = pole[i];
+        if (g_hbHavePole[arm]) Mul3(g_hbEntInv, g_hbLastPole[arm], last);
+        else for (i = 0; i < 3; i++) last[i] = 0;
+        dp = pref[0] * u[0] + pref[1] * u[1] + pref[2] * u[2];
+        for (i = 0; i < 3; i++) pref[i] -= dp * u[i];
+        dp = qd[0] * u[0] + qd[1] * u[1] + qd[2] * u[2];
+        for (i = 0; i < 3; i++) qd[i] -= dp * u[i];
+        dp = last[0] * u[0] + last[1] * u[1] + last[2] * u[2];
+        for (i = 0; i < 3; i++) last[i] -= dp * u[i];
+        Normalize(pref); Normalize(qd); Normalize(last);
+        for (i = 0; i < 3; i++) p[i] = g_hbElbowHand * pref[i] + qd[i] + 0.6f * last[i];
+    }
+    if (Normalize(p) < 1e-4f) { p[0] = 0; p[1] = 0; p[2] = -1; }
+    for (i = 0; i < 3; i++) Et[i] = S[i] + a * u[i] + h * p[i];
+    if (g_hbWrist > 0) {
+        // Keep the wrist straight: the forearm turns towards the hand's own direction (c = the animation's elbow in its
+        // hand's frame) and the upper arm follows, its shoulder sliding to fit (it is behind the player's head).
+        float pre[3], cur[3], dir[3], back[3], w = g_hbWrist > 1.0f ? 1.0f : g_hbWrist;
+        for (i = 0; i < 3; i++) { pre[i] = c[0] * Ht[0][i] + c[1] * Ht[1][i] + c[2] * Ht[2][i]; cur[i] = Et[i] - Wt[i]; }
+        Normalize(pre); Normalize(cur);
+        for (i = 0; i < 3; i++) dir[i] = cur[i] * (1.0f - w) + pre[i] * w;
+        if (Normalize(dir) > 1e-4f) {
+            for (i = 0; i < 3; i++) Et[i] = Wt[i] + dir[i] * L2;
+            for (i = 0; i < 3; i++) back[i] = S[i] - Et[i];
+            if (Normalize(back) > 1e-4f) for (i = 0; i < 3; i++) S[i] = Et[i] + back[i] * L1;
+        }
+    }
+    {
+        float pw[3];
+        for (i = 0; i < 3; i++) pw[i] = g_hbEntAxis[i][0] * p[0] + g_hbEntAxis[i][1] * p[1] + g_hbEntAxis[i][2] * p[2];
+        Normalize(pw);
+        memcpy(g_hbLastPole[arm], pw, sizeof(pw));
+        g_hbHavePole[arm] = 1;
+    }
+
+    // the bend axes before and after (both as upper arm x forearm), and the bones' frames on them
+    Cross(v1, v2, n0);
+    if (Normalize(n0) < 1e-3f) { Cross(v1, p, n0); Normalize(n0); }   // a straight animated arm: any square axis
+    for (i = 0; i < 3; i++) { w1[i] = Et[i] - S[i]; w2[i] = Wt[i] - Et[i]; }
+    Normalize(w1); Normalize(w2);
+    Cross(w1, w2, n1);
+    if (Normalize(n1) < 1e-3f) { Cross(p, u, n1); Normalize(n1); }   // straight: the side the elbow was given
+
+    BendFrame(v1, n0, U0); BendFrame(w1, n1, U1);
+    BendFrame(v2, n0, F0); BendFrame(w2, n1, F1);
+    FrameToFrame(U0, U1, Rup);
+    FrameToFrame(F0, F1, Rfo);
+
+    // The hand's roll about the forearm past the animation's (the hand's axis most square to the forearm, carried by
+    // the forearm alone, against that axis in the hand's new frame), unwrapped against the last frame so it never
+    // jumps a whole turn; the forearm takes [Hands] ForearmTwist of it.
+    if (g_hbTwist > 0) {
+        float yp[3], yn[3], cr[3], t[3][3], r[3][3], best = 2.0f, dp, roll;
+        int jb = 0;
+        for (j = 0; j < 3; j++) {
+            float dj = fabsf(Hold[j][0] * v2[0] + Hold[j][1] * v2[1] + Hold[j][2] * v2[2]);
+            float nj = sqrtf(Hold[j][0] * Hold[j][0] + Hold[j][1] * Hold[j][1] + Hold[j][2] * Hold[j][2]);
+            if (nj > 1e-4f && dj / nj < best) { best = dj / nj; jb = j; }
+        }
+        Mul3(Rfo, Hold[jb], yp);
+        for (i = 0; i < 3; i++) yn[i] = Ht[jb][i];
+        dp = yp[0] * w2[0] + yp[1] * w2[1] + yp[2] * w2[2];
+        for (i = 0; i < 3; i++) yp[i] -= dp * w2[i];
+        dp = yn[0] * w2[0] + yn[1] * w2[1] + yn[2] * w2[2];
+        for (i = 0; i < 3; i++) yn[i] -= dp * w2[i];
+        if (Normalize(yp) > 1e-4f && Normalize(yn) > 1e-4f) {
+            const float pi = 3.14159265f;
+            Cross(yp, yn, cr);
+            roll = atan2f(cr[0] * w2[0] + cr[1] * w2[1] + cr[2] * w2[2], yp[0] * yn[0] + yp[1] * yn[1] + yp[2] * yn[2]);
+            g_hbRawRoll[arm] = roll * 180.0f / pi;
+            // from the player's neutral hand: the animation's grip is far from it (the off hand: about half a turn), and a
+            // roll measured from there sat on the +-180 seam (a flick of the forearm when the hand turned past it)
+            roll -= g_hbRollRef[arm] * pi / 180.0f;
+            while (roll > pi) roll -= 2 * pi;
+            while (roll < -pi) roll += 2 * pi;
+            if (g_hbHaveRoll[arm]) {
+                while (roll - g_hbLastRoll[arm] > pi) roll -= 2 * pi;
+                while (roll - g_hbLastRoll[arm] < -pi) roll += 2 * pi;
+                if (roll > 1.2f * pi) roll -= 2 * pi;   // not more than a turn and a bit either way
+                if (roll < -1.2f * pi) roll += 2 * pi;
+            }
+            g_hbLastRoll[arm] = roll;
+            g_hbHaveRoll[arm] = 1;
+            // the forearm: a share of the hand's turn from the neutral one, and a share of the neutral turn itself (the
+            // off hand's neutral is about half a turn from the animation's grip: all of it at the wrist wraps the hand's
+            // base like a sweet's paper, all of it in the forearm wraps the elbow)
+            AxisAngle(w2, roll * (g_hbTwist > 1.0f ? 1.0f : g_hbTwist) +
+                          g_hbRollRef[arm] * (pi / 180.0f) * (g_hbNeutralTwist > 1.0f ? 1.0f : g_hbNeutralTwist), t);
+            Mul33(t, Rfo, r);
+            memcpy(Rfo, r, sizeof(r));
+        }
+    }
+
+    {
+        // the hand (not the sleeve) moved inside its sleeve: back along the forearm, to its left, up (its bend frame)
+        float s = cfg.worldScale / 100.0f;
+        for (i = 0; i < 3; i++) shift[i] = sleeveCm ? (-sleeveCm[0] * F1[0][i] + sleeveCm[1] * F1[1][i] + sleeveCm[2] * F1[2][i]) * s : 0.0f;
+    }
+    for (k = idx[0]; k < nb && k < HB_MAXBONES; k++) {
+        float *mat;
+        if (!group[k] || !IsComputed(skel, k)) continue;
+        mat = (float *)(skel + 0x30 + k * 0x40);
+        if (group[k] == HB_UPPER) {
+            MoveBone(mat, Rup, shoulder0, S);
+        } else if (group[k] == HB_FORE) {
+            MoveBone(mat, Rfo, E, Et);
+        } else {   // the hand and the fingers: coordinates in the old hand frame, rebuilt on Ht at Wt
+            for (j = 0; j < 4; j++) {
+                if (j < 3) { Mul3(Hinv, mat + 4 * j, c); }
+                else { for (i = 0; i < 3; i++) q[i] = mat[12 + i] - Ho[i]; Mul3(Hinv, q, c); }
+                for (i = 0; i < 3; i++)
+                    mat[4 * j + i] = (j == 3 ? Wt[i] + shift[i] : 0.0f) + c[0] * Ht[0][i] + c[1] * Ht[1][i] + c[2] * Ht[2][i];
+            }
+        }
+    }
+    return 1;
+}
+
+// The off hand's fingers: the animation's grip on the handguard, opened by 'relax' (0..1): each segment's rotation in its
+// parent's frame is turned that part of the way back to none (straight), a finger's base half as much (it also holds
+// the spread), the thumb's base not at all. Bones in index order, parents first.
+static void RelaxFingers(BYTE *skel, int nb, int arm, float relax)
+{
+    static float lrot[HB_MAXBONES][3][3], lpos[HB_MAXBONES][3];
+    int k, i, j;
+    if (relax <= 0) return;
+    if (relax > 1) relax = 1;
+    for (k = 0; k < nb && k < HB_MAXBONES; k++) {   // every finger bone in its parent's frame, before any is changed
+        int p = g_hbParent[arm][k];
+        float *m, *pm, cols[3][3], inv[3][3], q[3];
+        if (!g_hbFinger[arm][k] || p < 0 || !IsComputed(skel, k) || !IsComputed(skel, p)) continue;
+        m = (float *)(skel + 0x30 + k * 0x40);
+        pm = (float *)(skel + 0x30 + p * 0x40);
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) cols[i][j] = pm[4 * j + i];
+        if (!Invert3(cols, inv)) { g_hbFinger[arm][k] |= 0x80; continue; }
+        for (j = 0; j < 3; j++) Mul3(inv, m + 4 * j, lrot[k][j]);
+        for (i = 0; i < 3; i++) q[i] = m[12 + i] - pm[12 + i];
+        Mul3(inv, q, lpos[k]);
+    }
+    for (k = 0; k < nb && k < HB_MAXBONES; k++) {
+        int p = g_hbParent[arm][k], kind = g_hbFinger[arm][k];
+        float *m, *pm, Q[3][3], R[3][3], ax[3], tr, ang, s, r;
+        if (!kind || (kind & 0x80) || p < 0 || !IsComputed(skel, k) || !IsComputed(skel, p)) { g_hbFinger[arm][k] &= 0x7f; continue; }
+        m = (float *)(skel + 0x30 + k * 0x40);
+        pm = (float *)(skel + 0x30 + p * 0x40);
+        r = kind == 1 ? relax * 0.5f : relax;
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) Q[i][j] = lrot[k][j][i];   // columns = the bone's axes in the parent's frame
+        tr = Q[0][0] + Q[1][1] + Q[2][2];
+        ang = acosf(((tr - 1.0f) * 0.5f) > 1.0f ? 1.0f : ((tr - 1.0f) * 0.5f) < -1.0f ? -1.0f : (tr - 1.0f) * 0.5f);
+        s = sinf(ang);
+        if (ang > 1e-3f && s > 1e-4f) {
+            ax[0] = (Q[2][1] - Q[1][2]) / (2 * s); ax[1] = (Q[0][2] - Q[2][0]) / (2 * s); ax[2] = (Q[1][0] - Q[0][1]) / (2 * s);
+            Normalize(ax);
+            AxisAngle(ax, ang * (1.0f - r), R);
+        } else {
+            memcpy(R, Q, sizeof(R));
+        }
+        for (j = 0; j < 4; j++)   // rebuilt on the (already relaxed) parent: axes = R's columns, the origin as it was
+            for (i = 0; i < 3; i++) {
+                const float *c = j < 3 ? NULL : lpos[k];
+                float a = j < 3 ? R[0][j] : c[0], b = j < 3 ? R[1][j] : c[1], e = j < 3 ? R[2][j] : c[2];
+                m[4 * j + i] = (j == 3 ? pm[12 + i] : 0.0f) + a * pm[i] + b * pm[4 + i] + e * pm[8 + i];
+            }
+    }
+}
+
+// A hand's anatomy in its bone's own frame (rows): x from the wrist to the middle finger's base, y across the palm from
+// the little finger to the index, z = x cross y. The hands models do not agree on how their hand bone is turned inside the
+// mesh (the PPSh-41's 45-bone hands and the 55-bone ones differ, 2026-10-29), but the fingers are where they are: a hand
+// placed by this frame looks the same in every model. 0 when the finger bones are missing or not computed.
+static int HandAnatomy(const BYTE *skel, int arm, float hold[3][3], const float *mHand, float A[3][3])
+{
+    float cols[3][3], inv[3][3], l[3][3], q[3], dp;
+    int f, i, j;
+    for (f = 0; f < 3; f++) {
+        int b = g_hbFingerBase[arm][f];
+        const float *m;
+        if (b < 0 || !IsComputed(skel, b)) return 0;
+        m = (const float *)(skel + 0x30 + b * 0x40);
+        for (i = 0; i < 3; i++) q[i] = m[12 + i] - mHand[12 + i];
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) cols[i][j] = hold[j][i];
+        if (!Invert3(cols, inv)) return 0;
+        Mul3(inv, q, l[f]);
+    }
+    for (i = 0; i < 3; i++) { A[0][i] = l[1][i]; A[1][i] = l[0][i] - l[2][i]; }
+    if (Normalize(A[0]) < 1e-4f) return 0;
+    dp = A[1][0] * A[0][0] + A[1][1] * A[0][1] + A[1][2] * A[0][2];
+    for (i = 0; i < 3; i++) A[1][i] -= dp * A[0][i];
+    if (Normalize(A[1]) < 1e-4f) return 0;
+    Cross(A[0], A[1], A[2]);
+    return 1;
+}
+
+// The weapon's idle animation (breathing) sways the gun in the hand; in VR the player's own hand does that. The tag the gun
+// hangs from is followed in the controller's frame and held to its average place (GunSteadyTime): the correction moves the
+// tag, every bone of the gun model and both arms whole (hands and all) back, so the animation's pose stays one piece. Slow movements (a reload) stay mostly; the sway goes.
+static void SteadyGun(BYTE *skel, int nb, const BYTE handGroups[2][HB_MAXBONES])
+{
+    static float pMean[3], rMean[3][3];
+    static int init, lastWeapon = -2;
+    static DWORD lastT;
+    float gm[3][3], go[3], v[3], pNow[3], rNow[3][3], m[3][3], dt, a;
+    const float *tm;
+    int i, j, k, b;
+    DWORD now = GetTickCount();
+    if (!g_hbSteady || g_hbTagWeapon < 0 || g_hbTagWeapon >= nb || !IsComputed(skel, g_hbTagWeapon) || g_hbHandsBones <= 0) return;
+    // the gun controller's frame in model space (gm rows = its axes)
+    for (k = 0; k < 3; k++) { Mul3(g_hbEntInv, g_hbGun[1 + k], gm[k]); Normalize(gm[k]); }
+    for (i = 0; i < 3; i++) v[i] = g_hbGun[0][i] - g_hbEntOrg[i];
+    Mul3(g_hbEntInv, v, go);
+    tm = (const float *)(skel + 0x30 + g_hbTagWeapon * 0x40);
+    for (i = 0; i < 3; i++) v[i] = tm[12 + i] - go[i];
+    for (i = 0; i < 3; i++) pNow[i] = v[0] * gm[i][0] + v[1] * gm[i][1] + v[2] * gm[i][2];
+    for (k = 0; k < 3; k++)
+        for (i = 0; i < 3; i++) rNow[i][k] = tm[4 * k] * gm[i][0] + tm[4 * k + 1] * gm[i][1] + tm[4 * k + 2] * gm[i][2];
+    dt = lastT ? (now - lastT) / 1000.0f : 0.0f;
+    lastT = now;
+    if (!init || g_hbWeapon != lastWeapon || dt > 0.5f) {
+        memcpy(pMean, pNow, sizeof(pMean)); memcpy(rMean, rNow, sizeof(rMean));
+        init = 1; lastWeapon = g_hbWeapon;
+        return;
+    }
+    a = dt / (g_hbSteadyTime > 0.2f ? g_hbSteadyTime : 0.2f);
+    if (a > 1) a = 1;
+    for (i = 0; i < 3; i++) pMean[i] += (pNow[i] - pMean[i]) * a;
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) rMean[i][j] += (rNow[i][j] - rMean[i][j]) * a;
+    {   // keep it a rotation
+        float c0[3], c1[3], c2[3], dp;
+        for (i = 0; i < 3; i++) { c0[i] = rMean[i][0]; c1[i] = rMean[i][1]; }
+        Normalize(c0);
+        dp = c1[0] * c0[0] + c1[1] * c0[1] + c1[2] * c0[2];
+        for (i = 0; i < 3; i++) c1[i] -= dp * c0[i];
+        Normalize(c1);
+        Cross(c0, c1, c2);
+        for (i = 0; i < 3; i++) { rMean[i][0] = c0[i]; rMean[i][1] = c1[i]; rMean[i][2] = c2[i]; }
+    }
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++)   // m = rMean * rNow^T: from where the tag is to where it rests
+        m[i][j] = rMean[i][0] * rNow[j][0] + rMean[i][1] * rNow[j][1] + rMean[i][2] * rNow[j][2];
+    for (b = 0; b < nb && b < HB_MAXBONES; b++) {
+        float *mat, x[3], y[3];
+        int gun = b == g_hbTagWeapon || b >= g_hbHandsBones;
+        if (!gun && !handGroups[0][b] && !handGroups[1][b]) continue;   // the arms too: the IK reads the animation's arm, and an arm
+                                                                     // left behind its corrected hand gave a twisted, bent wrong arm
+        if (!IsComputed(skel, b)) continue;
+        mat = (float *)(skel + 0x30 + b * 0x40);
+        for (k = 0; k < 4; k++) {
+            // to the controller's frame, corrected, back to model space (axes without the origin)
+            for (i = 0; i < 3; i++) v[i] = mat[4 * k + i] - (k == 3 ? go[i] : 0.0f);
+            for (i = 0; i < 3; i++) x[i] = v[0] * gm[i][0] + v[1] * gm[i][1] + v[2] * gm[i][2];
+            if (k == 3) for (i = 0; i < 3; i++) x[i] -= pNow[i];
+            Mul3(m, x, y);
+            if (k == 3) for (i = 0; i < 3; i++) y[i] += pMean[i];
+            for (i = 0; i < 3; i++) mat[4 * k + i] = (k == 3 ? go[i] : 0.0f) + y[0] * gm[0][i] + y[1] * gm[1][i] + y[2] * gm[2][i];
+        }
+    }
+}
+
+// Both arms of the view model: each starts at the player's own shoulder (the animation's sit beside the gun, since
+// the whole model is carried by the gun hand). The right (gun) hand keeps its place on the gun; the left one goes to
+// the off controller, except while it holds the handguard, before the first snapshot, or with the controller lost.
+static void PoseArms(BYTE *dobj)
+{
+    static int told, toldRel;
+    BYTE group[2][HB_MAXBONES];
+    int idx[2][4], have[2], k, i, nb, posed = 0;
+    BYTE *skel;
+    float g[3][3], o[3][3], oOrg[3], tmp[3], S[3], pole[3], Wt[3], Ht[3][3], Hold[3][3];
+    int frame = MEM(int, ADDR_clientFrame);
+
+    if (dobj != g_hbDobj || frame != g_hbFrame) { g_hbWhy = "not the view model of this frame"; return; }
+    memset(group, 0, sizeof(group));   // (an arm that is missing leaves its row untouched)
+    have[0] = HandBoneGroups(dobj, 'l', group[0], idx[0]);
+    have[1] = HandBoneGroups(dobj, 'r', group[1], idx[1]);
+    if (!have[0] && !have[1]) {
+        g_hbWhy = "no arm bones";
+        if (!told) { told = 1; Log("hands bones: no 'bip01 l/r hand' in the view weapon's models"); }
+        return;
+    }
+    __try {
+        skel = *(BYTE **)(dobj + 4);
+        nb = dobj[0x17];
+        if (!skel || *(int *)(dobj + 8) != frame) { g_hbWhy = "no skeleton for this frame yet"; return; }
+        for (k = 0; k < 2; k++) {
+            if (have[k] && idx[k][3] >= nb) have[k] = 0;
+            for (i = 1; i < 4 && have[k]; i++) if (!IsComputed(skel, idx[k][i])) have[k] = 0;
+        }
+        if (!have[0] && !have[1]) { g_hbWhy = "arm matrices not computed"; return; }
+
+        SteadyGun(skel, nb, (const BYTE (*)[HB_MAXBONES])group);   // before the arms: they reach for the steadied hands
+        // the controllers' frames in model space
+        for (k = 0; k < 3; k++) { Mul3(g_hbEntInv, g_hbGun[1 + k], g[k]); Mul3(g_hbEntInv, g_hbOff[1 + k], o[k]); }
+        for (i = 0; i < 3; i++) tmp[i] = g_hbOff[0][i] - g_hbEntOrg[i];
+        Mul3(g_hbEntInv, tmp, oOrg);
+
+        for (k = 0; k < 2; k++) {
+            float *mHand;
+            int toController = 0;
+            if (!have[k]) continue;
+            mHand = (float *)(skel + 0x30 + idx[k][3] * 0x40);
+            for (i = 0; i < 3; i++) { Hold[0][i] = mHand[i]; Hold[1][i] = mHand[4 + i]; Hold[2][i] = mHand[8 + i]; }
+            if (k == 0) {
+                // The off hand's orientation on its controller is one reference for every weapon (g_hbRel: the M1 carbine's grip,
+                // or the one saved with "Adjust off hand") plus the calibration's angles. It used to be taken from each weapon's
+                // own animation a moment after the draw, and the PPSh-41's hand on its drum magazine came out turned (2026-10-29).
+                if (!toldRel) {
+                    toldRel = 1;
+                    Log("hands bones: off hand reference x (%.2f %.2f %.2f) y (%.2f %.2f %.2f) z (%.2f %.2f %.2f)",
+                        g_hbRel[0][0], g_hbRel[0][1], g_hbRel[0][2], g_hbRel[1][0], g_hbRel[1][1], g_hbRel[1][2],
+                        g_hbRel[2][0], g_hbRel[2][1], g_hbRel[2][2]);
+                }
+                toController = g_hbHaveRel && !g_twoHand && g_hbOffValid;
+                g_hbWhy = !g_hbOffValid ? "off hand not tracked (left hand on the gun)" : g_twoHand ? "two-hand grip (left hand on the gun)" :
+                          !g_hbHaveRel ? "waiting for the weapon's pose (left hand on the gun)" : "posed";
+            }
+            if (toController) {
+                // the snapshot's orientation on the off controller, turned by the ini angles
+                float rp[3][3], ry[3][3], rr[3][3], t1[3][3], t2[3][3], basis[3][3], s = 3.14159265f / 180.0f;
+                int j;
+                for (j = 0; j < 3; j++) for (i = 0; i < 3; i++) basis[j][i] = o[j][i];
+                for (j = 0; j < 3; j++) Normalize(basis[j]);
+                AxisAngle(basis[1], g_hbRot[0] * s, rp);   // pitch about the controller's left
+                AxisAngle(basis[2], g_hbRot[1] * s, ry);   // yaw about its up
+                AxisAngle(basis[0], g_hbRot[2] * s, rr);   // roll about its forward
+                Mul33(ry, rp, t1);
+                Mul33(t1, rr, t2);
+                for (j = 0; j < 3; j++) {
+                    float b[3];
+                    Mul3(t2, o[j], b);
+                    for (i = 0; i < 3; i++) basis[j][i] = b[i];
+                }
+                for (j = 0; j < 3; j++)
+                    for (i = 0; i < 3; i++)
+                        Ht[j][i] = g_hbRel[j][0] * basis[0][i] + g_hbRel[j][1] * basis[1][i] + g_hbRel[j][2] * basis[2][i];
+                if (g_hbOffStraight > 0 && !g_hbHaveRelA) {
+                    // the forearm's direction seen from the hand (the animation's elbow in its hand frame), carried to
+                    // the new hand, turned onto the controller's backward direction (only for the first frame below)
+                    float *mFore = (float *)(skel + 0x30 + idx[k][2] * 0x40), cols[3][3], inv[3][3], c[3], back[3], want[3], r[3][3];
+                    float w = g_hbOffStraight > 1.0f ? 1.0f : g_hbOffStraight;
+                    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) cols[i][j] = Hold[j][i];
+                    for (i = 0; i < 3; i++) tmp[i] = mFore[12 + i] - mHand[12 + i];
+                    if (Invert3(cols, inv)) {
+                        Mul3(inv, tmp, c);
+                        for (i = 0; i < 3; i++) { back[i] = c[0] * Ht[0][i] + c[1] * Ht[1][i] + c[2] * Ht[2][i]; want[i] = -basis[0][i]; }
+                        Normalize(back); Normalize(want);
+                        for (i = 0; i < 3; i++) want[i] = back[i] * (1.0f - w) + want[i] * w;
+                        if (Normalize(want) > 1e-4f) {
+                            RotFromTo(back, want, r);
+                            for (j = 0; j < 3; j++) { float b[3]; Mul3(r, Ht[j], b); memcpy(Ht[j], b, sizeof(b)); }
+                        }
+                    }
+                }
+                {
+                    // By the hand's anatomy: the same in every hands model. The first time, the anatomy of the hand placed the old
+                    // way (bone reference + straight wrist) is kept as the anatomy's place on the controller; "Adjust off hand"
+                    // saves it ([Hands] OffHandAnatomy) with its angles.
+                    float A[3][3], tgt[3][3];
+                    if (HandAnatomy(skel, k, Hold, mHand, A)) {
+                        if (!g_hbHaveRelA) {
+                            int ok = 1;
+                            for (j = 0; j < 3 && ok; j++) {
+                                for (i = 0; i < 3; i++) tgt[j][i] = A[j][0] * Ht[0][i] + A[j][1] * Ht[1][i] + A[j][2] * Ht[2][i];
+                                ok = InBasis(basis, tgt[j], g_hbRelA[j]);
+                            }
+                            g_hbHaveRelA = ok;
+                            if (ok) Log("hands bones: the off hand placed by its anatomy from now on (fingers %.2f %.2f %.2f)",
+                                        g_hbRelA[0][0], g_hbRelA[0][1], g_hbRelA[0][2]);
+                        }
+                        if (g_hbHaveRelA) {
+                            for (j = 0; j < 3; j++)
+                                for (i = 0; i < 3; i++)
+                                    tgt[j][i] = g_hbRelA[j][0] * basis[0][i] + g_hbRelA[j][1] * basis[1][i] + g_hbRelA[j][2] * basis[2][i];
+                            for (j = 0; j < 3; j++)   // bone axis j = its anatomy coordinates (A's column j) on the target anatomy
+                                for (i = 0; i < 3; i++) Ht[j][i] = A[0][j] * tgt[0][i] + A[1][j] * tgt[1][i] + A[2][j] * tgt[2][i];
+                        }
+                    }
+                }
+                for (i = 0; i < 3; i++)
+                    Wt[i] = oOrg[i] + (g_hbOfs[0] * o[0][i] + g_hbOfs[1] * o[1][i] + g_hbOfs[2] * o[2][i]) * cfg.worldScale / 100.0f;
+            } else {   // the hand stays where the animation holds it (on the gun)
+                memcpy(Ht, Hold, sizeof(Ht));
+                for (i = 0; i < 3; i++) Wt[i] = mHand[12 + i];
+            }
+            for (i = 0; i < 3; i++) tmp[i] = g_hbShoulder[k][i] - g_hbEntOrg[i];
+            Mul3(g_hbEntInv, tmp, S);
+            Mul3(g_hbEntInv, g_hbPole[k], pole);
+            if (ArmIK(skel, nb, group[k], idx[k], S, pole, Wt, Ht, k, toController ? g_hbSleeve : NULL)) {
+                posed++;
+                if (toController) RelaxFingers(skel, nb, k, g_hbRelax);
+            }
+        }
+        if (!posed) { g_hbWhy = "arm lengths too small"; return; }
+        g_hbPosed++;
+        if (g_hbTagWeapon >= 0 && g_hbTagWeapon < nb && IsComputed(skel, g_hbTagWeapon)) {
+            // where the gun model really is (the weapon's idle animation sways it in the hand): for the scope's disc
+            const float *tm = (const float *)(skel + 0x30 + g_hbTagWeapon * 0x40);
+            float w[3], v[3];
+            Mul3(g_hbEntAxis, tm + 12, w);
+            for (i = 0; i < 3; i++) w[i] += g_hbEntOrg[i];
+            WorldToTracking(w, g_hbBody, g_tagTrk[0]);
+            for (k = 0; k < 3; k++) {
+                Mul3(g_hbEntAxis, tm + 4 * k, v);
+                RotateZ(v, -g_hbBody, g_tagTrk[1 + k]);
+                Normalize(g_tagTrk[1 + k]);
+            }
+            g_tagTrkFrame = frame;
+        }
+        g_hbFrame = -1;   // once per frame: the second eye uses the same skeleton
+        if (told < 2) { told = 2; Log("hands bones: the arms start at the shoulders, the left one follows the off-hand controller"); }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        static int bad;
+        if (!bad) { bad = 1; Log("hands bones: exception while posing the arms (turned off)"); }
+        g_hbOn = 0;
+    }
+}
+
+static void __cdecl hk_DObjSkel(int arg, BYTE *dobj, int *mask)
+{
+    const char *why = g_hbWhy;
+    orig_DObjSkel(arg, dobj, mask);
+    g_hbCalls++;
+    if (dobj && dobj == g_hbDobj) {
+        g_hbCallsOurs++;
+        if (g_hbOn) PoseArms(dobj);
+    } else {
+        g_hbWhy = why;   // other models: the view weapon's reason stays readable
+    }
+}
+
+// Once per frame: keeps the hook in the renderer's import table (a renderer restart copies the table again).
+static void HookDObjSkel(void)
+{
+    PFN_DObjSkel cur;
+    if (!ADDR_ri_DObjSkel) return;
+    ReloadHandBoneTuning();
+    __try {
+        cur = MEM(PFN_DObjSkel, ADDR_ri_DObjSkel);
+        if (cur && cur != hk_DObjSkel) {
+            orig_DObjSkel = cur;
+            MEM(PFN_DObjSkel, ADDR_ri_DObjSkel) = hk_DObjSkel;
+            Log("hands bones: skeleton hook installed (was %p)", cur);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+// The torso's facing in the tracking space (a yaw), once per frame: it follows the head slowly (1.5 s) and at once
+// past 35 degrees, so looking around does not swing the shoulders (and the arms) with the head.
+static float g_hbTorsoYaw;
+static int   g_hbTorsoInit;
+static void UpdateTorso(void)
+{
+    static DWORD last;
+    DWORD now = GetTickCount();
+    float hy = atan2f(g_head.axis[0][1], g_head.axis[0][0]), dt = last ? (now - last) / 1000.0f : 0.0f, diff;
+    const float pi = 3.14159265f, lim = 35.0f * pi / 180.0f;
+    last = now;
+    if (dt > 0.2f) dt = 0.2f;
+    if (!g_hbTorsoInit) { g_hbTorsoYaw = hy; g_hbTorsoInit = 1; return; }
+    diff = hy - g_hbTorsoYaw;
+    while (diff > pi) diff -= 2 * pi;
+    while (diff < -pi) diff += 2 * pi;
+    if (diff > lim) { g_hbTorsoYaw += diff - lim; diff = lim; }
+    if (diff < -lim) { g_hbTorsoYaw += diff + lim; diff = -lim; }
+    g_hbTorsoYaw += diff * (dt / 1.5f > 1.0f ? 1.0f : dt / 1.5f);
+}
+
+// A shoulder of the player (side +1 left, -1 right), in the world, and that arm's elbow bend direction. It hangs from
+// the neck (the point the head turns about: 8 cm behind and 10 cm under the eyes, along the head's own axes), along
+// the torso's facing: [Hands] ShoulderDown / ShoulderBack are measured from the eyes with the head level.
+static void ShoulderOf(float side, const cod_refdef_t *fd, float body, float out[3], float poleOut[3])
+{
+    float f[3], l[3], sh[3], rel[3], pole[3], neck[3];
+    int i;
+    f[0] = cosf(g_hbTorsoYaw); f[1] = sinf(g_hbTorsoYaw); f[2] = 0;
+    l[0] = -f[1]; l[1] = f[0]; l[2] = 0;
+    for (i = 0; i < 3; i++) neck[i] = g_head.pos[i] - 0.08f * g_head.axis[0][i] - 0.10f * g_head.axis[2][i];
+    for (i = 0; i < 3; i++)   // tracking space: from the neck down, to that side, a little back
+        sh[i] = neck[i] + (side * g_hbSh[1] * l[i] - (g_hbSh[2] - 8.0f) * f[i]) / 100.0f - (i == 2 ? (g_hbSh[0] - 10.0f) / 100.0f : 0.0f);
+    BodyOffset(sh, rel);
+    for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
+    RotateZ(rel, body, out);
+    for (i = 0; i < 3; i++) out[i] += fd->vieworg[i];
+    for (i = 0; i < 3; i++) pole[i] = side * 0.6f * l[i] - (i == 2 ? 1.0f : 0.0f);   // down and away from the body
+    RotateZ(pole, body, poleOut);
+}
+
+// From FlushHeldEntities: the view model entity as it goes to the renderer (already at the gun hand), the controllers'
+// frames and the shoulders in the world, for PoseArms.
+static void NoteHandBones(const BYTE *e, const float gunOrg[3], float gunAxis[3][3], const cod_refdef_t *fd, float body)
+{
+    static const char *lastWhy;
+    static int whyLines;
+    BYTE *cl = PlayerClient();
+    int gh = cfg.realistic ? g_gunHand : cfg.rightHanded ? 1 : 0, off, w, i, k;
+    const float *axis = (const float *)(e + REFENT_OFS_axis);
+    float m[3][3], rel[3];
+    if (!ADDR_ri_DObjSkel || !g_hbOn) return;
+    HandBonesDiag(e);
+    if (gh < 0) { g_hbWhy = "no gun hand"; return; }
+    off = 1 - gh;
+    if (!*(BYTE * const *)(e + REFENT_OFS_dobj)) { g_hbWhy = "entity without a DObj"; return; }
+    w = cl ? GameWeapon(cl) : 0;
+    if (w != g_hbWeapon) { g_hbWeapon = w; g_hbWeaponSince = GetTickCount(); }
+    for (i = 0; i < 3; i++) for (k = 0; k < 3; k++) m[i][k] = axis[3 * k + i];   // columns = the entity's axes
+    if (!Invert3(m, g_hbEntInv)) return;
+    memcpy(g_hbEntAxis, m, sizeof(m));
+    {
+        float cm = g_hbArmCm > 20.0f ? g_hbArmCm : 36.0f * (cfg.eyeHeight >= 0.9f ? cfg.eyeHeight : 60.0f / cfg.worldScale);
+        float sc = sqrtf(m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]);   // model units per world unit
+        g_hbArmLen = sc > 1e-4f ? cm / 100.0f * cfg.worldScale / sc : 0;
+    }
+    memcpy(g_hbEntOrg, e + REFENT_OFS_origin, sizeof(g_hbEntOrg));
+    g_hbBody = body;
+    for (i = 0; i < 3; i++) g_hbGun[0][i] = gunOrg[i];
+    for (k = 0; k < 3; k++) for (i = 0; i < 3; i++) g_hbGun[1 + k][i] = gunAxis[k][i];
+    g_hbOffValid = g_in.handValid[off];
+    if (g_hbOffValid) {
+        BodyOffset(g_in.hand[off].pos, rel);
+        for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
+        RotateZ(rel, body, g_hbOff[0]);
+        for (i = 0; i < 3; i++) g_hbOff[0][i] += fd->vieworg[i];
+        for (k = 0; k < 3; k++) RotateZ(g_in.hand[off].axis[k], body, g_hbOff[1 + k]);
+    }
+    // the model's left arm is the off hand's, its right arm the gun hand's (a left-handed gun is the mirrored model)
+    UpdateTorso();
+    ShoulderOf(off == 0 ? 1.0f : -1.0f, fd, body, g_hbShoulder[0], g_hbPole[0]);
+    ShoulderOf(gh == 0 ? 1.0f : -1.0f, fd, body, g_hbShoulder[1], g_hbPole[1]);
+    g_hbDobj = *(BYTE * const *)(e + REFENT_OFS_dobj);
+    g_hbFrame = MEM(int, ADDR_clientFrame);
+    // The cgame builds the view weapon's skeleton itself (skelArg 0: the renderer asks for none), so it is posed here;
+    // if it is not built yet, the hook does it when the renderer asks.
+    PoseArms(g_hbDobj);
+    if (g_hbWhy != lastWhy && whyLines < 300) {   // every change of state, to see what happened when
+        lastWhy = g_hbWhy;
+        whyLines++;
+        Log("hands bones: %s (weapon %d, %.1f s after it was drawn)", g_hbWhy, w, (GetTickCount() - g_hbWeaponSince) / 1000.0f);
+    }
 }
 
 // Moves the held view-weapon entities from the game's view to the dominant hand and gives
@@ -4690,6 +5865,58 @@ static void FlushHeldEntities(const cod_refdef_t *fd)
     for (i = 0; i < 3; i++) handOrg[i] += fd->vieworg[i];
     for (k = 0; k < 3; k++) RotateZ(h->axis[k], body, handAxis[k]);
 
+    {
+        // Running, and walking, lower and sway the arms and the gun on a flat screen (the game moves the view weapon in the view
+        // as the body bobs): in VR that is a hand that moves by itself, and a scope's picture left behind (the maintainer, 2026-10-30).
+        // While the player moves, the models (the hands and the gun) keep the place they had in the view when he stood still;
+        // the change is faded in and out over a quarter of a second. `[Comfort] NoRunBob=0` turns it off.
+        static float restO[8][3], restA[8][3][3], frz;
+        static int restOk[8], lastCount, lastWeapon = -1;
+        static DWORD lastT;
+        DWORD now = GetTickCount();
+        float dt = lastT ? (now - lastT) / 1000.0f : 0.0f, speed2 = 0;
+        BYTE *pc = PlayerClient();
+        int w = pc ? GameWeapon(pc) : 0;
+        lastT = now;
+        __try {
+            const float *vel = pc ? (const float *)(pc + GCL_OFS_origin + 12) : NULL;
+            if (vel) speed2 = vel[0] * vel[0] + vel[1] * vel[1];
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        if (g_heldCount != lastCount || w != lastWeapon) { memset(restOk, 0, sizeof(restOk)); frz = 0; }
+        lastCount = g_heldCount;
+        lastWeapon = w;
+        {
+            int moving = cfg.noRunBob && (speed2 > 20.0f * 20.0f || g_moveForward || g_moveRight);   // the stick leads the speed: the walk pose starts at once
+            float ramp = moving ? 0.10f : 0.30f;
+            frz += ((moving ? 1.0f : 0.0f) - frz) * (dt / ramp > 1 ? 1.0f : dt / ramp);
+        }
+        for (n = 0; n < g_heldCount && n < 8; n++) {
+            BYTE *e = g_held[n];
+            float *o = (float *)(e + REFENT_OFS_origin), *oo = (float *)(e + REFENT_OFS_oldorigin), *ax = (float *)(e + REFENT_OFS_axis);
+            float loc[3], locA[3][3], d[3];
+            int a, b;
+            if (*(int *)e != REFENT_TYPE_MODEL) continue;
+            for (a = 0; a < 3; a++) d[a] = o[a] - g_rawViewOrg[a];
+            for (a = 0; a < 3; a++) loc[a] = d[0] * fd->viewaxis[a][0] + d[1] * fd->viewaxis[a][1] + d[2] * fd->viewaxis[a][2];
+            for (b = 0; b < 3; b++)
+                for (a = 0; a < 3; a++)
+                    locA[b][a] = ax[3 * b] * fd->viewaxis[a][0] + ax[3 * b + 1] * fd->viewaxis[a][1] + ax[3 * b + 2] * fd->viewaxis[a][2];
+            if (!restOk[n] || frz < 0.001f) {   // standing: this is the rest (it is what the game draws)
+                memcpy(restO[n], loc, sizeof(loc)); memcpy(restA[n], locA, sizeof(locA)); restOk[n] = 1;
+                continue;
+            }
+            for (a = 0; a < 3; a++) loc[a] += (restO[n][a] - loc[a]) * frz;
+            for (b = 0; b < 3; b++) for (a = 0; a < 3; a++) locA[b][a] += (restA[n][b][a] - locA[b][a]) * frz;
+            for (a = 0; a < 3; a++) {   // back to the world: Sum of local[k] * viewaxis[k]
+                o[a] = g_rawViewOrg[a] + loc[0] * fd->viewaxis[0][a] + loc[1] * fd->viewaxis[1][a] + loc[2] * fd->viewaxis[2][a];
+                oo[a] = o[a];
+            }
+            for (b = 0; b < 3; b++)
+                for (a = 0; a < 3; a++)
+                    ax[3 * b + a] = locA[b][0] * fd->viewaxis[0][a] + locA[b][1] * fd->viewaxis[1][a] + locA[b][2] * fd->viewaxis[2][a];
+        }
+    }
     for (n = 0; n < g_heldCount; n++) {
         BYTE *e = g_held[n];
         float *axis = (float *)(e + REFENT_OFS_axis);
@@ -4699,6 +5926,7 @@ static void FlushHeldEntities(const cod_refdef_t *fd)
         if (*(int *)(e + REFENT_OFS_renderfx) & RF_LIGHTING_ORIGIN)
             ViewToHand((float *)(e + REFENT_OFS_lightingOrigin), fd, handOrg, handAxis, 1);
         for (k = 0; k < 3; k++) ViewToHand(axis + 3 * k, fd, handOrg, handAxis, 0);
+        if (kind == 1) NoteHandBones(e, handOrg, handAxis, fd, body);
         orig_AddRefEntity(e, g_heldParam[n]);
     }
     g_heldCount = 0;
@@ -4801,13 +6029,58 @@ static void TestDriver(void)
         (void)va0;
     }
 }
+
+// Development only: cod_vr_give.txt in the game folder (one command per line) is run, a line every 2 s, 14 s after the level loads;
+// the weapon slots are logged after each (does `give` work, and with which name?). The game quits after the last line.
+static void GiveTest(void)
+{
+    static int enabled = -1, stage;
+    static DWORD t0, tNext;
+    static char lines[16][96];
+    static int nLines;
+    char path[MAX_PATH];
+    DWORD now = GetTickCount();
+    BYTE *cl;
+    if (enabled < 0) {
+        FILE *f;
+        _snprintf(path, sizeof(path), "%s\\cod_vr_give.txt", g_dir);
+        f = fopen(path, "r");
+        enabled = f != NULL;
+        while (f && nLines < 16 && fgets(lines[nLines], sizeof(lines[0]), f)) {
+            char *e = lines[nLines] + strlen(lines[nLines]);
+            while (e > lines[nLines] && (e[-1] == '\n' || e[-1] == '\r')) *--e = 0;
+            if (lines[nLines][0]) nLines++;
+        }
+        if (f) fclose(f);
+    }
+    if (!enabled || !MapLoaded()) return;
+    cl = PlayerClient();
+    if (!cl) return;
+    if (!t0) t0 = now;
+    if (now - t0 < 14000 || now < tNext) return;
+    if (stage > 0)
+        Log("GIVETEST after '%s': weapon in use %d, slots %d %d %d %d %d %d %d", lines[stage - 1], GameWeapon(cl), SlotWeapon(cl, 1), SlotWeapon(cl, 2),
+            SlotWeapon(cl, 3), SlotWeapon(cl, 4), SlotWeapon(cl, 5), SlotWeapon(cl, 6), SlotWeapon(cl, 7));
+    else
+        Log("GIVETEST start: weapon in use %d, slots %d %d %d %d", GameWeapon(cl), SlotWeapon(cl, 1), SlotWeapon(cl, 2), SlotWeapon(cl, 3), SlotWeapon(cl, 4));
+    if (stage < nLines) {
+        char cmd[110];
+        _snprintf(cmd, sizeof(cmd), "%s\n", lines[stage]);
+        Cbuf(cmd);
+        stage++;
+        tNext = now + 2000;
+    } else {
+        Cbuf("quit\n");
+        tNext = now + 99999;
+    }
+}
 #endif
 
 static void __cdecl hk_BeginFrame(int stereoFrame)
 {
     if (!cfg.enabled) { orig_BeginFrame(stereoFrame); return; }
 #ifdef COD_VR_TEST
-    if (stereoFrame != 2) TestDriver();
+    if (stereoFrame != 2) { TestDriver(); GiveTest(); }
 #endif
 
     if (stereoFrame != 2) {   // start of a frame
@@ -5052,6 +6325,416 @@ static void SamplePitchOffset(const cod_refdef_t *fd)
 // its reticle is where the shots go. Reuses this scene's entities by restoring RE_RenderScene's
 // first-item counters; runs before the view weapon is added. The backend recognises the view by
 // x = 1 (the eyes use x = 0).
+// ---------------------------------------------------------------------------
+// A working rifle scope (prototype, 2026-10-29: [Scope] Lens=1): while a scoped weapon is in the hand the world is drawn a
+// second time from the scope, along the barrel, with the weapon's own zoom (adsZoomFov), into a buffer of its own; a round
+// mask and a cross go on it, and it is shown as a small disc on the scope's eyepiece (a quad layer, XR_SetPanel), so the
+// player aims by putting the eye to the scope, with no aim-down-sights (the game's black overlay never comes). The view is
+// drawn before the rifle is added to the scene, so the rifle does not block its own scope. The backend knows the scene by
+// its refdef: x 0, y = the window's height - the buffer's size (the eyes and the old scope screen use y 0), which also puts
+// the game's viewport at the buffer's corner. Where the eyepiece is on each rifle is a guess to be tuned: [Scope] LensForward
+// / LensLeft / LensUp (cm from the grip, along the gun), LensSize (cm), read every second.
+// ---------------------------------------------------------------------------
+#define LENS_RES 512
+static struct {
+    GLuint fbo, tex, depth;
+    int queued;           // the view was drawn this frame: mask it and show it
+    int y;                // its refdef y (the backend's mark)
+    float fov;
+} g_lens;
+static float g_lensOfs[3] = { 12.0f, 0.0f, 8.0f }, g_lensSize = 4.0f;
+static float g_lensZoom = 1.0f;     // [Scope] LensZoom: times the game's own magnification (65 degrees over the weapon's zoom fov)
+static float g_lensCone = 20.0f;    // [Scope] LensView: degrees off the barrel's line the eye may be and still see the picture
+static int g_lensOn = 1;
+static int g_lensTuning;        // the mod menu's "Adjust scope" is open: its values until saved
+static char g_lensName[64];     // the weapon the values are for
+static vr_scope_t g_lensLayer;  // what XR_EndFrame shows this frame (the OpenXR scope layer, under the HUD and the menu)
+
+// [Scope] LensForward / LensLeft / LensUp / LensSize for every scoped weapon, then [ScopeLens] <weapon>=forward left up size
+// for that weapon (cod_vr.ini, then the player's settings.ini, where "Adjust scope" saves it).
+static void ReloadLensTuning(void)
+{
+    static DWORD last;
+    static int lastW = -1;
+    char ini[MAX_PATH], v[96];
+    const char *name;
+    BYTE *cl = PlayerClient();
+    int w = cl ? GameWeapon(cl) : 0;
+    float f, l, u, s;
+    if (g_lensTuning || (last && GetTickCount() - last < 1000 && w == lastW)) return;
+    last = GetTickCount();
+    lastW = w;
+    _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+    g_lensOn = CfgInt("Scope", "Lens", 1, ini);   // 1 = the working lens (Realistic, beta; the default), 0 = the game's own scope (Original): the launcher's VR tab
+    g_lensOfs[0] = IniFloat("Scope", "LensForward", 12.0f, ini);
+    g_lensOfs[1] = IniFloat("Scope", "LensLeft", 0.0f, ini);
+    g_lensOfs[2] = IniFloat("Scope", "LensUp", 8.0f, ini);
+    g_lensSize = IniFloat("Scope", "LensSize", 4.0f, ini);
+    g_lensZoom = IniFloat("Scope", "LensZoom", 1.0f, ini);
+    g_lensCone = IniFloat("Scope", "LensView", 20.0f, ini);
+    name = w > 0 ? HeldWeaponName() : NULL;
+    g_lensName[0] = 0;
+    if (name && strlen(name) < sizeof(g_lensName)) {
+        strcpy(g_lensName, name);
+        {   // the release's tuning (cod_vr_weapons.ini), then cod_vr.ini, then the player's settings.ini
+            char wini[MAX_PATH];
+            _snprintf(wini, sizeof(wini), "%s\\cod_vr_weapons.ini", g_dir);
+            GetPrivateProfileStringA("ScopeLens", name, "", v, sizeof(v), wini);
+        }
+        GetPrivateProfileStringA("ScopeLens", name, v, v, sizeof(v), ini);
+        if (g_userIni[0]) GetPrivateProfileStringA("ScopeLens", name, v, v, sizeof(v), g_userIni);
+        {
+            float z = 0;
+            int n = sscanf(v, "%f %f %f %f %f", &f, &l, &u, &s, &z);
+            if (n >= 4) {
+                g_lensOfs[0] = f; g_lensOfs[1] = l; g_lensOfs[2] = u;
+                if (s > 0.5f && s < 30.0f) g_lensSize = s;
+            }
+            if (n == 5 && z >= 0.5f && z <= 20.0f) g_lensZoom = z;   // the zoom is the fifth number (older lines have four)
+        }
+    }
+}
+
+static int EnsureLensBuffer(void)
+{
+    if (g_lens.fbo) return 1;
+    if (!gl.GenFramebuffers || !gl.GenRenderbuffers) return 0;
+    gl.GenTextures(1, &g_lens.tex);
+    gl.GenFramebuffers(1, &g_lens.fbo);
+    gl.GenRenderbuffers(1, &g_lens.depth);
+    InitColorTexture(g_lens.tex, LENS_RES, LENS_RES);
+    gl.BindRenderbuffer(GL_RENDERBUFFER, g_lens.depth);
+    gl.RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, LENS_RES, LENS_RES);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, g_lens.fbo);
+    gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_lens.tex, 0);
+    gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_lens.depth);
+    gl.FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_lens.depth);
+    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+        gl.DeleteFramebuffers(1, &g_lens.fbo);
+        gl.DeleteRenderbuffers(1, &g_lens.depth);
+        gl.DeleteTextures(1, &g_lens.tex);
+        g_lens.fbo = 0;
+        Log("scope lens: the buffer could not be made");
+        return 0;
+    }
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+    Log("scope lens: buffer %dx%d ready", LENS_RES, LENS_RES);
+    return 1;
+}
+
+// The scope's zoom (degrees) when the weapon in use has one: a weapon with an aim-down-sights overlay (the scoped rifles).
+static float ScopedZoom(void)
+{
+    const BYTE *def = CurrentWeaponDef();
+    float zoom = 0;
+    if (!def) return 0;
+    __try {
+        const char *ov = *(const char * const *)(def + WEAPDEF_OFS_adsOverlayShader);
+        if (ov && ov[0]) zoom = *(const float *)(def + WEAPDEF_OFS_adsZoomFov);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        zoom = 0;
+    }
+    return zoom > 1.0f && zoom < 60.0f ? zoom : 0;
+}
+
+// The eyepiece in the tracking space (metres) and in the world (game units), with the gun's axes.
+static void LensPose(const cod_refdef_t *fd, float body, float trk[3], float world[3], float axis[3][3])
+{
+    float rel[3];
+    int i, k;
+    for (i = 0; i < 3; i++)
+        trk[i] = g_gun.pos[i] + (g_lensOfs[0] * g_gun.axis[0][i] + g_lensOfs[1] * g_gun.axis[1][i] + g_lensOfs[2] * g_gun.axis[2][i]) / 100.0f;
+    if (!fd) return;
+    BodyOffset(trk, rel);
+    for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
+    RotateZ(rel, body, world);
+    for (i = 0; i < 3; i++) world[i] += fd->vieworg[i];
+    for (k = 0; k < 3; k++) RotateZ(g_gun.axis[k], body, axis[k]);
+}
+
+// Is an eye behind the eyepiece: near it (35 cm) and within LensView degrees of the barrel's line? Elsewhere a real
+// scope shows nothing, so the picture is not shown (nor drawn).
+static int LensEyeBehind(const float trk[3])
+{
+    float c = cosf(g_lensCone * 3.14159265f / 180.0f);
+    int e, i;
+    if (g_lensTuning) return 1;   // Adjust scope is open: the picture is always drawn, so it can be put where the eyepiece is
+    for (e = 0; e < 2; e++) {
+        float v[3], dist, dp;
+        for (i = 0; i < 3; i++) v[i] = trk[i] - g_eyes[e].pos[i];
+        dist = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (dist < 1e-3f || dist > 0.35f) continue;
+        dp = (v[0] * g_gun.axis[0][0] + v[1] * g_gun.axis[0][1] + v[2] * g_gun.axis[0][2]) / dist;
+        if (dp > c) return 1;
+    }
+    return 0;
+}
+
+static void LensSway(float trk[3], float axis[3][3]);
+
+// From RenderBothEyes, before the view weapon is added: the world seen through the scope.
+static void RenderLensView(cod_refdef_t *fd)
+{
+    static int told;
+    float zoom, org[3], axis[3][3], trk[3], savedOrg[3], savedAxis[3][3], savedFov[2];
+    int saved[4], savedRect[4], vh = MEM(int, ADDR_r_glConfig_vidHeight);
+    ReloadLensTuning();
+    g_lens.queued = 0;
+    if (!g_lensOn || !cfg.vr || !g_vrFrame || !g_gunValid || g_scopeActive || (fd->rdflags & 8)) return;
+    zoom = ScopedZoom();
+    if (zoom <= 0 || vh <= LENS_RES || !EnsureLensBuffer()) return;
+    LensPose(fd, BodyYaw(fd->viewaxis[0]), trk, org, axis);
+    {
+        // the scope looks where the drawn gun points: the weapon's idle sway moves the view and the cross with the disc
+        float body = BodyYaw(fd->viewaxis[0]), sa[3][3], rel[3];
+        int i, k;
+        memcpy(sa, g_gun.axis, sizeof(sa));
+        LensSway(trk, sa);
+        memcpy(g_lensAimTrk[1], sa[0], sizeof(sa[0]));
+        BodyOffset(trk, rel);
+        for (i = 0; i < 3; i++) rel[i] *= cfg.worldScale;
+        RotateZ(rel, body, org);
+        for (i = 0; i < 3; i++) org[i] += fd->vieworg[i];
+        for (k = 0; k < 3; k++) RotateZ(sa[k], body, axis[k]);
+    }
+    if (!LensEyeBehind(trk)) return;
+    {
+        // the shots go where its cross is (the aim code reads this line, see g_lensAimAt)
+        float sdir[3];
+        int i;
+        for (i = 0; i < 3; i++) sdir[i] = axis[0][i];
+        memcpy(g_lensAimWorld[0], org, sizeof(org));
+        memcpy(g_lensAimWorld[1], sdir, sizeof(sdir));
+        memcpy(g_lensAimTrk[0], trk, sizeof(trk));
+        g_lensAimAt = GetTickCount();
+    }
+    {
+        // A real scope magnifies the same however far the eye is: the picture's fov is the disc's apparent size from the
+        // nearest eye divided by the magnification, = the game's own (its ~65 degree view over the weapon's zoom fov) times
+        // LensZoom. (The game's zoom fov alone put about 1x on a 2-3 cm disc seen from 15 cm, 2026-10-29.)
+        float dist = 1e9f, mag, ang, v[3];
+        int e, i;
+        for (e = 0; e < 2; e++) {
+            float dd;
+            for (i = 0; i < 3; i++) v[i] = trk[i] - g_eyes[e].pos[i];
+            dd = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (dd < dist) dist = dd;
+        }
+        if (dist < 0.01f) dist = 0.01f;
+        mag = 65.0f / zoom * (g_lensZoom > 0.1f ? g_lensZoom : 0.1f);
+        if (mag < 1.0f) mag = 1.0f;
+        ang = 2.0f * atanf(g_lensSize / 200.0f / dist) * 57.29578f;
+        zoom = ang / mag;
+        if (zoom < 0.3f) zoom = 0.3f;
+        if (zoom > 60.0f) zoom = 60.0f;
+    }
+
+    memcpy(savedOrg, fd->vieworg, sizeof(savedOrg));
+    memcpy(savedAxis, fd->viewaxis, sizeof(savedAxis));
+    savedFov[0] = fd->fov_x; savedFov[1] = fd->fov_y;
+    savedRect[0] = fd->x; savedRect[1] = fd->y; savedRect[2] = fd->width; savedRect[3] = fd->height;
+    memcpy(fd->vieworg, org, sizeof(org));
+    memcpy(fd->viewaxis, axis, sizeof(axis));
+    fd->fov_x = fd->fov_y = zoom;
+    fd->x = 0; fd->y = vh - LENS_RES; fd->width = fd->height = LENS_RES;
+    g_lens.y = fd->y;
+
+    saved[0] = MEM(int, ADDR_r_firstSceneEntity);
+    saved[1] = MEM(int, ADDR_r_firstSceneDlight);
+    saved[2] = MEM(int, ADDR_r_firstScenePoly);
+    saved[3] = MEM(int, ADDR_r_firstSceneList6);
+    g_projOverride = -1;
+    orig_RenderScene(fd);
+    MEM(int, ADDR_r_firstSceneEntity) = saved[0];
+    MEM(int, ADDR_r_firstSceneDlight) = saved[1];
+    MEM(int, ADDR_r_firstScenePoly) = saved[2];
+    MEM(int, ADDR_r_firstSceneList6) = saved[3];
+
+    memcpy(fd->vieworg, savedOrg, sizeof(savedOrg));
+    memcpy(fd->viewaxis, savedAxis, sizeof(savedAxis));
+    fd->fov_x = savedFov[0]; fd->fov_y = savedFov[1];
+    fd->x = savedRect[0]; fd->y = savedRect[1]; fd->width = savedRect[2]; fd->height = savedRect[3];
+    g_lens.queued = 1;
+    g_lens.fov = zoom;
+    if (!told) { told = 1; Log("scope lens: drawn (zoom %.1f degrees, eyepiece %.0f %.0f %.0f cm, %.1f cm wide)", zoom, g_lensOfs[0], g_lensOfs[1], g_lensOfs[2], g_lensSize); }
+}
+
+// The weapon's idle animation sways the gun model in the hand while the controller is still: the disc must sway with it or
+// it slides off the drawn eyepiece. The tag the gun hangs from is followed in the controller's frame, its average place
+// (2 s) taken as the rest; the disc (set in the controller's frame by Adjust scope) moves as the tag moves from that rest.
+static void LensSway(float trk[3], float axis[3][3])
+{
+    static float pMean[3], rMean[3][3], since, follow = 1.0f;
+    static int init, lastWeapon = -2, walking;
+    static DWORD lastT;
+    float pNow[3], rNow[3][3], v[3], x[3], m[3][3], dt, a;
+    int i, j, k;
+    DWORD now = GetTickCount();
+    if (!ADDR_clientFrame || g_tagTrkFrame < 0 || MEM(int, ADDR_clientFrame) - g_tagTrkFrame > 3) return;   // no recent tag: the controller alone
+    // (the scope's view is drawn before this frame's gun is posed: it uses the last frame's tag)
+    for (i = 0; i < 3; i++) v[i] = g_tagTrk[0][i] - g_gun.pos[i];
+    for (i = 0; i < 3; i++) pNow[i] = v[0] * g_gun.axis[i][0] + v[1] * g_gun.axis[i][1] + v[2] * g_gun.axis[i][2];
+    for (k = 0; k < 3; k++)   // column k = the tag's axis k in the controller's frame
+        for (i = 0; i < 3; i++) rNow[i][k] = g_tagTrk[1 + k][0] * g_gun.axis[i][0] + g_tagTrk[1 + k][1] * g_gun.axis[i][1] + g_tagTrk[1 + k][2] * g_gun.axis[i][2];
+    dt = lastT ? (now - lastT) / 1000.0f : 0.0f;
+    lastT = now;
+    if (!init || g_hbWeapon != lastWeapon || dt > 0.5f) {
+        memcpy(pMean, pNow, sizeof(pMean)); memcpy(rMean, rNow, sizeof(rMean));
+        init = 1; lastWeapon = g_hbWeapon; since = 0;
+    } else {
+        // the rest is a long average: the whole idle cycle (a few seconds) is taken as sway. 2 s followed the slow idle
+        // itself and the disc hardly moved (2026-10-29). The cumulative mean for the first 20 s, so it settles at once.
+        // only while standing still: walking moves and holds the gun elsewhere (the walk animation), and a rest that
+        // followed it slid the disc off the eyepiece, coming back slowly after a stop (2026-10-29)
+        int still = 1;
+        BYTE *pc = PlayerClient();
+        __try {
+            const float *vel = pc ? (const float *)(pc + GCL_OFS_origin + 12) : NULL;
+            if (vel && vel[0] * vel[0] + vel[1] * vel[1] > 20.0f * 20.0f) still = 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        if (g_moveForward || g_moveRight) still = 0;   // the stick leads the speed
+        walking = !still;
+        if (still) since += dt;
+        a = still ? dt / (since < 20.0f ? (since > 0.05f ? since : 0.05f) : 20.0f) : 0.0f;
+        if (a > 1) a = 1;
+        for (i = 0; i < 3; i++) pMean[i] += (pNow[i] - pMean[i]) * a;
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) rMean[i][j] += (rNow[i][j] - rMean[i][j]) * a;
+        {   // keep it a rotation (columns orthonormal)
+            float c0[3], c1[3], c2[3], dp;
+            for (i = 0; i < 3; i++) { c0[i] = rMean[i][0]; c1[i] = rMean[i][1]; }
+            Normalize(c0);
+            dp = c1[0] * c0[0] + c1[1] * c0[1] + c1[2] * c0[2];
+            for (i = 0; i < 3; i++) c1[i] -= dp * c0[i];
+            Normalize(c1);
+            Cross(c0, c1, c2);
+            for (i = 0; i < 3; i++) { rMean[i][0] = c0[i]; rMean[i][1] = c1[i]; rMean[i][2] = c2[i]; }
+        }
+    }
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++)   // m = rNow * rMean^T
+        m[i][j] = rNow[i][0] * rMean[j][0] + rNow[i][1] * rMean[j][1] + rNow[i][2] * rMean[j][2];
+    {
+        // While walking the disc stays where Adjust scope put it (it went up and to the right, and came back slowly after a stop, when it
+        // followed the walk animation: the maintainer, 2026-10-30): the sway is faded out in a quarter of a second, and back in after a stop
+        static DWORD nextWalkLog;
+        static int walkLines;
+        float target = walking ? 0.0f : 1.0f, ramp = walking ? 0.10f : 0.30f, step = dt / ramp > 1 ? 1.0f : dt / ramp;
+        follow += (target - follow) * step;
+        if (walking && walkLines < 30 && now >= nextWalkLog) {   // what the walk animation does to the tag (the sway it would have added)
+            float dx = pNow[0] - pMean[0], dy = pNow[1] - pMean[1], dz = pNow[2] - pMean[2];
+            nextWalkLog = now + 500;
+            walkLines++;
+            Log("scope sway while walking (left out): tag %.1f %.1f %.1f cm from its rest", dx * 100.0f, dy * 100.0f, dz * 100.0f);
+        }
+        for (i = 0; i < 3; i++) pNow[i] = pMean[i] + (pNow[i] - pMean[i]) * follow;
+        for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) m[i][j] = (i == j ? 1.0f : 0.0f) + (m[i][j] - (i == j ? 1.0f : 0.0f)) * follow;
+        {   // keep m a rotation
+            float c0[3], c1[3], c2[3], dp;
+            for (i = 0; i < 3; i++) { c0[i] = m[i][0]; c1[i] = m[i][1]; }
+            Normalize(c0);
+            dp = c1[0] * c0[0] + c1[1] * c0[1] + c1[2] * c0[2];
+            for (i = 0; i < 3; i++) c1[i] -= dp * c0[i];
+            Normalize(c1);
+            Cross(c0, c1, c2);
+            for (i = 0; i < 3; i++) { m[i][0] = c0[i]; m[i][1] = c1[i]; m[i][2] = c2[i]; }
+        }
+    }
+    {
+        static DWORD nextLog;
+        static int lines;
+        if (lines < 40 && now >= nextLog) {   // how much the idle moves the gun (if the disc still slides: is it measured?)
+            float dx = pNow[0] - pMean[0], dy = pNow[1] - pMean[1], dz = pNow[2] - pMean[2];
+            float tr = m[0][0] + m[1][1] + m[2][2], ang = acosf(((tr - 1) * 0.5f) > 1 ? 1 : ((tr - 1) * 0.5f) < -1 ? -1 : (tr - 1) * 0.5f);
+            nextLog = now + 1000;
+            lines++;
+            Log("scope sway: the gun is %.2f cm and %.2f degrees from its rest (tag %.1f %.1f %.1f cm in the hand)",
+                sqrtf(dx * dx + dy * dy + dz * dz) * 100.0f, ang * 57.29578f, pNow[0] * 100.0f, pNow[1] * 100.0f, pNow[2] * 100.0f);
+        }
+    }
+    // the disc's point in the controller's frame, carried by the sway
+    for (i = 0; i < 3; i++) v[i] = g_lensOfs[i] / 100.0f - pMean[i];
+    Mul3(m, v, x);
+    for (i = 0; i < 3; i++) x[i] += pNow[i];
+    for (i = 0; i < 3; i++) trk[i] = g_gun.pos[i] + x[0] * g_gun.axis[0][i] + x[1] * g_gun.axis[1][i] + x[2] * g_gun.axis[2][i];
+    for (k = 0; k < 3; k++)   // the disc's axes: the controller's, carried the same way
+        for (i = 0; i < 3; i++) axis[k][i] = m[0][k] * g_gun.axis[0][i] + m[1][k] * g_gun.axis[1][i] + m[2][k] * g_gun.axis[2][i];
+}
+
+// In the frame, after the backend drew it: the round mask and the cross, then the disc on the eyepiece.
+static void LensFrame(void)
+{
+    static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    float trk[3], world[3], axis[3][3];
+    int i, k;
+    g_lensLayer.visible = 0;
+    if (!g_lens.queued || !g_lens.fbo || !g_gunValid) return;
+    LensPose(NULL, 0, trk, world, axis);
+    if (!LensEyeBehind(trk)) { g_lens.queued = 0; return; }   // the eye moved away since it was drawn
+    g_lens.queued = 0;
+    gl.BindFramebuffer(GL_FRAMEBUFFER, g_lens.fbo);
+    gl.PushAttrib(0x000FFFFF);   // GL_ALL_ATTRIB_BITS
+    gl.Disable(GL_SCISSOR_TEST);
+    gl.Disable(0x0B71); gl.Disable(0x0BC0); gl.Disable(0x0B44);   // depth, alpha test, cull
+    gl.Disable(0x0B60); gl.Disable(0x0B50); gl.Disable(0x0B90);   // fog, lighting, stencil
+    if (gl.ActiveTexture) {
+        for (i = 3; i >= 0; i--) { gl.ActiveTexture(0x84C0 + i); gl.Disable(GL_TEXTURE_2D); }
+    } else {
+        gl.Disable(GL_TEXTURE_2D);
+    }
+    gl.Disable(0x0BE2);   // no blending: what is drawn replaces
+    gl.Viewport(0, 0, LENS_RES, LENS_RES);
+    gl.MatrixMode(0x1701); gl.PushMatrix(); gl.LoadMatrixf(ident);   // GL_PROJECTION
+    gl.MatrixMode(0x1700); gl.PushMatrix(); gl.LoadMatrixf(ident);   // GL_MODELVIEW
+    gl.ColorMask(0, 0, 0, 1);                                        // the picture opaque
+    gl.ClearColor(0, 0, 0, 1);
+    gl.Clear(GL_COLOR_BUFFER_BIT);
+    gl.ColorMask(1, 1, 1, 1);
+    gl.Begin(0x0008);   // GL_QUAD_STRIP: outside the circle transparent, a dark rim inside it
+    for (i = 0; i <= 64; i++) {
+        float t = i * (6.2831853f / 64), c = cosf(t), s = sinf(t);
+        gl.Color4f(0, 0, 0, 0);
+        gl.Vertex3f(c * 1.0f, s * 1.0f, 0);
+        gl.Vertex3f(c * 1.5f, s * 1.5f, 0);
+    }
+    gl.End();
+    gl.Begin(0x0008);
+    for (i = 0; i <= 64; i++) {
+        float t = i * (6.2831853f / 64), c = cosf(t), s = sinf(t);
+        gl.Color4f(0, 0, 0, 1);
+        gl.Vertex3f(c * 0.94f, s * 0.94f, 0);
+        gl.Vertex3f(c * 1.0f, s * 1.0f, 0);
+    }
+    gl.End();
+    gl.Color4f(0, 0, 0, 1);   // the cross: thin lines with a gap in the middle, and a dot
+    gl.Begin(0x0007);   // GL_QUADS
+    for (k = 0; k < 4; k++) {
+        float a0 = 0.06f, a1 = 0.94f, w = 0.006f;
+        float dx = k == 0 ? 1.0f : k == 1 ? -1.0f : 0, dy = k == 2 ? 1.0f : k == 3 ? -1.0f : 0;
+        float px = -dy * w, py = dx * w;
+        gl.Vertex3f(dx * a0 + px, dy * a0 + py, 0);
+        gl.Vertex3f(dx * a1 + px, dy * a1 + py, 0);
+        gl.Vertex3f(dx * a1 - px, dy * a1 - py, 0);
+        gl.Vertex3f(dx * a0 - px, dy * a0 - py, 0);
+    }
+    gl.Vertex3f(-0.008f, -0.008f, 0); gl.Vertex3f(0.008f, -0.008f, 0); gl.Vertex3f(0.008f, 0.008f, 0); gl.Vertex3f(-0.008f, 0.008f, 0);
+    gl.End();
+    gl.MatrixMode(0x1701); gl.PopMatrix();
+    gl.MatrixMode(0x1700); gl.PopMatrix();
+    gl.PopAttrib();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+    LensPose(NULL, 0, trk, world, axis);
+    memcpy(axis, g_gun.axis, sizeof(axis));
+    LensSway(trk, axis);
+    g_lensLayer.fbo = g_lens.fbo;
+    g_lensLayer.x = g_lensLayer.y = 0;
+    g_lensLayer.size = LENS_RES;
+    memcpy(g_lensLayer.lens.pos, trk, sizeof(trk));
+    memcpy(g_lensLayer.lens.axis, axis, sizeof(axis));
+    g_lensLayer.width = g_lensSize / 100.0f;
+    g_lensLayer.visible = 1;
+}
+
 static void RenderScopeView(cod_refdef_t *fd)
 {
     int saved[4], x = fd->x, w = fd->width;
@@ -5180,6 +6863,9 @@ static void RenderBothEyes(cod_refdef_t *fd)
         SetCrouchCorrection(fd->vieworg);
         UpdateRoomScale(fd);
         RenderScopeView(fd);
+        RenderLensView(fd);
+        UpdateWeaponOffset();
+        HookDObjSkel();
         FlushHeldEntities(fd);
         UpdateHeadPush(fd);
     }
@@ -5551,6 +7237,7 @@ static void __cdecl hk_StretchPic(float x, float y, float w, float h, float s1, 
         g_fs[g_fsCount].hasColor = g_curColorSet;
         memcpy(g_fs[g_fsCount].color, g_curColor, sizeof(g_curColor));
         g_fsCount++;
+        g_fsKeptAt = GetTickCount();
         return;
     }
     orig_StretchPic(x, y, w, h, s1, t1, s2, t2, shader);
@@ -5777,6 +7464,11 @@ static void __cdecl hk_BeginDrawingView(void)
 {
     int world = !(MEM(BYTE, ADDR_backEnd_refdef_rdflags) & 1);   // RDF_NOWORLDMODEL
     const int *rd = (const int *)ADDR_backEnd_refdef;             // x, y, width, height
+    if (world && g_lens.fbo && g_lens.y > 0 && rd[0] == 0 && rd[1] == g_lens.y && rd[2] == LENS_RES) {   // the scope's view (RenderLensView)
+        BindTarget(g_lens.fbo);
+        tramp_BeginDrawingView();
+        return;
+    }
     if (g_hudActive && world && g_backEye == 0 && (rd[0] & 3) == 1 && rd[1] == 0) {   // the zoomed scope view
         BindTarget(hud_fbo[0]);
         tramp_BeginDrawingView();
@@ -6031,7 +7723,7 @@ static int ResolveFramebufferFuncs(void)
 static void StartVR(void)
 {
     if (!cfg.vr || XR_Ready() || !gl.GetCurrentContext()) return;
-    if (XR_Init(fb_w, fb_h, 0)) {
+    if (XR_Init(fb_w, fb_h, LENS_RES)) {   // the scope layer: the working scope's disc (LensFrame)
         // Tell the launcher what the headset asks for, so it can show the real resolution of
         // each "Headset resolution" choice.
         const char *appdata = getenv("APPDATA");
@@ -6122,6 +7814,721 @@ static void LoadSupporterPanel(void)
     g_supW = (int)head[1];
     g_supH = (int)head[2];
     Log("supporters: panel %dx%d loaded", g_supW, g_supH);
+}
+
+// ---------------------------------------------------------------------------
+// The mod's own menu, opened in the middle of the game (the "Mod menu" action, by default hold Y then press B; hold B then Y
+// when left-handed): a flat panel in the room, a laser from the dominant hand, the trigger picks. The game runs on behind
+// it with its controls off. First entry: "Adjust height". The player touches the floor with a controller and pulls the trigger,
+// then holds it above the head and pulls the trigger again: the head's height above the floor is his eye height, and the game
+// world is scaled so that eye height is the soldier's (WorldScale = 60 units / eye height), kept in [VR] EyeHeight of the
+// player's settings.ini (the game folder's cod_vr.ini is not writable without administrator rights, and settings.ini wins over it).
+// The panel is drawn with GDI into a texture (premultiplied alpha, the rows bottom first as the supporters panel's).
+// ---------------------------------------------------------------------------
+#define MM_W 640
+#define MM_H 360
+enum { MM_MAIN, MM_FLOOR, MM_HEAD, MM_WEAPON, MM_HAND, MM_ARMS, MM_SCOPE, MM_WTEST };
+#define MM_ENTRIES 8
+enum { ME_HEIGHT, ME_WEAPON, ME_HAND, ME_ARMS, ME_SCOPE, ME_WTEST, ME_DEFAULT, ME_CLOSE };
+static struct {
+    int open, page, hover, dirty, ignore;
+    GLuint tex, fbo;
+    float floorZ, pos[3], axis[3][3];
+    float weaponWas[3];   // the weapon offsets when "Adjust weapon" began (cancel puts them back)
+    float handWas[3];     // the off hand's pitch / yaw / roll when "Adjust off hand" began
+    float armsWas[24];    // the arm settings when "Adjust arms" began
+    int sel;              // the selected line of "Adjust arms"
+    float scopeWas[5];    // the eyepiece (forward, left, up cm), the disc's size and the zoom when "Adjust scope" began
+    char status[120];
+    int test;             // the development-only weapon test pack is in the game folder: its page is offered
+    int wtPage;           // the page of the weapon list
+} g_mm;
+static const char *const g_mmMainLabel[MM_ENTRIES] = {
+    "Adjust height", "Adjust weapon", "Adjust off hand", "Adjust arms", "Adjust scope", "Weapon test (temporary)", "Back to the default height", "Close" };
+
+// Where main-page entry i is drawn / picked; 0 when it is not there (the weapon test shows only with its pack in the game folder).
+static int MmMainRect(int i, RECT *r)
+{
+    int pos = i;
+    if (i == ME_WTEST && !g_mm.test) return 0;
+    if (i > ME_WTEST && !g_mm.test) pos--;
+    if (i == ME_CLOSE) SetRect(r, 40, 314, 600, 346);
+    else SetRect(r, 40, 72 + pos * 30, 600, 72 + pos * 30 + 28);
+    return 1;
+}
+
+// The weapon test page: every weapon a soldier can hold (the pack registers them all), two columns of five, then Prev / Next / Back.
+static const char *const g_wtSP[] = {
+    "30cal", "BAR", "BAR_slow", "bren", "colt", "enfield", "FG42", "FG42_Auto", "fraggrenade", "kar98k", "kar98k_pavlovsniper",
+    "kar98k_sniper", "luger", "m1carbine", "m1carbine_medic", "m1garand", "MK1britishfrag", "mosin_nagant", "mosin_nagant_sniper",
+    "mp40", "mp44", "mp44_semi", "panzerfaust", "ppsh", "ppsh_semi", "RGD-33russianfrag", "springfield", "sten", "sten_engineer",
+    "Stielhandgranate", "thompson", "thompson_semi",
+};
+static const char *const g_wtUO[] = {
+    "30cal", "BAR", "BAR_slow", "bazooka", "binoculars", "bren", "colt", "dp28", "enfield", "FG42", "FG42_Auto", "flamethrower",
+    "fraggrenade", "gewehr43", "kar98k", "kar98k_pavlovsniper", "kar98k_sniper", "luger", "m1carbine", "m1carbine_medic",
+    "m1garand", "mg30Cal", "mg34", "MK1britishfrag", "mosin_nagant", "mosin_nagant_sniper", "mp40", "mp44", "mp44_semi",
+    "panzerfaust", "panzerschreck", "ppsh", "ppsh_semi", "RGD-33russianfrag", "satchelcharge", "smokegrenade", "springfield",
+    "sten", "sten_engineer", "sten_silenced", "Stielhandgranate", "svt40", "thompson", "thompson_semi", "tt33", "webley",
+};
+#define WT_PER_PAGE 8   // weapons on a page of the menu
+// Weapons the pack registers per load (tools-dev/weapontestpack.py): the original game's 32 fit in one load, United Offensive's 46 overflow the
+// game's model table (G_ModelIndex), so its groups are 8. A page of another group means loading the map again.
+#define WT_GROUP_SP 32
+#define WT_GROUP_UO 8
+enum { WT_PREV = WT_PER_PAGE, WT_NEXT, WT_BACK, WT_HITS };
+
+static void MmWtRect(int i, RECT *r)
+{
+    if (i < WT_PER_PAGE) { int col = i / 4, row = i % 4; SetRect(r, 24 + col * 300, 78 + row * 38, 24 + col * 300 + 292, 78 + row * 38 + 34); }
+    else if (i == WT_PREV) SetRect(r, 24, 254, 204, 288);
+    else if (i == WT_NEXT) SetRect(r, 436, 254, 616, 288);
+    else SetRect(r, 24, 314, 616, 346);
+}
+
+static const struct { int x0, y0, x1, y1; const char *label; } g_mmCancel = { 40, 280, 600, 330, "Cancel" };
+
+static void MmClose(void)
+{
+    if (g_mm.page == MM_HAND && g_hbTuning) { memcpy(g_hbRot, g_mm.handWas, sizeof(g_mm.handWas)); g_hbTuning = 0; }
+    if (g_mm.page == MM_SCOPE && g_lensTuning) {
+        memcpy(g_lensOfs, g_mm.scopeWas, sizeof(g_lensOfs));
+        g_lensSize = g_mm.scopeWas[3];
+        g_lensZoom = g_mm.scopeWas[4];
+        g_lensTuning = 0;
+    }
+    if (g_mm.page == MM_ARMS && g_hbTuning) {
+        int j;
+        for (j = 0; j < HB_NPARAMS; j++) *g_hbParams[j].v = g_mm.armsWas[j];
+        g_hbTuning = 0;
+    }
+    g_mm.open = 0;
+    g_ignoreHeld = AnyInputHeld();   // the trigger that closed it must not fire a shot
+    g_realSync = 1;
+    Log("mod menu: closed");
+}
+
+static void MmOpen(void)
+{
+    float f[3] = { g_head.axis[0][0], g_head.axis[0][1], 0 };
+    float len = sqrtf(f[0] * f[0] + f[1] * f[1]);
+    if (len < 1e-3f) { f[0] = 1; f[1] = 0; len = 1; }
+    f[0] /= len; f[1] /= len;
+    g_mm.pos[0] = g_head.pos[0] + f[0] * 0.9f;
+    g_mm.pos[1] = g_head.pos[1] + f[1] * 0.9f;
+    g_mm.pos[2] = g_head.pos[2] - 0.05f;
+    g_mm.axis[0][0] = f[0];  g_mm.axis[0][1] = f[1];  g_mm.axis[0][2] = 0;   // away from the viewer
+    g_mm.axis[1][0] = -f[1]; g_mm.axis[1][1] = f[0];  g_mm.axis[1][2] = 0;   // left
+    g_mm.axis[2][0] = 0;     g_mm.axis[2][1] = 0;     g_mm.axis[2][2] = 1;   // up
+    g_mm.open = 1;
+    g_mm.page = MM_MAIN;
+    g_mm.hover = -1;
+    g_mm.dirty = 1;
+    g_mm.ignore = 1;
+    g_mm.status[0] = 0;
+    {
+        char p[MAX_PATH];
+        _snprintf(p, sizeof(p), "%s\\%s\\pakz_vr_weapontest.pk3", g_dir, g_uo ? "uo" : "main");
+        g_mm.test = GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+    }
+    Log("mod menu: opened");
+}
+
+static void MmRender(void)
+{
+    static HDC dc;
+    static HBITMAP bmp;
+    static BYTE *bits;
+    static HFONT fBig, fText, fSmall;
+    RECT r = { 0, 0, MM_W, MM_H };
+    int i, n;
+    GLint prevTex = 0;
+    const char *title = "CoD VR  -  settings", *msg = NULL;
+    if (!gl.GenTextures || !gl.TexImage2D) return;
+    if (!dc) {
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof(bi));
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = MM_W;
+        bi.bmiHeader.biHeight = MM_H;   // bottom-up: the first row is the bottom one, as the texture wants it
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        dc = CreateCompatibleDC(NULL);
+        bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+        if (!dc || !bmp || !bits) { dc = NULL; bits = NULL; return; }
+        SelectObject(dc, bmp);
+        fBig = CreateFontA(-34, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
+        fText = CreateFontA(-26, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
+        fSmall = CreateFontA(-19, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
+    }
+    FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    {
+        HBRUSH gold = CreateSolidBrush(RGB(190, 150, 60));
+        FrameRect(dc, &r, gold);
+        DeleteObject(gold);
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, fBig);
+    SetTextColor(dc, RGB(230, 190, 90));
+    { RECT t = { 20, 20, MM_W - 20, 80 }; DrawTextA(dc, title, -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE); }
+    SelectObject(dc, fText);
+    if (g_mm.page == MM_MAIN) {
+        n = MM_ENTRIES;
+        for (i = 0; i < n; i++) {
+            RECT b;
+            HBRUSH fill;
+            if (!MmMainRect(i, &b)) continue;
+            fill = CreateSolidBrush(g_mm.hover == i ? RGB(90, 70, 25) : RGB(30, 30, 30));
+            FillRect(dc, &b, fill);
+            DeleteObject(fill);
+            SetTextColor(dc, g_mm.hover == i ? RGB(255, 225, 140) : RGB(220, 220, 220));
+            DrawTextA(dc, g_mmMainLabel[i], -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        if (g_mm.status[0]) {
+            RECT t = { 30, 282, MM_W - 30, 312 };
+            SetTextColor(dc, RGB(140, 220, 140));
+            DrawTextA(dc, g_mm.status, -1, &t, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        }
+    } else if (g_mm.page == MM_SCOPE) {
+        char line[160];
+        RECT t = { 24, 84, MM_W - 24, 250 }, v = { 24, 256, MM_W - 24, 296 }, k = { 24, 305, MM_W - 24, 345 };
+        SetTextColor(dc, RGB(240, 240, 240));
+        DrawTextA(dc, "Put the scope's picture on its eyepiece.\nStick of the free hand: up / down = forward / back,\nleft / right = left / right.\nStick of the gun hand: up / down = up / down, left / right = size\n(holding its grip: zoom). Turn the gun a little: the picture must stay on the eyepiece.", -1, &t,
+                  DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        _snprintf(line, sizeof(line), "%s:  fwd %.1f  left %.1f  up %.1f  size %.1f cm  zoom %.1fx", g_lensName[0] ? g_lensName : "this weapon",
+                  g_lensOfs[0], g_lensOfs[1], g_lensOfs[2], g_lensSize, ScopedZoom() > 0 ? 65.0f / ScopedZoom() * g_lensZoom : g_lensZoom);   // the magnification
+        SetTextColor(dc, RGB(230, 190, 90));
+        DrawTextA(dc, line, -1, &v, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, RGB(140, 220, 140));
+        DrawTextA(dc, "Trigger = save      B = cancel", -1, &k, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (g_mm.page == MM_ARMS) {
+        char line[160];
+        RECT k = { 24, 330, MM_W - 24, 354 };
+        SelectObject(dc, fSmall);
+        int top = g_mm.sel - 5, rows = 11;
+        if (top > HB_NPARAMS - rows) top = HB_NPARAMS - rows;
+        if (top < 0) top = 0;
+        for (i = top; i < HB_NPARAMS && i < top + rows; i++) {
+            RECT row = { 30, 70 + (i - top) * 23, MM_W - 30, 70 + (i - top) * 23 + 22 }, val = row;
+            float v = *g_hbParams[i].v;
+            if (i == g_mm.sel) {
+                HBRUSH fill = CreateSolidBrush(RGB(90, 70, 25));
+                FillRect(dc, &row, fill);
+                DeleteObject(fill);
+            }
+            row.left += 8; val.right -= 8;
+            SetTextColor(dc, i == g_mm.sel ? RGB(255, 225, 140) : RGB(220, 220, 220));
+            DrawTextA(dc, g_hbParams[i].label, -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (g_hbParams[i].hi <= 1.0f) _snprintf(line, sizeof(line), "%.2f", v);
+            else if (v == 0 && !strcmp(g_hbParams[i].key, "ArmLength")) strcpy(line, "auto");
+            else _snprintf(line, sizeof(line), "%.1f", v);
+            DrawTextA(dc, line, -1, &val, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+        SetTextColor(dc, RGB(140, 220, 140));
+        DrawTextA(dc, "Off stick = choose,  gun stick = change,  trigger = save,  B = cancel", -1, &k,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, fText);
+    } else if (g_mm.page == MM_HAND) {
+        char line[160];
+        RECT t = { 24, 84, MM_W - 24, 254 }, v = { 24, 260, MM_W - 24, 300 }, k = { 24, 305, MM_W - 24, 345 };
+        SetTextColor(dc, RGB(240, 240, 240));
+        DrawTextA(dc, "Hold your off hand straight, in line with your arm, and look at it.\nTurn the game's hand until it matches yours.\nStick of the gun hand: left / right = roll, up / down = pitch.\nStick of the off hand: left / right = turn.", -1, &t,
+                  DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        _snprintf(line, sizeof(line), "roll %.0f   pitch %.0f   turn %.0f   (degrees)", g_hbRot[2], g_hbRot[0], g_hbRot[1]);
+        SetTextColor(dc, RGB(230, 190, 90));
+        DrawTextA(dc, line, -1, &v, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, RGB(140, 220, 140));
+        DrawTextA(dc, "Trigger = save      B = cancel", -1, &k, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (g_mm.page == MM_WEAPON) {
+        char line[160];
+        RECT t = { 24, 90, MM_W - 24, 250 }, v = { 24, 260, MM_W - 24, 300 }, k = { 24, 305, MM_W - 24, 345 };
+        SetTextColor(dc, RGB(240, 240, 240));
+        DrawTextA(dc, "Move the weapon in your hand. Stick of the other hand:\nup / down = forward / back, left / right = left / right.\nStick of the gun hand: up / down = up / down.\nThe lines are the grip: red forward, green right, blue up.", -1, &t,
+                  DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        _snprintf(line, sizeof(line), "%s:  forward %.1f   right %.1f   up %.1f", g_wOffName[0] ? g_wOffName : "this weapon", g_wOff[0], g_wOff[1], g_wOff[2]);
+        SetTextColor(dc, RGB(230, 190, 90));
+        DrawTextA(dc, line, -1, &v, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, RGB(140, 220, 140));
+        DrawTextA(dc, "Trigger = save      B = cancel", -1, &k, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (g_mm.page == MM_WTEST) {
+        const char *const *list = g_uo ? g_wtUO : g_wtSP;
+        int count = g_uo ? (int)(sizeof(g_wtUO) / sizeof(g_wtUO[0])) : (int)(sizeof(g_wtSP) / sizeof(g_wtSP[0]));
+        int pages = (count + WT_PER_PAGE - 1) / WT_PER_PAGE;
+        char line[64];
+        RECT lab = { 210, 254, 430, 288 }, st = { 24, 290, MM_W - 24, 312 };
+        SelectObject(dc, fSmall);
+        for (i = 0; i < WT_HITS; i++) {
+            RECT b;
+            HBRUSH fill;
+            const char *text = NULL;
+            int idx = g_mm.wtPage * WT_PER_PAGE + i, enabled = 1;
+            MmWtRect(i, &b);
+            if (i < WT_PER_PAGE) { if (idx >= count) continue; text = list[idx]; }
+            else if (i == WT_PREV) text = "<  Previous";
+            else if (i == WT_NEXT) text = "Next  >";
+            else text = "Back";
+            fill = CreateSolidBrush(g_mm.hover == i && enabled ? RGB(90, 70, 25) : RGB(30, 30, 30));
+            FillRect(dc, &b, fill);
+            DeleteObject(fill);
+            SetTextColor(dc, !enabled ? RGB(90, 90, 90) : g_mm.hover == i ? RGB(255, 225, 140) : RGB(220, 220, 220));
+            DrawTextA(dc, text, -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        _snprintf(line, sizeof(line), "page %d / %d", g_mm.wtPage + 1, pages);
+        SetTextColor(dc, RGB(160, 160, 160));
+        DrawTextA(dc, line, -1, &lab, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (g_mm.status[0]) {
+            SetTextColor(dc, RGB(140, 220, 140));
+            DrawTextA(dc, g_mm.status, -1, &st, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            SetTextColor(dc, RGB(150, 150, 150));
+            DrawTextA(dc, g_uo ? "A page of another group of weapons loads the mission again" : "All the weapons are here: Previous / Next change the page", -1, &st, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectObject(dc, fText);
+    } else {
+        RECT b = { g_mmCancel.x0, g_mmCancel.y0, g_mmCancel.x1, g_mmCancel.y1 }, t = { 30, 100, MM_W - 30, 260 };
+        HBRUSH fill = CreateSolidBrush(g_mm.hover == 0 ? RGB(90, 70, 25) : RGB(30, 30, 30));
+        msg = g_mm.page == MM_FLOOR ? "Stand up straight.\nTouch the floor with a controller\nand press its trigger."
+                                    : "Now stand up straight\nand press a trigger.";
+        SetTextColor(dc, RGB(240, 240, 240));
+        DrawTextA(dc, msg, -1, &t, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        FillRect(dc, &b, fill);
+        DeleteObject(fill);
+        SetTextColor(dc, g_mm.hover == 0 ? RGB(255, 225, 140) : RGB(220, 220, 220));
+        DrawTextA(dc, g_mmCancel.label, -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    GdiFlush();
+    for (i = 0; i < MM_W * MM_H; i++) {   // premultiplied: the plate is translucent black, the drawings opaque
+        BYTE *p = bits + i * 4, m = p[0] > p[1] ? p[0] : p[1];
+        if (p[2] > m) m = p[2];
+        p[3] = m > 215 ? m : 215;
+    }
+    if (!g_mm.fbo) {
+        GLuint tex = 0, fbo = 0;
+        gl.GenTextures(1, &tex);
+        InitColorTexture(tex, MM_W, MM_H);
+        gl.GenFramebuffers(1, &fbo);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+        g_mm.tex = tex;
+        g_mm.fbo = fbo;
+    }
+    gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+    gl.BindTexture(GL_TEXTURE_2D, g_mm.tex);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, MM_W, MM_H, 0, 0x80E1 /* GL_BGRA */, GL_UNSIGNED_BYTE, bits);
+    gl.BindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
+}
+
+// Called every frame by ProcessControllers: opens / closes the menu and reads it. 1 = the menu is open (the game's controls stay off).
+static int ModMenuUpdate(float dt, int dom)
+{
+    static int trigWas[2], cancelWas;
+    int h, trigEdge[2] = { 0, 0 }, cancel, k, hit = -1, n;
+    (void)dt;
+    if (g_mmRequest) {
+        g_mmRequest = 0;
+        if (g_mm.open) MmClose();
+        else if (MapLoaded() && g_in.active) MmOpen();
+    }
+    if (!g_mm.open) return 0;
+    if (!g_in.active) { MmClose(); return 0; }
+    if (g_mm.ignore) {   // what opened it is still held
+        if (!AnyInputHeld()) g_mm.ignore = 0;
+        trigWas[0] = trigWas[1] = 1;
+        cancelWas = 1;
+        return 1;
+    }
+    for (h = 0; h < 2; h++) {
+        int down = trigWas[h] ? g_in.trigger[h] > 0.35f : g_in.trigger[h] > 0.65f;
+        trigEdge[h] = down && !trigWas[h];
+        trigWas[h] = down;
+    }
+    cancel = (g_in.buttons & (VRB_B | VRB_MENU)) != 0;
+    if (cancel && !cancelWas) {
+        if (g_mm.page == MM_WEAPON) {
+            memcpy(g_wOff, g_mm.weaponWas, sizeof(g_mm.weaponWas));
+            strcpy(g_mm.status, "Weapon position unchanged.");
+        }
+        if (g_mm.page == MM_HAND) {
+            memcpy(g_hbRot, g_mm.handWas, sizeof(g_mm.handWas));
+            g_hbTuning = 0;
+            strcpy(g_mm.status, "Off hand unchanged.");
+        }
+        if (g_mm.page == MM_SCOPE) {
+            memcpy(g_lensOfs, g_mm.scopeWas, sizeof(g_lensOfs));
+            g_lensSize = g_mm.scopeWas[3];
+            g_lensZoom = g_mm.scopeWas[4];
+            g_lensTuning = 0;
+            strcpy(g_mm.status, "Scope unchanged.");
+        }
+        if (g_mm.page == MM_ARMS) {
+            int j;
+            for (j = 0; j < HB_NPARAMS; j++) *g_hbParams[j].v = g_mm.armsWas[j];
+            g_hbTuning = 0;
+            strcpy(g_mm.status, "Arms unchanged.");
+        }
+        if (g_mm.page != MM_MAIN) { g_mm.page = MM_MAIN; g_mm.dirty = 1; }
+        else { cancelWas = cancel; MmClose(); return 1; }
+    }
+    cancelWas = cancel;
+    if (g_mm.page == MM_SCOPE) {
+        // the gun keeps following the gun hand, so the scope's picture keeps being drawn; the sticks move it on the gun
+        int gh = g_gunHand >= 0 ? g_gunHand : dom, oh = 1 - gh;
+        float fy = g_in.stick[oh][1], fx = g_in.stick[oh][0], gy = g_in.stick[gh][1], gx = g_in.stick[gh][0];
+        float speed = 4.0f * dt;   // cm a second at full tilt
+        g_mirrorGun = cfg.mirrorLeft && gh == 0;
+        UpdateGunPose(gh, oh, 0);
+        if (g_in.handValid[gh]) AdjustGunPose(dt);
+        if (fabsf(fy) > 0.2f) { g_lensOfs[0] += fy * speed; g_mm.dirty = 1; }
+        if (fabsf(fx) > 0.2f) { g_lensOfs[1] -= fx * speed; g_mm.dirty = 1; }   // right on the stick = to the right
+        if (fabsf(gy) > 0.2f) { g_lensOfs[2] += gy * speed; g_mm.dirty = 1; }
+        if (fabsf(gx) > 0.2f && g_in.grip[gh] > 0.5f) {   // holding the gun hand's grip: the zoom
+            g_lensZoom *= 1.0f + gx * dt;
+            if (g_lensZoom < 0.5f) g_lensZoom = 0.5f;
+            if (g_lensZoom > 20.0f) g_lensZoom = 20.0f;
+            g_mm.dirty = 1;
+        } else if (fabsf(gx) > 0.2f) {
+            g_lensSize += gx * 2.0f * dt;
+            if (g_lensSize < 1.0f) g_lensSize = 1.0f;
+            if (g_lensSize > 20.0f) g_lensSize = 20.0f;
+            g_mm.dirty = 1;
+        }
+        if (trigEdge[0] || trigEdge[1]) {
+            char v[96];
+            if (g_userIni[0] && g_lensName[0]) {
+                _snprintf(v, sizeof(v), "%.2f %.2f %.2f %.2f %.2f", g_lensOfs[0], g_lensOfs[1], g_lensOfs[2], g_lensSize, g_lensZoom);
+                WritePrivateProfileStringA("ScopeLens", g_lensName, v, g_userIni);
+            }
+            g_lensTuning = 0;
+            strcpy(g_mm.status, g_lensName[0] ? "Scope saved for this weapon." : "Scope used for now (this weapon has no name to save it under).");
+            Log("mod menu: scope of %s saved: forward %.2f left %.2f up %.2f size %.2f zoom %.2f", g_lensName[0] ? g_lensName : "?",
+                g_lensOfs[0], g_lensOfs[1], g_lensOfs[2], g_lensSize, g_lensZoom);
+            Buzz(gh, 0.6f, 80, cfg.hapHolster);
+            g_mm.page = MM_MAIN;
+            g_mm.dirty = 1;
+        }
+        return 1;
+    }
+    if (g_mm.page == MM_ARMS) {
+        // the gun keeps following the gun hand (the arms stay drawn); the off-hand stick picks a line, the gun-hand stick changes it
+        static DWORD nextMove;
+        int gh = g_gunHand >= 0 ? g_gunHand : dom, oh = 1 - gh, j;
+        float sy = g_in.stick[oh][1], sx = g_in.stick[gh][0];
+        DWORD now = GetTickCount();
+        g_mirrorGun = cfg.mirrorLeft && gh == 0;
+        UpdateGunPose(gh, oh, 0);
+        if (g_in.handValid[gh]) AdjustGunPose(dt);
+        if (fabsf(sy) > 0.6f && now >= nextMove) {
+            g_mm.sel += sy > 0 ? -1 : 1;
+            if (g_mm.sel < 0) g_mm.sel = HB_NPARAMS - 1;
+            if (g_mm.sel >= HB_NPARAMS) g_mm.sel = 0;
+            nextMove = now + 250;
+            g_mm.dirty = 1;
+        } else if (fabsf(sy) < 0.3f) {
+            nextMove = 0;
+        }
+        if (fabsf(sx) > 0.2f) {
+            float *v = g_hbParams[g_mm.sel].v;
+            if (*v == 0 && !strcmp(g_hbParams[g_mm.sel].key, "ArmLength"))   // from 'auto': start at the length it stood for
+                *v = 36.0f * (cfg.eyeHeight >= 0.9f ? cfg.eyeHeight : 60.0f / cfg.worldScale);
+            *v += sx * g_hbParams[g_mm.sel].step * dt;
+            if (*v < g_hbParams[g_mm.sel].lo) *v = g_hbParams[g_mm.sel].lo;
+            if (*v > g_hbParams[g_mm.sel].hi) *v = g_hbParams[g_mm.sel].hi;
+            g_mm.dirty = 1;
+        }
+        if (trigEdge[0] || trigEdge[1]) {
+            char v[32];
+            if (g_userIni[0])
+                for (j = 0; j < HB_NPARAMS; j++) {
+                    _snprintf(v, sizeof(v), "%.2f", *g_hbParams[j].v);
+                    WritePrivateProfileStringA("Hands", g_hbParams[j].key, v, g_userIni);
+                }
+            g_hbTuning = 0;
+            strcpy(g_mm.status, "Arms saved.");
+            Log("mod menu: arms saved (shoulder %.1f %.1f %.1f, arm %.1f, twist %.2f, elbow %.2f, wrist %.2f / %.2f, off hand %.1f %.1f %.1f)",
+                g_hbSh[0], g_hbSh[1], g_hbSh[2], g_hbArmCm, g_hbTwist, g_hbElbowHand, g_hbWrist, g_hbOffStraight, g_hbOfs[0], g_hbOfs[1], g_hbOfs[2]);
+            Buzz(oh, 0.6f, 80, cfg.hapHolster);
+            g_mm.page = MM_MAIN;
+            g_mm.dirty = 1;
+        }
+        return 1;
+    }
+    if (g_mm.page == MM_HAND) {
+        // the gun keeps following the gun hand (the view weapon, and so the hands, stay drawn); the sticks turn the off hand
+        int gh = g_gunHand >= 0 ? g_gunHand : dom, oh = 1 - gh, j;
+        float st[3], speed = 45.0f * dt;   // degrees a second at full tilt
+        g_mirrorGun = cfg.mirrorLeft && gh == 0;
+        UpdateGunPose(gh, oh, 0);
+        if (g_in.handValid[gh]) AdjustGunPose(dt);
+        st[0] = g_in.stick[gh][1]; st[1] = g_in.stick[oh][0]; st[2] = g_in.stick[gh][0];   // pitch, yaw, roll
+        for (j = 0; j < 3; j++) {
+            if (fabsf(st[j]) < 0.2f) continue;
+            g_hbRot[j] += st[j] * speed;
+            while (g_hbRot[j] > 180.0f) g_hbRot[j] -= 360.0f;
+            while (g_hbRot[j] < -180.0f) g_hbRot[j] += 360.0f;
+            g_mm.dirty = 1;
+        }
+        if (trigEdge[0] || trigEdge[1]) {
+            char v[32];
+            static const char *keys[3] = { "OffHandPitch", "OffHandYaw", "OffHandRoll" };
+            g_hbRollRef[0] = g_hbRawRoll[0];   // the hand is held neutral now: this roll is "no twist"
+            g_hbHaveRoll[0] = 0;
+            if (g_userIni[0]) {
+                for (j = 0; j < 3; j++) {
+                    _snprintf(v, sizeof(v), "%.1f", g_hbRot[j]);
+                    WritePrivateProfileStringA("Hands", keys[j], v, g_userIni);
+                }
+                _snprintf(v, sizeof(v), "%.1f", g_hbRollRef[0]);
+                WritePrivateProfileStringA("Hands", "OffHandTwistRef", v, g_userIni);
+                {   // the reference the angles were set on, so a later default cannot shift them
+                    char r[256];
+                    _snprintf(r, sizeof(r), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f", g_hbRel[0][0], g_hbRel[0][1], g_hbRel[0][2],
+                              g_hbRel[1][0], g_hbRel[1][1], g_hbRel[1][2], g_hbRel[2][0], g_hbRel[2][1], g_hbRel[2][2]);
+                    WritePrivateProfileStringA("Hands", "OffHandReference", r, g_userIni);
+                    if (g_hbHaveRelA) {
+                        _snprintf(r, sizeof(r), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f", g_hbRelA[0][0], g_hbRelA[0][1], g_hbRelA[0][2],
+                                  g_hbRelA[1][0], g_hbRelA[1][1], g_hbRelA[1][2], g_hbRelA[2][0], g_hbRelA[2][1], g_hbRelA[2][2]);
+                        WritePrivateProfileStringA("Hands", "OffHandAnatomy", r, g_userIni);
+                    }
+                }
+            }
+            Log("mod menu: off hand twist reference %.1f degrees", g_hbRollRef[0]);
+            g_hbTuning = 0;
+            strcpy(g_mm.status, "Off hand saved.");
+            Log("mod menu: off hand saved: pitch %.1f yaw %.1f roll %.1f", g_hbRot[0], g_hbRot[1], g_hbRot[2]);
+            Buzz(oh, 0.6f, 80, cfg.hapHolster);
+            g_mm.page = MM_MAIN;
+            g_mm.dirty = 1;
+        }
+        return 1;
+    }
+    if (g_mm.page == MM_WEAPON) {
+        // the gun keeps following the dominant hand; the other stick moves it in that hand (the offset is the spot of the gun that is
+        // held: the gun moves the opposite way to the offset, and the model is mirrored for a left hand)
+        int gh = g_gunHand >= 0 ? g_gunHand : dom, oh = 1 - gh;
+        float sx = g_in.stick[oh][0], sy = g_in.stick[oh][1], sz = g_in.stick[gh][1], speed = 5.0f * dt;   // game units a second at full tilt
+        int moved = 0;
+        g_mirrorGun = cfg.mirrorLeft && gh == 0;
+        UpdateGunPose(gh, oh, 0);
+        if (g_in.handValid[gh]) AdjustGunPose(dt);
+        if (fabsf(sx) < 0.2f) sx = 0;
+        if (fabsf(sy) < 0.2f) sy = 0;
+        if (fabsf(sz) < 0.2f) sz = 0;
+        if (sy != 0 || sx != 0 || sz != 0) {
+            g_wOff[0] -= sy * speed;                                          // the other hand's stick: forward / back
+            g_wOff[1] -= sx * speed * (g_mirrorGun ? -1.0f : 1.0f);           // and left / right
+            g_wOff[2] -= sz * speed;                                          // the gun hand's stick: up / down
+            moved = 1;
+        }
+        if (moved) g_mm.dirty = 1;
+        if (trigEdge[0] || trigEdge[1]) {
+            char v[96];
+            if (g_userIni[0] && g_wOffName[0]) {   // one entry per weapon
+                _snprintf(v, sizeof(v), "%.2f %.2f %.2f", g_wOff[0], g_wOff[1], g_wOff[2]);
+                WritePrivateProfileStringA("WeaponOffsets", g_wOffName, v, g_userIni);
+            }
+            strcpy(g_mm.status, g_wOffName[0] ? "Weapon position saved for this weapon." : "Weapon position used for now (this weapon has no name to save it under).");
+            Log("mod menu: weapon offset of %s saved: forward %.2f right %.2f up %.2f", g_wOffName[0] ? g_wOffName : "?", g_wOff[0], g_wOff[1], g_wOff[2]);
+            Buzz(gh, 0.6f, 80, cfg.hapHolster);
+            g_mm.page = MM_MAIN;
+            g_mm.dirty = 1;
+        }
+        return 1;
+    }
+    // the laser of the dominant hand (the other one when that is not tracked) on the panel
+    k = g_in.handValid[dom] ? dom : g_in.handValid[1 - dom] ? 1 - dom : -1;
+    if (k >= 0) {
+        const vr_pose_t *p = &g_in.hand[k];
+        float denom = p->axis[0][0] * g_mm.axis[0][0] + p->axis[0][1] * g_mm.axis[0][1] + p->axis[0][2] * g_mm.axis[0][2];
+        if (denom < -1e-3f || denom > 1e-3f) {
+            float d[3], t, hitp[3], u, v, pw = 0.7f, ph = pw * MM_H / (float)MM_W;
+            int i, px, py;
+            for (i = 0; i < 3; i++) d[i] = g_mm.pos[i] - p->pos[i];
+            t = (d[0] * g_mm.axis[0][0] + d[1] * g_mm.axis[0][1] + d[2] * g_mm.axis[0][2]) / denom;
+            if (t > 0) {
+                for (i = 0; i < 3; i++) hitp[i] = p->pos[i] + p->axis[0][i] * t - g_mm.pos[i];
+                u = -(hitp[0] * g_mm.axis[1][0] + hitp[1] * g_mm.axis[1][1] + hitp[2] * g_mm.axis[1][2]);   // to the right
+                v = hitp[0] * g_mm.axis[2][0] + hitp[1] * g_mm.axis[2][1] + hitp[2] * g_mm.axis[2][2];
+                px = (int)((u / pw + 0.5f) * MM_W);
+                py = (int)((0.5f - v / ph) * MM_H);
+                {
+                    float end[3];
+                    for (i = 0; i < 3; i++) end[i] = p->pos[i] + p->axis[0][i] * t;
+                    XR_SetLaser(p->pos, end);
+                }
+                if (g_mm.page == MM_MAIN) {
+                    for (i = 0; i < MM_ENTRIES; i++) {
+                        RECT b;
+                        if (MmMainRect(i, &b) && px >= b.left && px < b.right && py >= b.top && py < b.bottom) hit = i;
+                    }
+                } else if (g_mm.page == MM_WTEST) {
+                    int count = g_uo ? (int)(sizeof(g_wtUO) / sizeof(g_wtUO[0])) : (int)(sizeof(g_wtSP) / sizeof(g_wtSP[0]));
+                    for (i = 0; i < WT_HITS; i++) {
+                        RECT b;
+                        MmWtRect(i, &b);
+                        if (i < WT_PER_PAGE && g_mm.wtPage * WT_PER_PAGE + i >= count) continue;
+                        if (px >= b.left && px < b.right && py >= b.top && py < b.bottom) hit = i;
+                    }
+                } else if (px >= g_mmCancel.x0 && px < g_mmCancel.x1 && py >= g_mmCancel.y0 && py < g_mmCancel.y1) {
+                    hit = 0;
+                }
+            }
+        }
+    }
+    if (hit != g_mm.hover) { g_mm.hover = hit; g_mm.dirty = 1; }
+    n = trigEdge[0] || trigEdge[1];
+    if (!n) return 1;
+    if (g_mm.page == MM_MAIN) {
+        if (hit == 0) { g_mm.page = MM_FLOOR; g_mm.status[0] = 0; g_mm.dirty = 1; }
+        else if (hit == 1) {
+            if (g_gunHand < 0) {
+                strcpy(g_mm.status, "Take a weapon in your dominant hand first.");
+                g_mm.dirty = 1;
+            } else {
+                UpdateWeaponOffset();
+                memcpy(g_mm.weaponWas, g_wOff, sizeof(g_mm.weaponWas));
+                g_mm.page = MM_WEAPON;
+                g_mm.status[0] = 0;
+                g_mm.dirty = 1;
+                Log("mod menu: adjusting %s (offset %.2f %.2f %.2f)", g_wOffName[0] ? g_wOffName : "the weapon", g_wOff[0], g_wOff[1], g_wOff[2]);
+            }
+        } else if (hit == 2) {
+            if (g_gunHand < 0 && cfg.realistic) {
+                strcpy(g_mm.status, "Take a weapon in your dominant hand first (the hands come with it).");
+            } else {
+                memcpy(g_mm.handWas, g_hbRot, sizeof(g_mm.handWas));
+                g_hbTuning = 1;
+                g_mm.page = MM_HAND;
+                g_mm.status[0] = 0;
+                Log("mod menu: adjusting the off hand (pitch %.1f yaw %.1f roll %.1f)", g_hbRot[0], g_hbRot[1], g_hbRot[2]);
+            }
+            g_mm.dirty = 1;
+        } else if (hit == 3) {
+            if (g_gunHand < 0 && cfg.realistic) {
+                strcpy(g_mm.status, "Take a weapon in your dominant hand first (the arms come with it).");
+            } else {
+                int j;
+                for (j = 0; j < HB_NPARAMS && j < 24; j++) g_mm.armsWas[j] = *g_hbParams[j].v;
+                g_hbTuning = 1;
+                g_mm.page = MM_ARMS;
+                g_mm.status[0] = 0;
+                Log("mod menu: adjusting the arms");
+            }
+            g_mm.dirty = 1;
+        } else if (hit == 4) {
+            if (g_gunHand < 0 || ScopedZoom() <= 0) {
+                strcpy(g_mm.status, "Take a rifle with a scope in your hand first.");
+            } else {
+                ReloadLensTuning();
+                memcpy(g_mm.scopeWas, g_lensOfs, sizeof(g_lensOfs));
+                g_mm.scopeWas[3] = g_lensSize;
+                g_mm.scopeWas[4] = g_lensZoom;
+                g_lensTuning = 1;
+                g_mm.page = MM_SCOPE;
+                g_mm.status[0] = 0;
+                Log("mod menu: adjusting the scope of %s", g_lensName[0] ? g_lensName : "?");
+            }
+            g_mm.dirty = 1;
+        } else if (hit == ME_WTEST) {
+            g_mm.page = MM_WTEST;
+            g_mm.status[0] = 0;
+            g_mm.dirty = 1;
+            Log("mod menu: the weapon test page");
+        } else if (hit == ME_DEFAULT) {
+            char ini[MAX_PATH];
+            _snprintf(ini, sizeof(ini), "%s\\cod_vr.ini", g_dir);
+            cfg.eyeHeight = 0;
+            cfg.worldScale = IniFloat("VR", "WorldScale", 39.37f, ini);   // (settings.ini may hold its own)
+            if (g_userIni[0]) WritePrivateProfileStringA("VR", "EyeHeight", "0", g_userIni);
+            strcpy(g_mm.status, "Default height restored.");
+            g_mm.dirty = 1;
+            Log("mod menu: default height, world scale %.2f", cfg.worldScale);
+        } else if (hit == ME_CLOSE) { MmClose(); }
+    } else if (g_mm.page == MM_WTEST) {
+        const char *const *list = g_uo ? g_wtUO : g_wtSP;
+        int count = g_uo ? (int)(sizeof(g_wtUO) / sizeof(g_wtUO[0])) : (int)(sizeof(g_wtSP) / sizeof(g_wtSP[0]));
+        int pages = (count + WT_PER_PAGE - 1) / WT_PER_PAGE;
+        if (hit == WT_BACK) { g_mm.page = MM_MAIN; g_mm.dirty = 1; }
+        else if (hit == WT_PREV || hit == WT_NEXT) {
+            // a page of another group of weapons: the pack registers them when the map loads, so the map is loaded again from its start
+            char map[64], cmd[160];
+            int perGroup = (g_uo ? WT_GROUP_UO : WT_GROUP_SP) / WT_PER_PAGE, was = g_mm.wtPage;
+            g_mm.wtPage = (g_mm.wtPage + (hit == WT_NEXT ? 1 : pages - 1)) % pages;
+            if (g_mm.wtPage / perGroup == was / perGroup) {   // the same load: only another page
+                g_mm.dirty = 1;
+            } else if (CurrentMap(map, sizeof(map))) {
+                _snprintf(cmd, sizeof(cmd), "set vr_testgroup %d\n" "map %s\n", g_mm.wtPage / perGroup + 1, map);
+                Cbuf(cmd);
+                Log("mod menu: weapon test group %d, map %s loaded again", g_mm.wtPage / perGroup + 1, map);
+                MmClose();
+            } else {
+                strcpy(g_mm.status, "Could not tell the map to load it again.");
+                g_mm.dirty = 1;
+            }
+        }
+        else if (hit >= 0 && hit < WT_PER_PAGE && g_mm.wtPage * WT_PER_PAGE + hit < count) {
+            char cmd[96];
+            const char *name = list[g_mm.wtPage * WT_PER_PAGE + hit];
+            _snprintf(cmd, sizeof(cmd), "set vr_testweapon %s\n", name);
+            Cbuf(cmd);
+            _snprintf(g_mm.status, sizeof(g_mm.status), "%s in your hands: close the menu (B), then Adjust weapon / scope", name);
+            g_mm.dirty = 1;
+            Buzz(trigEdge[dom] ? dom : 1 - dom, 0.5f, 50, cfg.hapHolster);
+            Log("mod menu: weapon test: %s", name);
+        }
+    } else if (g_mm.page == MM_FLOOR) {
+        if (hit == 0) { g_mm.page = MM_MAIN; g_mm.dirty = 1; }
+        else {
+            h = trigEdge[dom] ? dom : 1 - dom;   // the controller whose trigger it was
+            if (g_in.handValid[h]) {
+                g_mm.floorZ = g_in.hand[h].pos[2];
+                g_mm.page = MM_HEAD;
+                g_mm.dirty = 1;
+                Buzz(h, 0.5f, 50, cfg.hapHolster);
+                Log("mod menu: the floor is at %.3f (hand %d)", g_mm.floorZ, h);
+            }
+        }
+    } else {   // MM_HEAD
+        if (hit == 0) { g_mm.page = MM_MAIN; g_mm.dirty = 1; }
+        else {
+            h = trigEdge[dom] ? dom : 1 - dom;
+            if (g_in.handValid[h]) {
+                float eye = g_head.pos[2] - g_mm.floorZ;   // the head, standing: the controller only gives the moment
+                g_mm.page = MM_MAIN;
+                g_mm.dirty = 1;
+                if (eye < 0.9f || eye > 2.2f) {
+                    _snprintf(g_mm.status, sizeof(g_mm.status), "Could not measure (eyes at %.2f m). Try again.", eye);
+                    Log("mod menu: height not accepted (eyes %.3f above the floor)", eye);
+                } else {
+                    char v[32];
+                    cfg.eyeHeight = eye;
+                    cfg.worldScale = 60.0f / eye;
+                    if (g_userIni[0]) {
+                        _snprintf(v, sizeof(v), "%.3f", eye);
+                        WritePrivateProfileStringA("VR", "EyeHeight", v, g_userIni);
+                        WritePrivateProfileStringA("VR", "PlayerHeight", NULL, g_userIni);   // (an earlier build wrote it; unused)
+                    }
+                    _snprintf(g_mm.status, sizeof(g_mm.status), "Height set successfully: eyes at %.2f m.", eye);
+                    Buzz(h, 0.6f, 80, cfg.hapHolster);
+                    Log("mod menu: height set, eyes %.3f m, world scale %.2f", eye, cfg.worldScale);
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+// In the frame, before the layers go out: the panel while the menu is open.
+static void ModMenuFrame(void)
+{
+    if (!g_mm.open) return;
+    if (g_mm.dirty || !g_mm.fbo) { MmRender(); g_mm.dirty = 0; }
+    if (g_mm.fbo) XR_SetPanel(g_mm.fbo, MM_W, MM_H, g_mm.pos, (const float (*)[3])g_mm.axis, 0.7f);
+    if (g_mm.page == MM_WEAPON && g_gunValid) {   // the grip point and its three directions, on the gun
+        float right[3] = { -g_gun.axis[1][0], -g_gun.axis[1][1], -g_gun.axis[1][2] };
+        XR_SetAxes(g_gun.pos, g_gun.axis[0], right, g_gun.axis[2], 0.2f);
+    }
 }
 
 // HUD: window-sized with depth/stencil (3D models in menus); trash: 16x16, everything outside is clipped.
@@ -6346,6 +8753,30 @@ static void ResolveEyes(void)
     if (scissor) gl.Enable(GL_SCISSOR_TEST);
 }
 
+// The eye images are opaque, but the full-screen pictures the game draws over them (the red damage tint, fades) are alpha blended and
+// write their alpha into the image as well. A compositor that looks at the layer's alpha would show the headset's background through
+// the tinted picture: a pale flash that stays, weaker, while the tint fades (a player's report after damage; the log shows only the
+// red tint, no white picture). CONFIRMED by a read of the centre pixel while a tint was on (2026-10-29, maintainer's run): alpha 174
+// to 230 instead of 255. The alpha is put back to 1 as the last thing done to the eye images (after the vignette and the blink fade,
+// which blend as well), before they go out.
+static void OpaqueEyes(void)
+{
+    static int logged;
+    int i;
+    if (!fb_ok || !gl.ClearColor || !gl.Clear || !gl.PushAttrib || !gl.ColorMask) return;
+    if (!logged) { logged = 1; Log("eye images: their alpha is put back to opaque each frame (full-screen pictures leave it low)"); }
+    gl.PushAttrib(GL_COLOR_BUFFER_BIT | GL_SCISSOR_BIT);
+    gl.Disable(GL_SCISSOR_TEST);
+    gl.ColorMask(0, 0, 0, 1);
+    gl.ClearColor(0, 0, 0, 1);
+    for (i = 0; i < 2; i++) {
+        gl.BindFramebuffer(GL_FRAMEBUFFER, fb_fbo[i]);
+        gl.Clear(GL_COLOR_BUFFER_BIT);
+    }
+    gl.PopAttrib();
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 // Anisotropic filtering: when the game gives a texture a mipmapped filter, the texture also gets
 // the configured anisotropy (clamped to the driver's), and a lower level the game asks for itself
 // is raised to it. Surfaces seen at an angle (floors, walls) stay sharp.
@@ -6529,6 +8960,7 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
         }
         if (drawn && g_vrFrame && hud.world) PostFX_Apply(fb_fbo, fb_tex, eye_w, eye_h, &cfg.postfx);
         if (drawn && g_vrFrame && hud.world && !g_scopeActive) DrawVignette();
+        if (drawn && g_vrFrame) OpaqueEyes();   // last: the full-screen pictures, the vignette and the fades all blended their alpha into the eyes
         if (drawn && g_vrFrame && hud.posed && hud.world && g_objOnHand) DrawObjectivesPanel(hud.fbo, fb_w, fb_h);
         if (cfg.dumpEyes && drawn && g_vrFrame && hud.world) {
             static DWORD since;
@@ -6561,7 +8993,9 @@ static BOOL WINAPI hk_SwapBuffers(HDC dc)
             }
         }
         }
-        XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, NULL);
+        if (drawn && g_vrFrame) LensFrame();
+        if (drawn && g_vrFrame) ModMenuFrame();
+        XR_EndFrame(drawn && g_vrFrame ? fb_fbo : NULL, eye_w, eye_h, fb_w, fb_h, &hud, drawn && g_vrFrame && g_lensLayer.visible ? &g_lensLayer : NULL);
         // Monitor: the left eye while playing, the HUD buffer (menus) otherwise.
         if (drawn) {
             if (hud.world) GL_Blit(fb_fbo[0], eye_w, eye_h, 0, fb_w, fb_h);
@@ -6647,6 +9081,9 @@ static void LoadConfig(void)
     cfg.separation = IniFloat("Stereo", "Separation", cfg.separation, ini);
     cfg.vr         = CfgInt("VR", "Enabled", cfg.vr, ini);
     cfg.worldScale = IniFloat("VR", "WorldScale", cfg.worldScale, ini);
+    cfg.eyeHeight = IniFloat("VR", "EyeHeight", 0.0f, ini);   // set by the mod menu's "Adjust height"
+    if (cfg.eyeHeight >= 0.9f && cfg.eyeHeight <= 2.2f) cfg.worldScale = 60.0f / cfg.eyeHeight;
+    else cfg.eyeHeight = 0;
     cfg.positional = CfgInt("VR", "PositionalTracking", cfg.positional, ini);
     cfg.headAim    = CfgInt("VR", "HeadAim", cfg.headAim, ini);
     cfg.hud                 = CfgInt("HUD", "Enabled", cfg.hud, ini);
@@ -6664,6 +9101,9 @@ static void LoadConfig(void)
     if (cfg.moveMode < 0 || cfg.moveMode > 2) cfg.moveMode = 2;
     cfg.fxAlways        = CfgInt("Graphics", "FxAlways", 1, ini);
     cfg.shockBlend      = CfgInt("Comfort", "ShellshockBlend", 0, ini);
+    cfg.noRunBob        = CfgInt("Comfort", "NoRunBob", 1, ini);
+    cfg.noWalkBob       = CfgInt("Comfort", "NoWalkBob", 1, ini);
+    cfg.lmgWalk         = IniFloat("Comfort", "LmgWalkScale", 0.5f, ini);
     cfg.keepLook        = CfgInt("Comfort", "KeepLook", 1, ini);
     cfg.chestNear       = IniFloat("Holsters", "ChestNear", -0.12f, ini);
     cfg.chestWidth      = IniFloat("Holsters", "ChestWidth", 0.30f, ini);
@@ -6694,6 +9134,29 @@ static void LoadConfig(void)
     cfg.emptyPointer  = CfgInt("Controllers", "EmptyHandPointer", 0, ini);   // empty hands: the head looks (signs count)
     cfg.crosshair     = CfgInt("Controllers", "Crosshair", 0, ini);
     cfg.crosshairSize = IniFloat("Controllers", "CrosshairSize", 1.5f, ini);
+    {
+        static const struct { const char *name; float rgb[3]; } cols[] = {
+            { "white", { 1.0f, 1.0f, 1.0f } }, { "red", { 1.0f, 0.15f, 0.12f } }, { "green", { 0.2f, 1.0f, 0.25f } },
+            { "yellow", { 1.0f, 0.9f, 0.1f } }, { "cyan", { 0.1f, 0.95f, 1.0f } }, { "blue", { 0.25f, 0.45f, 1.0f } },
+            { "orange", { 1.0f, 0.55f, 0.1f } }, { "magenta", { 1.0f, 0.2f, 0.9f } },
+        };
+        char name[24];
+        int i, found = 0;
+        CfgStr("Controllers", "CrosshairColor", "white", name, sizeof(name), ini);
+        if (strlen(name) == 6 && strspn(name, "0123456789abcdefABCDEF") == 6) {   // RRGGBB, from the launcher's colour picker
+            unsigned int rgb = (unsigned int)strtoul(name, NULL, 16);
+            cfg.crosshairColor[0] = ((rgb >> 16) & 255) / 255.0f;
+            cfg.crosshairColor[1] = ((rgb >> 8) & 255) / 255.0f;
+            cfg.crosshairColor[2] = (rgb & 255) / 255.0f;
+            found = 1;
+        }
+        for (i = 0; !found && i < i < (int)(sizeof(cols) / sizeof(cols[0])); i++)
+            if (!_stricmp(name, cols[i].name)) { memcpy(cfg.crosshairColor, cols[i].rgb, sizeof(cfg.crosshairColor)); found = 1; break; }
+        if (!found) { cfg.crosshairColor[0] = cfg.crosshairColor[1] = cfg.crosshairColor[2] = 1.0f; }
+        cfg.crosshairAlpha = IniFloat("Controllers", "CrosshairOpacity", 0.8f, ini);
+        if (cfg.crosshairAlpha < 0.1f) cfg.crosshairAlpha = 0.1f;
+        if (cfg.crosshairAlpha > 1.0f) cfg.crosshairAlpha = 1.0f;
+    }
     cfg.swingMelee    = CfgInt("Controllers", "SwingMelee", 1, ini);
     cfg.meleeSpeed    = IniFloat("Controllers", "MeleeSpeed", 2.2f, ini);
     cfg.renderScale   = IniFloat("VR", "RenderScale", 1.0f, ini);
@@ -6741,6 +9204,7 @@ static void LoadConfig(void)
     cfg.hapHolster       = IniFloat("Controllers", "HapticsHolsters", cfg.haptics, ini);
     cfg.holsterHum       = CfgInt("Controllers", "HolsterHum", 1, ini);
     cfg.objGesture       = CfgInt("HUD", "ObjectivesGesture", 1, ini);
+    cfg.objGunHand       = CfgInt("HUD", "ObjectivesGunHand", 1, ini);
     cfg.objWatchWidth    = IniFloat("HUD", "ObjectivesWatchWidth", 0.42f, ini);
     cfg.physCrouch       = CfgInt("Controllers", "PhysicalCrouch", 1, ini);
     cfg.crouchDepth      = IniFloat("Controllers", "CrouchDepth", 0.32f, ini);
